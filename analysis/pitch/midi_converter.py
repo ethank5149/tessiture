@@ -34,6 +34,13 @@ def _frequency_to_midi_uncertainty(frequency_hz: float, sigma_f: float) -> float
     return float((12.0 / np.log(2.0)) * (sigma_f / frequency_hz))
 
 
+def combine_pitch_uncertainty(analytic_sigma: float, calibration_sigma: float) -> float:
+    """Combine analytic and calibration uncertainty via quadrature."""
+    analytic = max(float(analytic_sigma), 0.0)
+    calibration = max(float(calibration_sigma), 0.0)
+    return float(np.sqrt(analytic**2 + calibration**2))
+
+
 def convert_f0_to_midi(
     f0_hz: np.ndarray,
     sigma_f: Optional[np.ndarray] = None,
@@ -66,7 +73,7 @@ def convert_f0_to_midi(
         if calibrate is not None:
             bias, sigma_cal = calibrate(float(f0))
         corrected[i] = f0 - float(bias)
-        sigma_total[i] = float(np.sqrt(sigma_f[i] ** 2 + sigma_cal**2))
+        sigma_total[i] = combine_pitch_uncertainty(sigma_f[i], sigma_cal)
 
     midi = np.array([_frequency_to_midi(f) for f in corrected], dtype=np.float32)
     midi_sigma = np.array(
@@ -103,3 +110,11 @@ def build_midi_frames(
             )
         )
     return frames
+
+
+__all__ = [
+    "MidiFrame",
+    "build_midi_frames",
+    "combine_pitch_uncertainty",
+    "convert_f0_to_midi",
+]
