@@ -28,14 +28,16 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    # Internal-only: no host ports are published; Caddy reaches Tessiture over Docker networks.
     networks:
       - tessiture_internal
-    # Optional LAN debug only (do not enable for internet ingress path):
-    # ports:
-    #   - "${TESSITURE_LAN_BIND_PORT}:${TESSITURE_PORT}"
+      - caddy_proxy
 
 networks:
   tessiture_internal:
     name: tessiture_internal
     driver: bridge
     internal: true
+  caddy_proxy:
+    external: true
+    name: caddy_proxy
