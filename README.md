@@ -282,19 +282,110 @@ Current tests cover:
 
 ## Docker and Unraid Deployment
 
-Build image:
+### Recommended internet topology (production)
 
-```bash
-make docker-build
+```text
+Internet -> Cloudflare Tunnel (externally managed/shared cloudflared) -> Tessiture API container
 ```
 
-Run with Unraid-style bind mounts:
+- This repository's Unraid stack deploys **Tessiture only**.
+- **Cloudflare Tunnel is external/shared and is not deployed by this stack.**
+- **Caddy is optional and LAN-only** (local reverse proxy/debug path), and is **not** part of the internet ingress path.
+
+### Unraid stack files (in this repo)
+
+- Compose stack: `deploy/unraid/docker-compose.yml`
+- Env template: `deploy/unraid/.env.unraid.example`
+
+This stack provides:
+
+- Tessiture service (no bundled cloudflared service)
+- Restart policy (`unless-stopped`)
+- App healthcheck
+- Internal named Docker network (`tessiture_internal`)
+- Persistent Unraid host mounts for uploads/outputs
+- Env-file-driven configuration
+- Optional/commented host port mapping for LAN debug only
+
+### Deploy on Unraid (copy/paste flow)
+
+1) Build and publish the Tessiture image from this repository (or reuse an existing published tag).
+
+2) On Unraid, create a folder for the stack and copy both deployment files there.
+
+3) Create the runtime env file:
 
 ```bash
-make docker-run-unraid
+cp .env.unraid.example .env.unraid
 ```
 
-The container serves the API and, when built assets exist, statically serves `frontend/dist` from `/`.
+4) Edit `.env.unraid` and set at minimum:
+
+- `TESSITURE_IMAGE`
+- `TESSITURE_CORS_ORIGINS`
+- `TESSITURE_UPLOAD_HOST_PATH`
+- `TESSITURE_OUTPUT_HOST_PATH`
+
+5) Start the stack:
+
+```bash
+docker compose -f docker-compose.yml --env-file .env.unraid up -d
+```
+
+### Configure existing shared Cloudflare Tunnel ingress (external)
+
+1. In your existing/shared Cloudflare Tunnel setup, route the Tessiture hostname to:
+   - `http://tessiture:8000`
+2. Ensure the shared `cloudflared` container is attached to the `tessiture_internal` Docker network created by this stack so the `tessiture` service name resolves.
+3. Keep Caddy out of the internet path (LAN-only usage).
+
+Example ingress rule (existing tunnel config):
+
+```yaml
+ingress:
+  - hostname: voice.example.com
+    service: http://tessiture:8000
+  - service: http_status:404
+```
+
+### Migration / cutover runbook
+
+#### 1) Parallel route test (no DNS cutover yet)
+
+1. In your existing/shared Cloudflare Tunnel, add a temporary public hostname targeting Tessiture at `http://tessiture:8000`.
+2. Keep your existing production route active.
+3. Validate temporary hostname:
+   - `POST /analyze` returns job id
+   - `GET /status/{job_id}` reaches `completed`
+   - `GET /results/{job_id}?format=json|csv|pdf` returns expected artifacts
+
+#### 2) Cutover
+
+1. Update the primary public hostname route in the existing/shared tunnel to `http://tessiture:8000`.
+2. Keep TTL low during change window if applicable.
+3. Confirm active traffic uses the new route and analysis jobs complete successfully.
+
+#### 3) Rollback
+
+1. Re-point the Cloudflare public hostname back to the prior origin/service in the shared tunnel configuration.
+2. If needed, stop the new stack:
+
+```bash
+docker compose -f docker-compose.yml --env-file .env.unraid down
+```
+
+3. Confirm old route serves traffic normally.
+
+#### 4) Validation checklist
+
+- [ ] `docker ps` shows `tessiture` healthy/running
+- [ ] Shared `cloudflared` container remains healthy/running outside this stack
+- [ ] Shared tunnel ingress points to `http://tessiture:8000`
+- [ ] Uploads write to configured Unraid uploads path
+- [ ] JSON/CSV/PDF outputs write to configured Unraid outputs path
+- [ ] Browser/API clients succeed from allowed CORS origins
+- [ ] Rate limiting and max upload settings match expected policy
+- [ ] No internet traffic is routed through Caddy in the recommended production flow
 
 ---
 

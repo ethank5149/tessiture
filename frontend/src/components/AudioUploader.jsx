@@ -6,6 +6,10 @@ function AudioUploader({ onSubmit, isSubmitting = false, jobId = null, status = 
   const [file, setFile] = useState(null);
   const [localError, setLocalError] = useState(null);
 
+  const handleClick = (event) => {
+    event.currentTarget.value = "";
+  };
+
   const handleChange = (event) => {
     const nextFile = event.target.files?.[0] ?? null;
     setFile(nextFile);
@@ -44,7 +48,8 @@ function AudioUploader({ onSubmit, isSubmitting = false, jobId = null, status = 
             id={inputId}
             className="uploader__input"
             type="file"
-            accept="audio/*"
+            accept="audio/*,.wav,.mp3,.flac,.m4a,.aac"
+            onClick={handleClick}
             onChange={handleChange}
             aria-describedby={helperId}
             disabled={isBusy}

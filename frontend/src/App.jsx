@@ -11,6 +11,42 @@ import {
 
 const POLL_INTERVAL_MS = 2000;
 
+const isLikelyIosDevice = () => {
+  if (typeof navigator === "undefined") {
+    return false;
+  }
+  const ua = navigator.userAgent || "";
+  const platform = navigator.platform || "";
+  return /iPad|iPhone|iPod/i.test(ua) || (platform === "MacIntel" && navigator.maxTouchPoints > 1);
+};
+
+const triggerDownload = (result) => {
+  if (!result?.url || typeof document === "undefined") {
+    return result;
+  }
+
+  const anchor = document.createElement("a");
+  anchor.href = result.url;
+  anchor.rel = "noopener noreferrer";
+  anchor.style.display = "none";
+
+  if (isLikelyIosDevice()) {
+    anchor.target = "_blank";
+  } else if (result.filename) {
+    anchor.download = result.filename;
+  }
+
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+
+  window.setTimeout(() => {
+    URL.revokeObjectURL(result.url);
+  }, 1000);
+
+  return result;
+};
+
 const getErrorMessage = (error, fallback) => {
   if (error instanceof Error && error.message) {
     return error.message;
@@ -95,7 +131,8 @@ function App() {
       setIsFetchingResults(true);
       setError(null);
       try {
-        return await downloadJobResults(jobId, format);
+        const result = await downloadJobResults(jobId, format);
+        return triggerDownload(result);
       } catch (downloadError) {
         const message = getErrorMessage(downloadError, "Unable to download results.");
         setError(message);
