@@ -1,7 +1,9 @@
 import os
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from api.routes import router as api_router
 
@@ -21,3 +23,7 @@ app.add_middleware(
 )
 
 app.include_router(api_router)
+
+frontend_dist = Path(os.getenv("TESSITURE_FRONTEND_DIST", "frontend/dist"))
+if frontend_dist.exists() and (frontend_dist / "index.html").exists():
+    app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")

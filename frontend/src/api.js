@@ -48,6 +48,121 @@ const extractFilename = (contentDisposition, fallback) => {
   return match?.[1] || fallback;
 };
 
+const toNumberOrNull = (value) => {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+};
+
+const normalizeSummary = (summary = {}, metadata = {}, pitch = {}, tessitura = {}) => {
+  const duration =
+    summary?.duration_seconds ??
+    metadata?.duration_seconds ??
+    metadata?.duration ??
+    null;
+  const f0Min = summary?.f0_min ?? pitch?.f0_min ?? null;
+  const f0Max = summary?.f0_max ?? pitch?.f0_max ?? null;
+  const tessituraRange =
+    summary?.tessitura_range ??
+    tessitura?.metrics?.tessitura_band ??
+    null;
+  const overallConfidence =
+    summary?.overall_confidence ??
+    summary?.confidence ??
+    null;
+
+  return {
+    duration_seconds: toNumberOrNull(duration),
+    f0_min: toNumberOrNull(f0Min),
+    f0_max: toNumberOrNull(f0Max),
+    tessitura_range: tessituraRange,
+    overall_confidence: toNumberOrNull(overallConfidence),
+    confidence: toNumberOrNull(summary?.confidence ?? overallConfidence),
+  };
+};
+
+export const normalizeAnalysisResult = (payload = {}) => {
+  if (!payload || typeof payload !== "object") {
+    return {
+      metadata: {},
+      summary: normalizeSummary(),
+      pitch: { frames: [], f0_min: null, f0_max: null },
+      note_events: [],
+      chords: { timeline: [] },
+      keys: { trajectory: [], probabilities: {} },
+      tessitura: {},
+      advanced: {},
+      uncertainty: {},
+      files: {},
+    };
+  }
+
+  const metadata =
+    payload.metadata && typeof payload.metadata === "object"
+      ? payload.metadata
+      : {};
+  const pitch =
+    payload.pitch && typeof payload.pitch === "object"
+      ? payload.pitch
+      : {};
+  const tessitura =
+    payload.tessitura && typeof payload.tessitura === "object"
+      ? payload.tessitura
+      : {};
+
+  const frames = Array.isArray(pitch.frames)
+    ? pitch.frames
+    : Array.isArray(payload.pitch_frames)
+      ? payload.pitch_frames
+      : [];
+
+  const noteEvents = Array.isArray(payload.note_events)
+    ? payload.note_events
+    : Array.isArray(payload?.notes?.events)
+      ? payload.notes.events
+      : [];
+
+  return {
+    ...payload,
+    metadata,
+    summary: normalizeSummary(payload.summary, metadata, pitch, tessitura),
+    pitch: {
+      ...pitch,
+      frames,
+      f0_min: toNumberOrNull(pitch.f0_min ?? payload.summary?.f0_min),
+      f0_max: toNumberOrNull(pitch.f0_max ?? payload.summary?.f0_max),
+    },
+    pitch_frames: frames,
+    note_events: noteEvents,
+    chords:
+      payload.chords && typeof payload.chords === "object"
+        ? { timeline: Array.isArray(payload.chords.timeline) ? payload.chords.timeline : [] }
+        : { timeline: [] },
+    keys:
+      payload.keys && typeof payload.keys === "object"
+        ? {
+            trajectory: Array.isArray(payload.keys.trajectory) ? payload.keys.trajectory : [],
+            probabilities:
+              payload.keys.probabilities && typeof payload.keys.probabilities === "object"
+                ? payload.keys.probabilities
+                : {},
+          }
+        : { trajectory: [], probabilities: {} },
+    tessitura,
+    advanced:
+      payload.advanced && typeof payload.advanced === "object"
+        ? payload.advanced
+        : {},
+    uncertainty:
+      payload.uncertainty && typeof payload.uncertainty === "object"
+        ? payload.uncertainty
+        : {},
+    files:
+      payload.files && typeof payload.files === "object"
+        ? payload.files
+        : {},
+  };
+};
+
 export const submitAnalysisJob = async (file) => {
   if (!file) {
     throw new Error("Audio file is required.");
@@ -86,7 +201,7 @@ export const fetchJobResults = async (jobId, format = "json") => {
     })
   );
   if (format === "json") {
-    return response.json();
+    return normalizeAnalysisResult(await response.json());
   }
   const blob = await response.blob();
   const contentDisposition = response.headers.get("content-disposition");
