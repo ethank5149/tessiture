@@ -1,12 +1,32 @@
 import "@testing-library/jest-dom/vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import App from "../App";
+import {
+  fetchExampleTracks,
+  fetchJobResults,
+  fetchJobStatus,
+  submitExampleAnalysisJob,
+} from "../api";
 import AnalysisResults from "./AnalysisResults";
 import AnalysisStatus from "./AnalysisStatus";
 import AudioUploader from "./AudioUploader";
 import ExampleGallery from "./ExampleGallery";
+
+vi.mock("../api", () => ({
+  downloadJobResults: vi.fn(),
+  fetchExampleTracks: vi.fn(),
+  fetchJobResults: vi.fn(),
+  fetchJobStatus: vi.fn(),
+  submitAnalysisJob: vi.fn(),
+  submitExampleAnalysisJob: vi.fn(),
+}));
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 describe("AudioUploader", () => {
   it("submits a selected audio file", async () => {
@@ -30,36 +50,62 @@ describe("AudioUploader", () => {
 });
 
 describe("ExampleGallery", () => {
-  it("renders examples and submits selected example", async () => {
+  it("renders example cards and emits selected example object", async () => {
     const user = userEvent.setup();
-    const onAnalyze = vi.fn().mockResolvedValue({ job_id: "job-2" });
+    const onSelectExample = vi.fn().mockResolvedValue({ job_id: "job-2" });
+    const demoExample = {
+      id: "demo-1",
+      display_name: "Demo Example",
+      artist: "Demo Artist",
+      album: "Demo Album",
+      filename: "demo.opus",
+      content_type: "audio/opus",
+    };
 
+    render(
+      <ExampleGallery
+        examples={[demoExample]}
+        isLoading={false}
+        onSelectExample={onSelectExample}
+        selectedExampleId={null}
+        isSelecting={false}
+      />
+    );
+
+    expect(screen.getByText("Demo Example")).toBeInTheDocument();
+    expect(screen.getByText("Demo Artist")).toBeInTheDocument();
+    expect(screen.getByText("Demo Album")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Select example track: Demo Example by Demo Artist" }));
+
+    expect(onSelectExample).toHaveBeenCalledTimes(1);
+    expect(onSelectExample).toHaveBeenCalledWith(demoExample);
+  });
+
+  it("marks selected example card with pressed state", () => {
     render(
       <ExampleGallery
         examples={[
           {
             id: "demo-1",
             display_name: "Demo Example",
-            filename: "demo.opus",
-            content_type: "audio/opus",
+            artist: "Demo Artist",
           },
         ]}
         isLoading={false}
-        onAnalyze={onAnalyze}
-        isSubmitting={false}
+        onSelectExample={vi.fn()}
+        selectedExampleId="demo-1"
+        isSelecting={false}
       />
     );
 
-    expect(screen.getByText("Demo Example")).toBeInTheDocument();
-    expect(screen.getByText("demo.opus")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Analyze example" }));
-    expect(onAnalyze).toHaveBeenCalledTimes(1);
-    expect(onAnalyze).toHaveBeenCalledWith("demo-1");
+    expect(
+      screen.getByRole("button", { name: "Select example track: Demo Example by Demo Artist" })
+    ).toHaveAttribute("aria-pressed", "true");
   });
 
   it("shows loading state", () => {
-    render(<ExampleGallery examples={[]} isLoading onAnalyze={vi.fn()} />);
+    render(<ExampleGallery examples={[]} isLoading onSelectExample={vi.fn()} />);
     expect(screen.getByText("Loading examples…")).toBeInTheDocument();
   });
 });
@@ -118,5 +164,47 @@ describe("AnalysisResults", () => {
     expect(screen.getByRole("button", { name: "Download CSV" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Download JSON" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Download PDF" })).toBeInTheDocument();
+  });
+});
+
+describe("App example gallery wiring", () => {
+  it("uses gallery as selector-only input and runs processing in main tab", async () => {
+    const user = userEvent.setup();
+
+    fetchExampleTracks.mockResolvedValue([
+      {
+        id: "demo-1",
+        display_name: "Demo Example",
+        artist: "Demo Artist",
+      },
+    ]);
+    submitExampleAnalysisJob.mockResolvedValue({ job_id: "job-demo" });
+    fetchJobStatus.mockResolvedValue({ status: "completed" });
+    fetchJobResults.mockResolvedValue({
+      metadata: { duration_seconds: 10 },
+      summary: { duration_seconds: 10, confidence: 0.9 },
+      pitch: { frames: [] },
+      tessitura: {},
+    });
+
+    render(<App />);
+
+    await user.click(screen.getByRole("tab", { name: "Example gallery" }));
+
+    const selectButton = await screen.findByRole("button", {
+      name: "Select example track: Demo Example by Demo Artist",
+    });
+    await user.click(selectButton);
+
+    await waitFor(() => {
+      expect(submitExampleAnalysisJob).toHaveBeenCalledWith("demo-1");
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("tab", { name: "Upload audio" })).toHaveAttribute("aria-selected", "true");
+    });
+
+    expect(screen.queryByRole("heading", { name: "Example gallery" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Upload audio" })).toBeInTheDocument();
   });
 });

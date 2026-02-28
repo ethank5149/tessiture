@@ -336,6 +336,7 @@ def _build_pitch_payload(
                     "index": index,
                     "time": float(index * hop_length / max(sample_rate, 1)),
                     "f0_hz": None,
+                    "f0": None,
                     "midi": None,
                     "note": None,
                     "cents": None,
@@ -350,6 +351,7 @@ def _build_pitch_payload(
                 "index": index,
                 "time": float(index * hop_length / max(sample_rate, 1)),
                 "f0_hz": f0,
+                "f0": f0,
                 "midi": midi,
                 "note": _midi_to_note_name(midi),
                 "cents": cents,
@@ -467,13 +469,17 @@ def _serialize_tessitura_payload(payload: Any) -> Dict[str, Any]:
     }
 
     if pdf is not None:
+        density = np.asarray(getattr(pdf, "density", []), dtype=float).tolist()
         serialized["pdf"] = {
             "bin_edges": np.asarray(getattr(pdf, "bin_edges", []), dtype=float).tolist(),
-            "density": np.asarray(getattr(pdf, "density", []), dtype=float).tolist(),
+            "density": density,
             "bin_centers": np.asarray(getattr(pdf, "bin_centers", []), dtype=float).tolist(),
             "bin_size": _safe_float(getattr(pdf, "bin_size", None)),
             "total_weight": _safe_float(getattr(pdf, "total_weight", None)),
         }
+        # Backward-compatible aliases expected by some clients.
+        serialized["histogram"] = density
+        serialized["heatmap"] = density
     return serialized
 
 

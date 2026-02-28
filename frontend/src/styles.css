@@ -106,6 +106,27 @@ textarea {
   text-wrap: pretty;
 }
 
+.app-shell__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.app-shell__tab {
+  font-weight: 600;
+}
+
+.app-shell__tab--active {
+  background: var(--brand-strong);
+  border-color: var(--brand-strong);
+  color: #ffffff;
+}
+
+.app-shell__panel {
+  min-width: 0;
+}
+
 .app-shell__content {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
@@ -202,24 +223,72 @@ a:focus-visible {
   gap: 0.65rem;
 }
 
-.examples__list {
+.examples__grid {
   list-style: none;
   margin: 0;
   padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 0.75rem;
 }
 
-.examples__item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  padding: 0.65rem;
+.examples__grid-item {
+  min-width: 0;
+}
+
+.examples__card {
+  width: 100%;
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.55rem;
+  border-radius: 10px;
   border: 1px solid var(--border-subtle);
-  border-radius: 8px;
   background: var(--surface-2);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 140ms ease, border-color 140ms ease, background-color 140ms ease, box-shadow 140ms ease;
+}
+
+.examples__card:hover:not(:disabled) {
+  transform: translateY(-1px);
+  background: color-mix(in oklab, var(--surface-2) 78%, #273f69);
+  border-color: #3d5f93;
+}
+
+.examples__card:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.examples__card--selected {
+  border: 1px solid var(--brand-strong);
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--brand-strong) 75%, #ffffff);
+  background: color-mix(in oklab, var(--surface-2) 65%, #1f3257);
+}
+
+.examples__thumb {
+  inline-size: 100%;
+  aspect-ratio: 1 / 1;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface-3);
+  border: 1px solid var(--border-subtle);
+  display: grid;
+  place-items: center;
+}
+
+.examples__thumb-image {
+  inline-size: 100%;
+  block-size: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.examples__thumb-fallback {
+  font-weight: 700;
+  font-size: 1.2rem;
+  color: var(--text-muted);
 }
 
 .examples__info {
@@ -235,6 +304,19 @@ a:focus-visible {
 .examples__name {
   font-weight: 600;
   color: var(--text-primary);
+  line-height: 1.3;
+}
+
+.examples__artist,
+.examples__album {
+  margin: 0.2rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.88rem;
+  overflow-wrap: anywhere;
+}
+
+.examples__album {
+  color: var(--text-soft);
 }
 
 .examples__meta,
@@ -396,9 +478,8 @@ a:focus-visible {
     margin: 0.25rem 0 0.65rem;
   }
 
-  .examples__item {
-    flex-direction: column;
-    align-items: stretch;
+  .examples__grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .chart__footer {

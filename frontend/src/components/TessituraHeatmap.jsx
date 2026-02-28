@@ -2,21 +2,27 @@ const extractBins = (results) => {
   const bins =
     results?.tessitura?.histogram ??
     results?.tessitura?.heatmap ??
+    results?.tessitura?.pdf?.density ??
     results?.tessitura_histogram ??
     results?.histogram ??
     [];
+
+  const centers = Array.isArray(results?.tessitura?.pdf?.bin_centers)
+    ? results.tessitura.pdf.bin_centers
+    : [];
+
   if (!Array.isArray(bins)) {
     return [];
   }
   return bins
-    .map((bin) => {
+    .map((bin, index) => {
       if (typeof bin === "number") {
-        return { value: bin, label: null };
+        return { value: bin, label: centers[index] ?? null };
       }
       if (bin && typeof bin === "object") {
         return {
           value: bin.value ?? bin.count ?? bin.intensity ?? null,
-          label: bin.label ?? bin.pitch ?? bin.bin ?? null,
+          label: bin.label ?? bin.pitch ?? bin.bin ?? centers[index] ?? null,
         };
       }
       return null;

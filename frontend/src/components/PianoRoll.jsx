@@ -1,5 +1,11 @@
 const extractNotes = (results) => {
-  const notes = results?.notes ?? results?.pitch?.notes ?? results?.pitch_notes ?? [];
+  const notes =
+    results?.notes?.events ??
+    results?.note_events ??
+    results?.notes ??
+    results?.pitch?.notes ??
+    results?.pitch_notes ??
+    [];
   if (!Array.isArray(notes)) {
     return [];
   }
@@ -36,7 +42,7 @@ const fallbackFrames = (results) => {
       if (frame && typeof frame === "object") {
         return {
           time: frame.time ?? frame.t ?? index,
-          pitch: frame.f0 ?? frame.value ?? frame.pitch ?? null,
+          pitch: frame.midi ?? frame.f0_hz ?? frame.f0 ?? frame.value ?? frame.pitch ?? null,
         };
       }
       return null;

@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { useEffect, useId } from "react";
 import PitchCurve from "./PitchCurve";
 import PianoRoll from "./PianoRoll";
 import TessituraHeatmap from "./TessituraHeatmap";
@@ -46,6 +46,34 @@ function AnalysisResults({
   const tessitura = summary?.tessitura_range ?? summary?.range;
   const confidence = summary?.confidence ?? summary?.overall_confidence;
   const normalizedConfidence = normalizeConfidence(confidence);
+
+  useEffect(() => {
+    if (!hasResults || !results) {
+      return;
+    }
+
+    const pitchFrames = Array.isArray(results?.pitch?.frames) ? results.pitch.frames : [];
+    const firstFrame = pitchFrames[0] ?? null;
+    const notesNode = results?.notes;
+    const noteEvents = Array.isArray(results?.note_events) ? results.note_events : [];
+    const tessituraPdfDensity = Array.isArray(results?.tessitura?.pdf?.density)
+      ? results.tessitura.pdf.density
+      : [];
+
+    console.info("[diagnostic] analysis payload shape", {
+      jobStatus: status?.status ?? null,
+      pitchFramesLength: pitchFrames.length,
+      firstPitchFrameKeys: firstFrame ? Object.keys(firstFrame) : [],
+      firstPitchFrameHasF0Hz: Boolean(firstFrame && Object.prototype.hasOwnProperty.call(firstFrame, "f0_hz")),
+      firstPitchFrameHasF0: Boolean(firstFrame && Object.prototype.hasOwnProperty.call(firstFrame, "f0")),
+      notesType: notesNode === null ? "null" : Array.isArray(notesNode) ? "array" : typeof notesNode,
+      notesEventsLength: Array.isArray(results?.notes?.events) ? results.notes.events.length : 0,
+      noteEventsLength: noteEvents.length,
+      tessituraKeys: results?.tessitura && typeof results.tessitura === "object" ? Object.keys(results.tessitura) : [],
+      tessituraPdfDensityLength: tessituraPdfDensity.length,
+      tessituraHistogramLength: Array.isArray(results?.tessitura?.histogram) ? results.tessitura.histogram.length : 0,
+    });
+  }, [hasResults, results, status?.status]);
 
   return (
     <section className="card results" aria-labelledby={titleId} aria-busy={isFetchingResults}>

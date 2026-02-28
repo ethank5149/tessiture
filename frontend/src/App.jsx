@@ -14,6 +14,11 @@ import {
 
 const POLL_INTERVAL_MS = 2000;
 
+const APP_VIEWS = {
+  upload: "upload",
+  examples: "examples",
+};
+
 const isLikelyIosDevice = () => {
   if (typeof navigator === "undefined") {
     return false;
@@ -74,6 +79,8 @@ function App() {
   const [exampleTracks, setExampleTracks] = useState([]);
   const [isLoadingExamples, setIsLoadingExamples] = useState(false);
   const [exampleError, setExampleError] = useState(null);
+  const [activeView, setActiveView] = useState(APP_VIEWS.upload);
+  const [selectedExampleId, setSelectedExampleId] = useState(null);
 
   const pollingRef = useRef(null);
 
@@ -120,13 +127,28 @@ function App() {
   }, []);
 
   const submitUploadJob = useCallback(
-    async (file) => submitJob(() => submitAnalysisJob(file)),
+    async (file) => {
+      setSelectedExampleId(null);
+      return submitJob(() => submitAnalysisJob(file));
+    },
     [submitJob]
   );
 
   const submitExampleJob = useCallback(
     async (exampleId) => submitJob(() => submitExampleAnalysisJob(exampleId)),
     [submitJob]
+  );
+
+  const handleExampleSelection = useCallback(
+    async (example) => {
+      if (!example?.id) {
+        return;
+      }
+      setSelectedExampleId(example.id);
+      setActiveView(APP_VIEWS.upload);
+      await submitExampleJob(example.id);
+    },
+    [submitExampleJob]
   );
 
   const fetchResults = useCallback(
@@ -270,28 +292,60 @@ function App() {
       <header className="app-shell__header">
         <h1 className="app-shell__title">Tessitura Analysis</h1>
         <p className="app-shell__subtitle">
-          Upload an audio file or choose a server-hosted example to generate tessitura insights and visualizations.
+          Upload an audio file, or pick a demo track in Example Gallery to run analysis here in the main tab.
         </p>
       </header>
 
-      <div id="main-content" className="app-shell__content" tabIndex={-1}>
-        <AudioUploader
-          onSubmit={submitUploadJob}
-          isSubmitting={isSubmitting}
-          jobId={jobId}
-          status={status}
-          error={error}
-        />
+      <div className="app-shell__tabs" role="tablist" aria-label="Analysis input mode">
+        <button
+          id="tab-upload"
+          className={`button app-shell__tab${activeView === APP_VIEWS.upload ? " app-shell__tab--active" : ""}`}
+          type="button"
+          role="tab"
+          aria-selected={activeView === APP_VIEWS.upload}
+          aria-controls="panel-upload"
+          onClick={() => setActiveView(APP_VIEWS.upload)}
+        >
+          Upload audio
+        </button>
+        <button
+          id="tab-examples"
+          className={`button app-shell__tab${activeView === APP_VIEWS.examples ? " app-shell__tab--active" : ""}`}
+          type="button"
+          role="tab"
+          aria-selected={activeView === APP_VIEWS.examples}
+          aria-controls="panel-examples"
+          onClick={() => setActiveView(APP_VIEWS.examples)}
+        >
+          Example gallery
+        </button>
+      </div>
 
-        <ExampleGallery
-          examples={exampleTracks}
-          isLoading={isLoadingExamples}
-          onAnalyze={submitExampleJob}
-          isSubmitting={isSubmitting}
-          jobId={jobId}
-          status={status}
-          error={exampleError ?? error}
-        />
+      <div id="main-content" className="app-shell__content" tabIndex={-1}>
+        {activeView === APP_VIEWS.upload ? (
+          <div id="panel-upload" role="tabpanel" aria-labelledby="tab-upload" className="app-shell__panel">
+            <AudioUploader
+              onSubmit={submitUploadJob}
+              isSubmitting={isSubmitting}
+              jobId={jobId}
+              status={status}
+              error={error}
+            />
+          </div>
+        ) : null}
+
+        {activeView === APP_VIEWS.examples ? (
+          <div id="panel-examples" role="tabpanel" aria-labelledby="tab-examples" className="app-shell__panel">
+            <ExampleGallery
+              examples={exampleTracks}
+              isLoading={isLoadingExamples}
+              onSelectExample={handleExampleSelection}
+              selectedExampleId={selectedExampleId}
+              isSelecting={isSubmitting}
+              error={exampleError}
+            />
+          </div>
+        ) : null}
 
         <AnalysisStatus
           jobId={jobId}

@@ -16,7 +16,7 @@ const normalizeFrames = (results) => {
         if (entry && typeof entry === "object") {
           return {
             time: entry.time ?? entry.t ?? entry.frame_time ?? null,
-            value: entry.f0 ?? entry.value ?? entry.pitch ?? null,
+            value: entry.f0_hz ?? entry.f0 ?? entry.value ?? entry.pitch ?? null,
           };
         }
         return null;

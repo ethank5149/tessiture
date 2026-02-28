@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling>=1.25.0"]
+requires = ["hatchling>=1.25.0", "hatch-vcs>=0.4.0"]
 build-backend = "hatchling.build"
 
 [project]
 name = "tessiture"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Tessiture vocal analysis toolkit"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -64,3 +64,6 @@ explicit_package_bases = true
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[tool.hatch.version]
+source = "vcs"
