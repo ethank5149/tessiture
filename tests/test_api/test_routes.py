@@ -201,20 +201,9 @@ def test_examples_endpoint_lists_available_tracks(tmp_path, monkeypatch) -> None
     examples_dir.mkdir(parents=True, exist_ok=True)
     opus_file = examples_dir / "demo.opus"
     opus_file.write_bytes(b"OPUS")
+    (examples_dir / "notes.txt").write_text("not audio", encoding="utf-8")
 
     monkeypatch.setattr(routes, "EXAMPLES_DIR", examples_dir)
-    monkeypatch.setattr(
-        routes,
-        "EXAMPLE_TRACKS",
-        [
-            {
-                "id": "demo-1",
-                "display_name": "Demo Example",
-                "filename": "demo.opus",
-                "content_type": "audio/opus",
-            }
-        ],
-    )
 
     with TestClient(app) as client:
         response = client.get("/examples")
@@ -222,8 +211,8 @@ def test_examples_endpoint_lists_available_tracks(tmp_path, monkeypatch) -> None
         payload = response.json()
         assert "examples" in payload
         assert len(payload["examples"]) == 1
-        assert payload["examples"][0]["id"] == "demo-1"
-        assert payload["examples"][0]["display_name"] == "Demo Example"
+        assert payload["examples"][0]["id"] == "demo"
+        assert payload["examples"][0]["display_name"] == "demo"
         assert payload["examples"][0]["filename"] == "demo.opus"
         assert payload["examples"][0]["content_type"] == "audio/opus"
 
@@ -240,23 +229,11 @@ def test_analyze_example_schedules_job_from_catalog(tmp_path, monkeypatch) -> No
     source_file.write_bytes(b"OPUS")
 
     monkeypatch.setattr(routes, "EXAMPLES_DIR", examples_dir)
-    monkeypatch.setattr(
-        routes,
-        "EXAMPLE_TRACKS",
-        [
-            {
-                "id": "demo-1",
-                "display_name": "Demo Example",
-                "filename": "demo.opus",
-                "content_type": "audio/opus",
-            }
-        ],
-    )
 
     async def fake_pipeline(file_path: str, metadata=None):
         assert Path(file_path).resolve() == source_file.resolve()
         assert (metadata or {}).get("source") == "example"
-        assert (metadata or {}).get("example_id") == "demo-1"
+        assert (metadata or {}).get("example_id") == "demo"
         assert (metadata or {}).get("original_filename") == "demo.opus"
         routes.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         json_path = routes.OUTPUT_DIR / "demo_result.json"
@@ -277,7 +254,7 @@ def test_analyze_example_schedules_job_from_catalog(tmp_path, monkeypatch) -> No
     monkeypatch.setattr(routes, "analysis_pipeline", fake_pipeline)
 
     with TestClient(app) as client:
-        response = client.post("/analyze/example?example_id=demo-1")
+        response = client.post("/analyze/example?example_id=demo")
         assert response.status_code == 200
         job_id = response.json()["job_id"]
         status = _wait_for_completion(client, job_id)
@@ -287,36 +264,35 @@ def test_analyze_example_schedules_job_from_catalog(tmp_path, monkeypatch) -> No
         assert result_response.status_code == 200
         payload = result_response.json()
         assert payload["metadata"]["input_type"] == "example"
-        assert payload["metadata"]["example_id"] == "demo-1"
+        assert payload["metadata"]["example_id"] == "demo"
         assert payload["metadata"]["original_filename"] == "demo.opus"
 
     _reset_job_state()
 
 
-def test_analyze_example_rejects_unknown_or_unsafe_catalog_entries(tmp_path, monkeypatch) -> None:
+def test_analyze_example_rejects_unknown_or_non_discoverable_tracks(tmp_path, monkeypatch) -> None:
     from api import routes
 
     examples_dir = tmp_path / "examples"
     examples_dir.mkdir(parents=True, exist_ok=True)
+    (examples_dir / "unsafe.txt").write_text("not audio", encoding="utf-8")
+
+    outside_file = tmp_path / "outside.opus"
+    outside_file.write_bytes(b"OPUS")
+    linked_file = examples_dir / "linked.opus"
+    try:
+        linked_file.symlink_to(outside_file)
+    except (OSError, NotImplementedError):
+        pass
 
     monkeypatch.setattr(routes, "EXAMPLES_DIR", examples_dir)
-    monkeypatch.setattr(
-        routes,
-        "EXAMPLE_TRACKS",
-        [
-            {
-                "id": "unsafe",
-                "display_name": "Unsafe",
-                "filename": "../outside.opus",
-                "content_type": "audio/opus",
-            }
-        ],
-    )
 
     with TestClient(app) as client:
         unknown_response = client.post("/analyze/example?example_id=missing")
         assert unknown_response.status_code == 404
 
-        unsafe_response = client.post("/analyze/example?example_id=unsafe")
-        assert unsafe_response.status_code == 500
-        assert "misconfigured" in unsafe_response.json()["detail"].lower()
+        unsupported_response = client.post("/analyze/example?example_id=unsafe")
+        assert unsupported_response.status_code == 404
+
+        linked_response = client.post("/analyze/example?example_id=linked")
+        assert linked_response.status_code == 404

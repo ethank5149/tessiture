@@ -43,6 +43,13 @@ target-version = ["py311"]
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-ra"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+  "ignore:ast.NameConstant is deprecated and will be removed in Python 3.14; use ast.Constant instead:DeprecationWarning:reportlab\\.lib\\.rl_safe_eval",
+  "ignore:'parseString' deprecated - use 'parse_string':pyparsing.exceptions.PyparsingDeprecationWarning:matplotlib\\._fontconfig_pattern",
+  "ignore:'resetCache' deprecated - use 'reset_cache':pyparsing.exceptions.PyparsingDeprecationWarning:matplotlib\\._fontconfig_pattern",
+  "ignore:'enablePackrat' deprecated - use 'enable_packrat':pyparsing.exceptions.PyparsingDeprecationWarning:matplotlib\\._mathtext",
+]
 
 [tool.mypy]
 python_version = "3.11"

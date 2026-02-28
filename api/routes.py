@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import mimetypes
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Set
@@ -74,14 +76,10 @@ _RATE_LIMIT_BUCKETS: Dict[str, Dict[str, float]] = {}
 
 NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 
-EXAMPLE_TRACKS: List[Dict[str, str]] = [
-    {
-        "id": "ariana-dangerous-woman-acapella",
-        "display_name": "Ariana Grande — Dangerous Woman (A Cappella)",
-        "filename": "Ariana Grande - Dangerous Woman (A Cappella).opus",
-        "content_type": "audio/opus",
-    }
-]
+EXAMPLE_CONTENT_TYPE_OVERRIDES: Dict[str, str] = {
+    ".opus": "audio/opus",
+    ".m4a": "audio/mp4",
+}
 
 
 def _ensure_upload_dir() -> None:
@@ -102,43 +100,84 @@ def _build_example_payload(example: Mapping[str, Any], file_path: Path) -> Dict[
     }
 
 
-def _list_available_example_tracks() -> List[Dict[str, Any]]:
-    available: List[Dict[str, Any]] = []
+def _slugify_example_id(file_path: Path) -> str:
+    base = re.sub(r"[^a-z0-9]+", "-", file_path.stem.lower()).strip("-")
+    return base or "example"
+
+
+def _guess_example_content_type(file_path: Path) -> str:
+    extension = file_path.suffix.lower()
+    if extension in EXAMPLE_CONTENT_TYPE_OVERRIDES:
+        return EXAMPLE_CONTENT_TYPE_OVERRIDES[extension]
+    guessed, _ = mimetypes.guess_type(file_path.name)
+    return guessed or "audio/*"
+
+
+def _discover_example_tracks() -> List[tuple[Dict[str, Any], Path]]:
+    discovered: List[tuple[Dict[str, Any], Path]] = []
+    used_ids: Set[str] = set()
     examples_root = EXAMPLES_DIR.resolve()
 
-    logger.info(
-        "example_gallery.discovery_start examples_root=%s configured_examples=%d",
-        examples_root,
-        len(EXAMPLE_TRACKS),
-    )
+    if not examples_root.exists():
+        logger.warning("example_gallery.examples_root_missing examples_root=%s", examples_root)
+        return discovered
 
-    for example in EXAMPLE_TRACKS:
-        filename = str(example.get("filename") or "").strip()
-        if not filename:
-            logger.warning("example_gallery.skipped_empty_filename example=%s", example)
+    logger.info("example_gallery.discovery_start examples_root=%s", examples_root)
+
+    for candidate in sorted(examples_root.iterdir(), key=lambda path: path.name.lower()):
+        resolved = candidate.resolve()
+        if not candidate.is_file():
             continue
-        candidate = (examples_root / filename).resolve()
+
         try:
-            candidate.relative_to(examples_root)
+            resolved.relative_to(examples_root)
         except ValueError:
             logger.warning(
                 "example_gallery.skipped_outside_root filename=%s candidate=%s root=%s",
-                filename,
-                candidate,
+                candidate.name,
+                resolved,
                 examples_root,
             )
             continue
-        if not candidate.is_file():
-            logger.warning(
-                "example_gallery.missing_file filename=%s candidate=%s",
-                filename,
-                candidate,
+
+        extension = candidate.suffix.lower()
+        if extension and extension not in ALLOWED_EXTENSIONS:
+            logger.info(
+                "example_gallery.skipped_unsupported_extension filename=%s extension=%s",
+                candidate.name,
+                extension,
             )
             continue
-        available.append(_build_example_payload(example, candidate))
 
-    logger.info("example_gallery.discovery_complete available_examples=%d", len(available))
-    return available
+        base_id = _slugify_example_id(candidate)
+        example_id = base_id
+        dedupe_index = 2
+        while example_id in used_ids:
+            example_id = f"{base_id}-{dedupe_index}"
+            dedupe_index += 1
+        used_ids.add(example_id)
+
+        example_payload = {
+            "id": example_id,
+            "display_name": candidate.stem,
+            "filename": candidate.name,
+            "content_type": _guess_example_content_type(candidate),
+        }
+
+        logger.info(
+            "example_gallery.inspect_candidate id=%s candidate=%s exists=%s",
+            example_id,
+            resolved,
+            resolved.is_file(),
+        )
+        discovered.append((_build_example_payload(example_payload, resolved), resolved))
+
+    logger.info("example_gallery.discovery_complete available_examples=%d", len(discovered))
+    return discovered
+
+
+def _list_available_example_tracks() -> List[Dict[str, Any]]:
+    return [example for example, _ in _discover_example_tracks()]
 
 
 def _resolve_example_track(example_id: str) -> tuple[Dict[str, Any], Path]:
@@ -146,24 +185,28 @@ def _resolve_example_track(example_id: str) -> tuple[Dict[str, Any], Path]:
     if not normalized_id:
         raise HTTPException(status_code=400, detail="Example ID is required.")
 
-    examples_root = EXAMPLES_DIR.resolve()
-    for example in EXAMPLE_TRACKS:
+    logger.info("example_gallery.resolve_start requested_id=%s", normalized_id)
+
+    discovered = _discover_example_tracks()
+    discovered_ids = [example.get("id", "") for example, _ in discovered]
+
+    for example, file_path in discovered:
         configured_id = str(example.get("id") or "").strip()
         if configured_id != normalized_id:
             continue
 
-        filename = str(example.get("filename") or "").strip()
-        candidate = (examples_root / filename).resolve()
-        try:
-            candidate.relative_to(examples_root)
-        except ValueError as exc:
-            raise HTTPException(status_code=500, detail="Example catalog is misconfigured.") from exc
+        logger.info(
+            "example_gallery.resolve_success requested_id=%s filename=%s",
+            normalized_id,
+            example.get("filename"),
+        )
+        return example, file_path
 
-        if not candidate.is_file():
-            raise HTTPException(status_code=404, detail="Example track is unavailable.")
-
-        return _build_example_payload(example, candidate), candidate
-
+    logger.warning(
+        "example_gallery.resolve_not_found requested_id=%s discovered_ids=%s",
+        normalized_id,
+        discovered_ids,
+    )
     raise HTTPException(status_code=404, detail="Example track not found.")
 
 

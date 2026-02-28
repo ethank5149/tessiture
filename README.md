@@ -467,7 +467,7 @@ Tessiture releases use semantic versioning (`MAJOR.MINOR.PATCH`).
 
 | Version | Codename | Description |
 |---|---|---|
-| v0.x | **Synth** | Experimental development releases using synthetic reference datasets and uncertainty calibration workflows. |
+| v0.x | **Ash** | Experimental development releases using synthetic reference datasets and uncertainty calibration workflows. |
 | v1.x | **Tessa** | First official release line with calibrated real-world evaluation workflows. |
 
 ---

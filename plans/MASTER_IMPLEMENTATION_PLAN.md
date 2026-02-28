@@ -1179,7 +1179,7 @@ confidence = 1 - 0.072 = 0.928
 
 | Version | Codename | Description |
 |---------|----------|-------------|
-| v0.x | **Synth** | Experimental development. Synthetic reference datasets for calibration. |
+| v0.x | **Ash** | Experimental development. Synthetic reference datasets for calibration. |
 | v1.x | **Tessa** | First official release. Real-world evaluation with Tessa test dataset. |
 
 ## Dataset Conventions
@@ -1320,9 +1320,7 @@ graph TD
 - Efron, B. & Tibshirani, R.J. (1993). *An Introduction to the Bootstrap*, Chapman & Hall.
 - Gatz, D.F. & Smith, L. (1995). "The Standard Error of a Weighted Mean Concentration", *Atmospheric Environment*, 29(11), 1185-1193.
 - Hyndman, R.J. & Fan, Y. (1996). "Sample Quantiles in Statistical Packages", *The American Statistician*, 50(4), 361-365.
-- Iman, R.L. & Conover, W.J. (1980). "Small Sample Sensitivity Analysis Techniques for Computer Models", *Communications in Statistics - Theory and Methods*, 9(17), 1749-1842.
-- JCGM 101:2008. "Evaluation of Measurement Data — Supplement 1 to the GUM — Propagation of Distributions Using a Monte Carlo Method", Joint Committee for Guides in Metrology.
-- McKay, M.D., Beckman, R.J. & Conover, W.J. (1979). "A Comparison of Three Methods for Selecting Values of Input Variables in the Analysis of Output from a Computer Code", *Technometrics*, 21(2), 239-245.
+- Iman, R.L. & Conover, W.J. (1980). "A Comparison of Three Methods for Selecting Values of Input Variables in the Analysis of Output from a Computer Code", *Technometrics*, 21(2), 239-245.
 - Metropolis, N. & Ulam, S. (1949). "The Monte Carlo Method", *Journal of the American Statistical Association*, 44(247), 335-341.
 - Press, W.H., Teukolsky, S.A., Vetterling, W.T. & Flannery, B.P. (2007). *Numerical Recipes: The Art of Scientific Computing*, 3rd Edition, Cambridge University Press.
 - Rubinstein, R.Y. & Kroese, D.P. (2016). *Simulation and the Monte Carlo Method*, 3rd Edition, Wiley.

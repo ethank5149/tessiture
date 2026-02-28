@@ -4,6 +4,9 @@ NPM ?= npm
 VENV_DIR ?= .venv
 VENV_PYTHON ?= $(VENV_DIR)/bin/python3
 VENV_PIP ?= $(VENV_PYTHON) -m pip
+VERSION_BUMP ?= auto
+BASE_VERSION ?= 0.0.0
+UNRAID_ENV_FILE ?= deploy/unraid/.env.unraid
 
 .PHONY: help install install-dev test lint format typecheck run-api run-frontend build-frontend docker-build docker-run-unraid unraid-build unraid-build-push unraid-deploy unraid-one-shot clean
 
@@ -20,11 +23,17 @@ help:
 	@echo "  build-frontend     Build frontend assets"
 	@echo "  docker-build       Build single-image Tessiture container"
 	@echo "  docker-run-unraid  Run container with Unraid-style bind mounts"
-	@echo "  unraid-build       Build Unraid image helper (default tessiture:local)"
-	@echo "  unraid-build-push  Build and push image (set IMAGE=registry/repo:tag)"
+	@echo "  unraid-build       Build Unraid image helper with semver bumping"
+	@echo "  unraid-build-push  Build and push image with semver bumping"
 	@echo "  unraid-deploy      Deploy Unraid compose stack via helper"
 	@echo "  unraid-one-shot    Build + deploy + verify via helper"
 	@echo "  clean              Remove common local artifacts"
+	@echo ""
+	@echo "Variables for Unraid targets:"
+	@echo "  IMAGE=<registry/repo[:tag]>"
+	@echo "  VERSION_BUMP=auto|patch|minor|major|none (default: auto)"
+	@echo "  BASE_VERSION=x.y.z (default: 0.0.0)"
+	@echo "  UNRAID_ENV_FILE=deploy/unraid/.env.unraid"
 
 install:
 	$(PIP) install -r requirements.txt
@@ -89,16 +98,29 @@ docker-run-unraid:
 		tessiture:latest
 
 unraid-build:
-	bash deploy/unraid/scripts/build.sh $(if $(IMAGE),--image $(IMAGE),)
+	bash deploy/unraid/scripts/build.sh \
+		$(if $(IMAGE),--image $(IMAGE),) \
+		--env-file $(UNRAID_ENV_FILE) \
+		--version-bump $(VERSION_BUMP) \
+		--base-version $(BASE_VERSION)
 
 unraid-build-push:
-	bash deploy/unraid/scripts/build.sh --image $(IMAGE) --push
+	bash deploy/unraid/scripts/build.sh \
+		--image $(IMAGE) \
+		--env-file $(UNRAID_ENV_FILE) \
+		--version-bump $(VERSION_BUMP) \
+		--base-version $(BASE_VERSION) \
+		--push
 
 unraid-deploy:
 	bash deploy/unraid/scripts/deploy.sh
 
 unraid-one-shot:
-	bash deploy/unraid/scripts/one-shot.sh $(if $(IMAGE),--image $(IMAGE),)
+	bash deploy/unraid/scripts/one-shot.sh \
+		$(if $(IMAGE),--image $(IMAGE),) \
+		--env-file $(UNRAID_ENV_FILE) \
+		--version-bump $(VERSION_BUMP) \
+		--base-version $(BASE_VERSION)
 
 clean:
 	rm -rf .pytest_cache .mypy_cache .ruff_cache frontend/node_modules frontend/dist
