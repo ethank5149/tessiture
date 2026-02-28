@@ -323,15 +323,35 @@ function App() {
 
       <div id="main-content" className="app-shell__content" tabIndex={-1}>
         {activeView === APP_VIEWS.upload ? (
-          <div id="panel-upload" role="tabpanel" aria-labelledby="tab-upload" className="app-shell__panel">
-            <AudioUploader
-              onSubmit={submitUploadJob}
-              isSubmitting={isSubmitting}
+          <>
+            <div id="panel-upload" role="tabpanel" aria-labelledby="tab-upload" className="app-shell__panel">
+              <AudioUploader
+                onSubmit={submitUploadJob}
+                isSubmitting={isSubmitting}
+                jobId={jobId}
+                status={status}
+                error={error}
+              />
+            </div>
+
+            <AnalysisStatus
               jobId={jobId}
               status={status}
               error={error}
+              isPolling={isPolling}
+              isFetchingResults={isFetchingResults}
             />
-          </div>
+
+            <AnalysisResults
+              results={results}
+              status={status}
+              error={error}
+              isFetchingResults={isFetchingResults}
+              onDownloadCsv={() => downloadResults("csv")}
+              onDownloadJson={() => downloadResults("json")}
+              onDownloadPdf={() => downloadResults("pdf")}
+            />
+          </>
         ) : null}
 
         {activeView === APP_VIEWS.examples ? (
@@ -346,24 +366,6 @@ function App() {
             />
           </div>
         ) : null}
-
-        <AnalysisStatus
-          jobId={jobId}
-          status={status}
-          error={error}
-          isPolling={isPolling}
-          isFetchingResults={isFetchingResults}
-        />
-
-        <AnalysisResults
-          results={results}
-          status={status}
-          error={error}
-          isFetchingResults={isFetchingResults}
-          onDownloadCsv={() => downloadResults("csv")}
-          onDownloadJson={() => downloadResults("json")}
-          onDownloadPdf={() => downloadResults("pdf")}
-        />
       </div>
     </main>
   );

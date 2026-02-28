@@ -191,6 +191,9 @@ describe("App example gallery wiring", () => {
 
     await user.click(screen.getByRole("tab", { name: "Example gallery" }));
 
+    expect(screen.queryByRole("heading", { name: "Analysis status" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Analysis results" })).not.toBeInTheDocument();
+
     const selectButton = await screen.findByRole("button", {
       name: "Select example track: Demo Example by Demo Artist",
     });
