@@ -71,6 +71,18 @@ function App() {
 
   const pollingRef = useRef(null);
 
+  const liveStatusMessage = error
+    ? `Error: ${error}`
+    : isFetchingResults
+      ? "Fetching analysis results."
+      : isSubmitting
+        ? "Submitting audio file for analysis."
+        : isPolling
+          ? `Analysis status: ${status?.status ?? "queued"}.`
+          : status?.status === "completed"
+            ? "Analysis completed."
+            : "";
+
   const resetJob = useCallback(() => {
     setJobId(null);
     setStatus(null);
@@ -202,6 +214,14 @@ function App() {
 
   return (
     <main className="app-shell">
+      <a className="skip-link" href="#main-content">Skip to main content</a>
+
+      {liveStatusMessage ? (
+        <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+          {liveStatusMessage}
+        </p>
+      ) : null}
+
       <header className="app-shell__header">
         <h1 className="app-shell__title">Tessitura Analysis</h1>
         <p className="app-shell__subtitle">
@@ -209,7 +229,7 @@ function App() {
         </p>
       </header>
 
-      <div className="app-shell__content">
+      <div id="main-content" className="app-shell__content" tabIndex={-1}>
         <AudioUploader
           onSubmit={submitJob}
           isSubmitting={isSubmitting}

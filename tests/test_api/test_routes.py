@@ -1,6 +1,8 @@
 import asyncio
+import sys
 import time
 from pathlib import Path
+import types
 
 from fastapi.testclient import TestClient
 
@@ -131,3 +133,62 @@ def test_results_downloads_csv_and_pdf(tmp_path, monkeypatch) -> None:
         assert pdf_response.headers["content-type"].startswith("application/pdf")
 
     _reset_job_state()
+
+
+def test_analyze_accepts_opus_upload(tmp_path, monkeypatch) -> None:
+    from api import routes
+
+    _reset_job_state()
+    routes.UPLOAD_DIR = tmp_path / "uploads"
+    routes.OUTPUT_DIR = tmp_path / "outputs"
+
+    async def fake_pipeline(file_path: str, metadata=None):
+        assert file_path.endswith(".opus")
+        routes.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        stem = Path(file_path).stem
+        json_path = routes.OUTPUT_DIR / f"{stem}.json"
+        json_path.write_text("{}", encoding="utf-8")
+        return {
+            "metadata": {
+                "filename": (metadata or {}).get("filename"),
+                "content_type": (metadata or {}).get("content_type"),
+            },
+            "summary": {"f0_min": 220.0, "f0_max": 220.0},
+            "files": {"json": str(json_path)},
+            "result_path": str(json_path),
+        }
+
+    monkeypatch.setattr(routes, "analysis_pipeline", fake_pipeline)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/analyze",
+            files={"audio": ("sample.opus", b"OPUSDATA", "audio/opus")},
+        )
+        assert response.status_code == 200
+        job_id = response.json()["job_id"]
+        status = _wait_for_completion(client, job_id)
+        assert status["status"] == "completed"
+
+        result_response = client.get(f"/results/{job_id}?format=json")
+        assert result_response.status_code == 200
+        payload = result_response.json()
+        assert payload["metadata"]["filename"] == "sample.opus"
+        assert payload["metadata"]["content_type"] == "audio/opus"
+
+    _reset_job_state()
+
+
+def test_decode_audio_file_opus_failure_is_explicit(monkeypatch) -> None:
+    from api import routes
+
+    dummy_librosa = types.SimpleNamespace(load=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("no decoder")))
+    monkeypatch.setitem(sys.modules, "librosa", dummy_librosa)
+
+    try:
+        routes._decode_audio_file("/tmp/broken.opus")
+        raise AssertionError("Expected Opus decode failure")
+    except RuntimeError as exc:
+        message = str(exc)
+        assert "Failed to decode Opus audio" in message
+        assert "FFmpeg or libsndfile" in message

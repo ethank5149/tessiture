@@ -1,3 +1,4 @@
+import { useId } from "react";
 import PitchCurve from "./PitchCurve";
 import PianoRoll from "./PianoRoll";
 import TessituraHeatmap from "./TessituraHeatmap";
@@ -13,6 +14,19 @@ const formatValue = (value) => {
   return String(value);
 };
 
+const normalizeConfidence = (value) => {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+  if (value >= 0 && value <= 1) {
+    return value;
+  }
+  if (value > 1 && value <= 100) {
+    return value / 100;
+  }
+  return null;
+};
+
 function AnalysisResults({
   results = null,
   status = null,
@@ -22,6 +36,7 @@ function AnalysisResults({
   onDownloadJson,
   onDownloadPdf,
 }) {
+  const titleId = useId();
   const hasResults = Boolean(results && Object.keys(results).length > 0);
 
   const summary = results?.summary ?? results?.stats ?? results?.tessitura ?? null;
@@ -30,11 +45,12 @@ function AnalysisResults({
   const f0Max = results?.pitch?.f0_max ?? summary?.f0_max ?? summary?.max_f0;
   const tessitura = summary?.tessitura_range ?? summary?.range;
   const confidence = summary?.confidence ?? summary?.overall_confidence;
+  const normalizedConfidence = normalizeConfidence(confidence);
 
   return (
-    <section className="card results" aria-live="polite">
+    <section className="card results" aria-labelledby={titleId} aria-busy={isFetchingResults}>
       <header className="card__header">
-        <h2 className="card__title">Analysis results</h2>
+        <h2 id={titleId} className="card__title">Analysis results</h2>
         <p className="card__meta">
           {status?.status ? `Status: ${status.status}` : "Waiting for completed analysis."}
         </p>
@@ -66,7 +82,22 @@ function AnalysisResults({
               </div>
               <div className="summary-list__item">
                 <dt>Confidence</dt>
-                <dd>{formatValue(confidence)}</dd>
+                <dd className="summary-list__confidence">
+                  <span>{formatValue(confidence)}</span>
+                  {normalizedConfidence !== null ? (
+                    <meter
+                      className="summary-list__meter"
+                      min={0}
+                      max={1}
+                      low={0.5}
+                      high={0.8}
+                      optimum={1}
+                      value={normalizedConfidence}
+                    >
+                      {(normalizedConfidence * 100).toFixed(0)}%
+                    </meter>
+                  ) : null}
+                </dd>
               </div>
             </dl>
           </div>

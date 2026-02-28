@@ -72,7 +72,7 @@ Audio Upload
 
 - Python `>=3.11,<3.13`
 - Node.js 20+ and npm
-- Linux shared library `libsndfile` (required by audio stack; installed automatically in Docker)
+- Linux audio runtime dependencies: `libsndfile` and `ffmpeg` (`ffmpeg` is required for reliable Opus decoding in containerized deployments and is installed automatically in Docker)
 
 ### 2) Install dependencies
 
@@ -111,9 +111,9 @@ If `VITE_API_BASE_URL` is empty, the frontend uses relative paths (`/analyze`, `
 Uploads an audio file and schedules background analysis.
 
 - **Multipart field**: `audio`
-- **Accepted extensions** (default): `.wav`, `.mp3`, `.flac`, `.m4a`
+- **Accepted extensions** (default): `.wav`, `.mp3`, `.flac`, `.m4a`, `.opus`
 - **Accepted MIME types** (default):
-  `audio/wav`, `audio/x-wav`, `audio/mpeg`, `audio/flac`, `audio/x-flac`, `audio/mp4`
+  `audio/wav`, `audio/x-wav`, `audio/mpeg`, `audio/flac`, `audio/x-flac`, `audio/mp4`, `audio/opus`, `audio/x-opus`, `audio/ogg`, `application/ogg`
 
 Response:
 
@@ -219,12 +219,19 @@ Primary environment variables (see `.env.example`):
 | `TESSITURE_UPLOAD_DIR` | Upload file storage path | `/data/uploads` |
 | `TESSITURE_OUTPUT_DIR` | Output artifact path | `/data/outputs` |
 | `TESSITURE_UPLOAD_MAX_BYTES` | Max upload size in bytes | `26214400` |
-| `TESSITURE_UPLOAD_EXTENSIONS` | Allowed file extensions | `.wav,.mp3,.flac,.m4a` |
-| `TESSITURE_UPLOAD_MIME_TYPES` | Allowed MIME list | audio mime list |
+| `TESSITURE_UPLOAD_EXTENSIONS` | Allowed file extensions | `.wav,.mp3,.flac,.m4a,.opus` |
+| `TESSITURE_UPLOAD_MIME_TYPES` | Allowed MIME list | `audio/wav,audio/x-wav,audio/mpeg,audio/flac,audio/x-flac,audio/mp4,audio/opus,audio/x-opus,audio/ogg,application/ogg` |
 | `TESSITURE_RATE_LIMIT_CAPACITY` | Token bucket capacity | `10` |
 | `TESSITURE_RATE_LIMIT_REFILL_PER_SEC` | Refill rate (tokens/sec) | `0.5` |
 | `TESSITURE_CORS_ORIGINS` | Comma-separated CORS allowlist | `http://localhost,http://127.0.0.1` |
 | `VITE_API_BASE_URL` | Frontend absolute API base URL | empty |
+
+For operators, keep upload validation variables aligned with [` .env.example`](.env.example):
+
+```bash
+TESSITURE_UPLOAD_EXTENSIONS=.wav,.mp3,.flac,.m4a,.opus
+TESSITURE_UPLOAD_MIME_TYPES=audio/wav,audio/x-wav,audio/mpeg,audio/flac,audio/x-flac,audio/mp4,audio/opus,audio/x-opus,audio/ogg,application/ogg
+```
 
 Additional backend tuning variables are also supported:
 
@@ -296,6 +303,12 @@ Internet -> Cloudflare Tunnel (externally managed/shared cloudflared) -> Tessitu
 
 - Compose stack: `deploy/unraid/docker-compose.yml`
 - Env template: `deploy/unraid/.env.unraid.example`
+
+### Opus decoding requirement (containers)
+
+- Container images must include `ffmpeg` for reliable Opus decoding at runtime.
+- The project Docker image already installs `ffmpeg` and `libsndfile1`.
+- If Opus decode support is unavailable at runtime, `POST /analyze` fails with an explicit dependency error message.
 
 ### Unraid maintenance helpers (repo root)
 

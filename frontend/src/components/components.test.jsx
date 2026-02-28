@@ -15,6 +15,9 @@ describe("AudioUploader", () => {
     render(<AudioUploader onSubmit={onSubmit} isSubmitting={false} />);
 
     const input = screen.getByLabelText("Audio file");
+    expect(input).toHaveAttribute("accept", "audio/*,.wav,.mp3,.flac,.m4a,.opus");
+    expect(screen.getByText(/Supported formats:/)).toHaveTextContent("Opus");
+
     const file = new File(["wave"], "sample.wav", { type: "audio/wav" });
 
     await user.upload(input, file);

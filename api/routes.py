@@ -31,8 +31,11 @@ router = APIRouter()
 # Upload and output configuration
 UPLOAD_DIR = Path(os.getenv("TESSITURE_UPLOAD_DIR", "/tmp/tessiture_uploads"))
 OUTPUT_DIR = Path(os.getenv("TESSITURE_OUTPUT_DIR", "/tmp/tessiture_outputs"))
-DEFAULT_UPLOAD_EXTENSIONS = ".wav,.mp3,.flac,.m4a"
-DEFAULT_UPLOAD_MIME_TYPES = "audio/wav,audio/x-wav,audio/mpeg,audio/flac,audio/x-flac,audio/mp4"
+DEFAULT_UPLOAD_EXTENSIONS = ".wav,.mp3,.flac,.m4a,.opus"
+DEFAULT_UPLOAD_MIME_TYPES = (
+    "audio/wav,audio/x-wav,audio/mpeg,audio/flac,audio/x-flac,audio/mp4,"
+    "audio/opus,audio/x-opus,audio/ogg,application/ogg"
+)
 ALLOWED_EXTENSIONS: Set[str] = {
     (ext if ext.startswith(".") else f".{ext}")
     for ext in (
@@ -398,18 +401,33 @@ def _build_summary(result: Mapping[str, Any], duration_seconds: float) -> Dict[s
     }
 
 
-def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+def _decode_audio_file(file_path: str) -> tuple[np.ndarray, int]:
     try:
         import librosa
     except Exception as exc:  # pragma: no cover - dependency/environment guard
         raise RuntimeError("librosa is required for audio decoding.") from exc
 
+    suffix = Path(file_path).suffix.lower()
+    try:
+        audio, sample_rate = librosa.load(file_path, sr=None, mono=False)
+    except Exception as exc:
+        if suffix == ".opus":
+            raise RuntimeError(
+                "Failed to decode Opus audio. Ensure FFmpeg or libsndfile with Opus support is "
+                "installed and the input is a valid Opus stream."
+            ) from exc
+        raise RuntimeError(f"Failed to decode audio file '{Path(file_path).name}'.") from exc
+
+    return np.asarray(audio), int(sample_rate)
+
+
+def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
     _ensure_output_dir()
     warnings: List[str] = []
 
-    audio, sample_rate = librosa.load(file_path, sr=None, mono=False)
+    audio, sample_rate = _decode_audio_file(file_path)
     preprocessed = preprocess_audio(
-        np.asarray(audio),
+        audio,
         sample_rate=int(sample_rate),
         target_sr=TARGET_SAMPLE_RATE,
         mono=True,
