@@ -2,12 +2,28 @@
   font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
   line-height: 1.4;
   font-weight: 400;
-  color: #1f2937;
-  background: #f6f8fb;
+  --bg-canvas: #070b14;
+  --bg-gradient: #162033;
+  --surface-1: #0f1728;
+  --surface-2: #152038;
+  --surface-3: #1a2742;
+  --border-subtle: #273557;
+  --text-primary: #e6ecff;
+  --text-muted: #a7b3d1;
+  --text-soft: #8d9ab8;
+  --brand: #60a5fa;
+  --brand-strong: #3b82f6;
+  --brand-contrast: #06101f;
+  --danger: #fb7185;
+  --success: #4ade80;
+  --focus: #93c5fd;
+  --shadow: 0 14px 36px rgba(2, 6, 23, 0.42);
+  color: var(--text-primary);
+  background: var(--bg-canvas);
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
-  color-scheme: light;
-  accent-color: #2563eb;
+  color-scheme: dark;
+  accent-color: var(--brand-strong);
 }
 
 * {
@@ -23,9 +39,8 @@ body,
 }
 
 body {
-  background: #f6f8fb;
-  background-image: radial-gradient(circle at 15% 10%, #eff6ff 0%, #f6f8fb 40%);
-  color: #1f2937;
+  background: radial-gradient(circle at 15% 10%, var(--bg-gradient) 0%, var(--bg-canvas) 42%);
+  color: var(--text-primary);
   min-height: 100vh;
   min-height: 100dvh;
 }
@@ -54,8 +69,8 @@ textarea {
   inset-block-start: 0.5rem;
   inset-inline-start: 0.5rem;
   z-index: 1000;
-  background: #111827;
-  color: #fff;
+  background: var(--brand-strong);
+  color: #ffffff;
   padding: 0.5rem 0.75rem;
   border-radius: 0.5rem;
   transform: translateY(-150%);
@@ -86,7 +101,7 @@ textarea {
 
 .app-shell__subtitle {
   margin-top: 0.35rem;
-  color: #4b5563;
+  color: var(--text-muted);
   max-width: 65ch;
   text-wrap: pretty;
 }
@@ -99,11 +114,11 @@ textarea {
 }
 
 .card {
-  background: #fff;
-  border: 1px solid #e5e7eb;
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
   border-radius: 12px;
   padding: 1rem;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  box-shadow: var(--shadow);
   content-visibility: auto;
   contain-intrinsic-size: 320px;
 }
@@ -119,25 +134,30 @@ textarea {
 
 .card__meta {
   margin: 0.25rem 0 0;
-  color: #6b7280;
+  color: var(--text-soft);
   font-size: 0.9rem;
 }
 
 .button {
   appearance: none;
-  border: 1px solid #d1d5db;
-  background: #fff;
-  color: #111827;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-2);
+  color: var(--text-primary);
   padding: 0.5rem 0.85rem;
   border-radius: 8px;
   cursor: pointer;
   min-height: 44px;
   touch-action: manipulation;
-  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
+  transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, transform 100ms ease;
 }
 
 .button:hover:not(:disabled) {
-  background: #f9fafb;
+  background: var(--surface-3);
+  border-color: #335084;
+}
+
+.button:active:not(:disabled) {
+  transform: translateY(1px);
 }
 
 .button:disabled {
@@ -146,25 +166,30 @@ textarea {
 }
 
 .button--primary {
-  background: #2563eb;
-  border-color: #2563eb;
-  color: #fff;
+  background: var(--brand-strong);
+  border-color: var(--brand-strong);
+  color: #ffffff;
 }
 
 .button--primary:hover:not(:disabled) {
-  background: #1d4ed8;
+  background: #2563eb;
+  border-color: #2563eb;
 }
 
 .button--secondary {
-  background: #374151;
-  border-color: #374151;
-  color: #fff;
+  background: #273754;
+  border-color: #31476f;
+  color: #dbe8ff;
+}
+
+.button--secondary:hover:not(:disabled) {
+  background: #31476f;
 }
 
 .button:focus-visible,
 input:focus-visible,
 a:focus-visible {
-  outline: 3px solid #93c5fd;
+  outline: 3px solid var(--focus);
   outline-offset: 2px;
 }
 
@@ -192,9 +217,9 @@ a:focus-visible {
   justify-content: space-between;
   gap: 0.75rem;
   padding: 0.65rem;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--border-subtle);
   border-radius: 8px;
-  background: #f8fafc;
+  background: var(--surface-2);
 }
 
 .examples__info {
@@ -209,12 +234,12 @@ a:focus-visible {
 
 .examples__name {
   font-weight: 600;
-  color: #111827;
+  color: var(--text-primary);
 }
 
 .examples__meta,
 .examples__helper {
-  color: #6b7280;
+  color: var(--text-muted);
   font-size: 0.9rem;
   overflow-wrap: anywhere;
 }
@@ -228,12 +253,14 @@ a:focus-visible {
 .uploader__input {
   width: 100%;
   font-size: 16px;
+  color: var(--text-primary);
 }
 
 .uploader__input::file-selector-button {
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--border-subtle);
   border-radius: 0.5rem;
-  background: #f9fafb;
+  background: var(--surface-2);
+  color: var(--text-primary);
   padding: 0.4rem 0.65rem;
   margin-right: 0.65rem;
   cursor: pointer;
@@ -245,19 +272,19 @@ a:focus-visible {
 .results__empty,
 .chart__placeholder {
   margin: 0;
-  color: #6b7280;
+  color: var(--text-muted);
 }
 
 .uploader__error,
 .status__error,
 .results__error {
   margin: 0;
-  color: #b91c1c;
+  color: var(--danger);
 }
 
 .uploader__filename {
   margin: 0;
-  color: #111827;
+  color: var(--text-primary);
 }
 
 .status__row {
@@ -269,7 +296,7 @@ a:focus-visible {
 
 .status__label {
   margin: 0;
-  color: #4b5563;
+  color: var(--text-muted);
 }
 
 .status__row dd {
@@ -284,14 +311,14 @@ a:focus-visible {
 }
 
 .summary-list__item {
-  background: #f8fafc;
-  border: 1px solid #e5e7eb;
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
   border-radius: 8px;
   padding: 0.5rem;
 }
 
 .summary-list__item dt {
-  color: #6b7280;
+  color: var(--text-muted);
   font-size: 0.8rem;
 }
 
@@ -308,7 +335,7 @@ a:focus-visible {
 .summary-list__meter {
   inline-size: 100%;
   block-size: 0.75rem;
-  accent-color: #2563eb;
+  accent-color: var(--brand-strong);
 }
 
 .results__summary {
@@ -334,14 +361,14 @@ a:focus-visible {
 .chart__svg {
   width: 100%;
   height: 180px;
-  color: #2563eb;
+  color: var(--brand);
   display: block;
 }
 
 .chart__footer {
   display: flex;
   justify-content: space-between;
-  color: #6b7280;
+  color: var(--text-soft);
   font-size: 0.85rem;
   margin-top: 0.5rem;
 }
@@ -352,12 +379,12 @@ a:focus-visible {
 }
 
 .status__value--completed {
-  color: #166534;
+  color: var(--success);
 }
 
 .status__value--failed,
 .status__value--error {
-  color: #b91c1c;
+  color: var(--danger);
 }
 
 @media (max-width: 640px) {
@@ -393,14 +420,14 @@ a:focus-visible {
 
 @supports (backdrop-filter: blur(6px)) {
   .card {
-    background: color-mix(in oklab, white 88%, #eff6ff);
+    background: color-mix(in oklab, var(--surface-1) 86%, #0b1324);
     backdrop-filter: blur(8px);
   }
 }
 
 @supports not (color-mix(in oklab, white 88%, #eff6ff)) {
   .card {
-    background: #ffffff;
+    background: var(--surface-1);
   }
 }
 

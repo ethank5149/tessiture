@@ -16,6 +16,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     TESSITURE_PORT=8000 \
     TESSITURE_UPLOAD_DIR=/data/uploads \
     TESSITURE_OUTPUT_DIR=/data/outputs \
+    TESSITURE_EXAMPLES_DIR=/app/examples/tracks \
     TESSITURE_FRONTEND_DIST=/app/frontend/dist
 
 WORKDIR /app
@@ -32,6 +33,7 @@ COPY analysis/ ./analysis/
 COPY api/ ./api/
 COPY calibration/ ./calibration/
 COPY reporting/ ./reporting/
+COPY examples/ ./examples/
 COPY README.md ./README.md
 COPY pyproject.toml ./pyproject.toml
 

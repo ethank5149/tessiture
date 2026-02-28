@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import time
 from pathlib import Path
@@ -27,6 +28,7 @@ from calibration.monte_carlo.uncertainty_analyzer import summarize_uncertainty
 from reporting import generate_csv_report, generate_json_report, generate_pdf_report
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # Upload and output configuration
 UPLOAD_DIR = Path(os.getenv("TESSITURE_UPLOAD_DIR", "/tmp/tessiture_uploads"))
@@ -104,19 +106,38 @@ def _list_available_example_tracks() -> List[Dict[str, Any]]:
     available: List[Dict[str, Any]] = []
     examples_root = EXAMPLES_DIR.resolve()
 
+    logger.info(
+        "example_gallery.discovery_start examples_root=%s configured_examples=%d",
+        examples_root,
+        len(EXAMPLE_TRACKS),
+    )
+
     for example in EXAMPLE_TRACKS:
         filename = str(example.get("filename") or "").strip()
         if not filename:
+            logger.warning("example_gallery.skipped_empty_filename example=%s", example)
             continue
         candidate = (examples_root / filename).resolve()
         try:
             candidate.relative_to(examples_root)
         except ValueError:
+            logger.warning(
+                "example_gallery.skipped_outside_root filename=%s candidate=%s root=%s",
+                filename,
+                candidate,
+                examples_root,
+            )
             continue
         if not candidate.is_file():
+            logger.warning(
+                "example_gallery.missing_file filename=%s candidate=%s",
+                filename,
+                candidate,
+            )
             continue
         available.append(_build_example_payload(example, candidate))
 
+    logger.info("example_gallery.discovery_complete available_examples=%d", len(available))
     return available
 
 
@@ -705,7 +726,9 @@ async def analysis_pipeline(
 
 @router.get("/examples")
 def list_example_tracks() -> Dict[str, Any]:
-    return {"examples": _list_available_example_tracks()}
+    examples = _list_available_example_tracks()
+    logger.info("example_gallery.endpoint_response available_examples=%d", len(examples))
+    return {"examples": examples}
 
 
 @router.post("/analyze/example")
