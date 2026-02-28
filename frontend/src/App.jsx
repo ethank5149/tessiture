@@ -2,11 +2,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import AudioUploader from "./components/AudioUploader";
 import AnalysisStatus from "./components/AnalysisStatus";
 import AnalysisResults from "./components/AnalysisResults";
+import ExampleGallery from "./components/ExampleGallery";
 import {
   downloadJobResults,
+  fetchExampleTracks,
   fetchJobResults,
   fetchJobStatus,
   submitAnalysisJob,
+  submitExampleAnalysisJob,
 } from "./api";
 
 const POLL_INTERVAL_MS = 2000;
@@ -68,6 +71,9 @@ function App() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isPolling, setIsPolling] = useState(false);
   const [isFetchingResults, setIsFetchingResults] = useState(false);
+  const [exampleTracks, setExampleTracks] = useState([]);
+  const [isLoadingExamples, setIsLoadingExamples] = useState(false);
+  const [exampleError, setExampleError] = useState(null);
 
   const pollingRef = useRef(null);
 
@@ -76,7 +82,7 @@ function App() {
     : isFetchingResults
       ? "Fetching analysis results."
       : isSubmitting
-        ? "Submitting audio file for analysis."
+        ? "Submitting analysis job."
         : isPolling
           ? `Analysis status: ${status?.status ?? "queued"}.`
           : status?.status === "completed"
@@ -90,14 +96,14 @@ function App() {
     setError(null);
   }, []);
 
-  const submitJob = useCallback(async (file) => {
+  const submitJob = useCallback(async (submitter) => {
     setIsSubmitting(true);
     setError(null);
     setResults(null);
     setStatus(null);
 
     try {
-      const response = await submitAnalysisJob(file);
+      const response = await submitter();
       const nextJobId = response?.job_id ?? null;
       setJobId(nextJobId);
       if (nextJobId) {
@@ -112,6 +118,16 @@ function App() {
       setIsSubmitting(false);
     }
   }, []);
+
+  const submitUploadJob = useCallback(
+    async (file) => submitJob(() => submitAnalysisJob(file)),
+    [submitJob]
+  );
+
+  const submitExampleJob = useCallback(
+    async (exampleId) => submitJob(() => submitExampleAnalysisJob(exampleId)),
+    [submitJob]
+  );
 
   const fetchResults = useCallback(
     async (targetId = jobId) => {
@@ -155,6 +171,35 @@ function App() {
     },
     [jobId]
   );
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadExamples = async () => {
+      setIsLoadingExamples(true);
+      setExampleError(null);
+      try {
+        const examples = await fetchExampleTracks();
+        if (isMounted) {
+          setExampleTracks(examples);
+        }
+      } catch (loadError) {
+        if (isMounted) {
+          setExampleError(getErrorMessage(loadError, "Unable to load example tracks."));
+        }
+      } finally {
+        if (isMounted) {
+          setIsLoadingExamples(false);
+        }
+      }
+    };
+
+    loadExamples();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!jobId) {
@@ -225,17 +270,27 @@ function App() {
       <header className="app-shell__header">
         <h1 className="app-shell__title">Tessitura Analysis</h1>
         <p className="app-shell__subtitle">
-          Upload an audio file to generate tessitura insights and visualizations.
+          Upload an audio file or choose a server-hosted example to generate tessitura insights and visualizations.
         </p>
       </header>
 
       <div id="main-content" className="app-shell__content" tabIndex={-1}>
         <AudioUploader
-          onSubmit={submitJob}
+          onSubmit={submitUploadJob}
           isSubmitting={isSubmitting}
           jobId={jobId}
           status={status}
           error={error}
+        />
+
+        <ExampleGallery
+          examples={exampleTracks}
+          isLoading={isLoadingExamples}
+          onAnalyze={submitExampleJob}
+          isSubmitting={isSubmitting}
+          jobId={jobId}
+          status={status}
+          error={exampleError ?? error}
         />
 
         <AnalysisStatus

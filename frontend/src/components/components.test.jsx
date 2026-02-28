@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import AnalysisResults from "./AnalysisResults";
 import AnalysisStatus from "./AnalysisStatus";
 import AudioUploader from "./AudioUploader";
+import ExampleGallery from "./ExampleGallery";
 
 describe("AudioUploader", () => {
   it("submits a selected audio file", async () => {
@@ -25,6 +26,41 @@ describe("AudioUploader", () => {
 
     expect(onSubmit).toHaveBeenCalledTimes(1);
     expect(onSubmit).toHaveBeenCalledWith(file);
+  });
+});
+
+describe("ExampleGallery", () => {
+  it("renders examples and submits selected example", async () => {
+    const user = userEvent.setup();
+    const onAnalyze = vi.fn().mockResolvedValue({ job_id: "job-2" });
+
+    render(
+      <ExampleGallery
+        examples={[
+          {
+            id: "demo-1",
+            display_name: "Demo Example",
+            filename: "demo.opus",
+            content_type: "audio/opus",
+          },
+        ]}
+        isLoading={false}
+        onAnalyze={onAnalyze}
+        isSubmitting={false}
+      />
+    );
+
+    expect(screen.getByText("Demo Example")).toBeInTheDocument();
+    expect(screen.getByText("demo.opus")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Analyze example" }));
+    expect(onAnalyze).toHaveBeenCalledTimes(1);
+    expect(onAnalyze).toHaveBeenCalledWith("demo-1");
+  });
+
+  it("shows loading state", () => {
+    render(<ExampleGallery examples={[]} isLoading onAnalyze={vi.fn()} />);
+    expect(screen.getByText("Loading examples…")).toBeInTheDocument();
   });
 });
 

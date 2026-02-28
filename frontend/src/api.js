@@ -178,6 +178,29 @@ export const submitAnalysisJob = async (file) => {
   return response.json();
 };
 
+export const fetchExampleTracks = async () => {
+  const response = await ensureOk(
+    await fetch(buildUrl("/examples"), {
+      method: "GET",
+    })
+  );
+  const payload = await response.json();
+  return Array.isArray(payload?.examples) ? payload.examples : [];
+};
+
+export const submitExampleAnalysisJob = async (exampleId) => {
+  if (!exampleId) {
+    throw new Error("Example ID is required.");
+  }
+  const query = new URLSearchParams({ example_id: exampleId }).toString();
+  const response = await ensureOk(
+    await fetch(buildUrl(`/analyze/example?${query}`), {
+      method: "POST",
+    })
+  );
+  return response.json();
+};
+
 export const fetchJobStatus = async (jobId) => {
   if (!jobId) {
     throw new Error("Job ID is required.");

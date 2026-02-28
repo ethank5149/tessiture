@@ -31,6 +31,12 @@ router = APIRouter()
 # Upload and output configuration
 UPLOAD_DIR = Path(os.getenv("TESSITURE_UPLOAD_DIR", "/tmp/tessiture_uploads"))
 OUTPUT_DIR = Path(os.getenv("TESSITURE_OUTPUT_DIR", "/tmp/tessiture_outputs"))
+EXAMPLES_DIR = Path(
+    os.getenv(
+        "TESSITURE_EXAMPLES_DIR",
+        str(Path(__file__).resolve().parents[1] / "examples" / "tracks"),
+    )
+)
 DEFAULT_UPLOAD_EXTENSIONS = ".wav,.mp3,.flac,.m4a,.opus"
 DEFAULT_UPLOAD_MIME_TYPES = (
     "audio/wav,audio/x-wav,audio/mpeg,audio/flac,audio/x-flac,audio/mp4,"
@@ -66,6 +72,15 @@ _RATE_LIMIT_BUCKETS: Dict[str, Dict[str, float]] = {}
 
 NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 
+EXAMPLE_TRACKS: List[Dict[str, str]] = [
+    {
+        "id": "ariana-dangerous-woman-acapella",
+        "display_name": "Ariana Grande — Dangerous Woman (A Cappella)",
+        "filename": "Ariana Grande - Dangerous Woman (A Cappella).opus",
+        "content_type": "audio/opus",
+    }
+]
+
 
 def _ensure_upload_dir() -> None:
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -73,6 +88,62 @@ def _ensure_upload_dir() -> None:
 
 def _ensure_output_dir() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _build_example_payload(example: Mapping[str, Any], file_path: Path) -> Dict[str, Any]:
+    return {
+        "id": str(example.get("id") or ""),
+        "display_name": str(example.get("display_name") or file_path.stem),
+        "filename": file_path.name,
+        "content_type": str(example.get("content_type") or "audio/*"),
+        "size_bytes": int(file_path.stat().st_size),
+    }
+
+
+def _list_available_example_tracks() -> List[Dict[str, Any]]:
+    available: List[Dict[str, Any]] = []
+    examples_root = EXAMPLES_DIR.resolve()
+
+    for example in EXAMPLE_TRACKS:
+        filename = str(example.get("filename") or "").strip()
+        if not filename:
+            continue
+        candidate = (examples_root / filename).resolve()
+        try:
+            candidate.relative_to(examples_root)
+        except ValueError:
+            continue
+        if not candidate.is_file():
+            continue
+        available.append(_build_example_payload(example, candidate))
+
+    return available
+
+
+def _resolve_example_track(example_id: str) -> tuple[Dict[str, Any], Path]:
+    normalized_id = (example_id or "").strip()
+    if not normalized_id:
+        raise HTTPException(status_code=400, detail="Example ID is required.")
+
+    examples_root = EXAMPLES_DIR.resolve()
+    for example in EXAMPLE_TRACKS:
+        configured_id = str(example.get("id") or "").strip()
+        if configured_id != normalized_id:
+            continue
+
+        filename = str(example.get("filename") or "").strip()
+        candidate = (examples_root / filename).resolve()
+        try:
+            candidate.relative_to(examples_root)
+        except ValueError as exc:
+            raise HTTPException(status_code=500, detail="Example catalog is misconfigured.") from exc
+
+        if not candidate.is_file():
+            raise HTTPException(status_code=404, detail="Example track is unavailable.")
+
+        return _build_example_payload(example, candidate), candidate
+
+    raise HTTPException(status_code=404, detail="Example track not found.")
 
 
 async def _save_upload(upload: UploadFile) -> Path:
@@ -569,6 +640,9 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
             "input_path": file_path,
             "filename": metadata.get("filename") if metadata else None,
             "content_type": metadata.get("content_type") if metadata else None,
+            "input_type": metadata.get("source") if metadata else "upload",
+            "example_id": metadata.get("example_id") if metadata else None,
+            "original_filename": metadata.get("original_filename") if metadata else None,
             "sample_rate": sample_rate,
             "hop_length": STFT_HOP,
             "frame_rate": float(sample_rate / max(STFT_HOP, 1)),
@@ -629,6 +703,36 @@ async def analysis_pipeline(
     return _run_analysis_pipeline(file_path=file_path, metadata=metadata)
 
 
+@router.get("/examples")
+def list_example_tracks() -> Dict[str, Any]:
+    return {"examples": _list_available_example_tracks()}
+
+
+@router.post("/analyze/example")
+async def analyze_example_audio(
+    request: Request,
+    example_id: str = Query(..., min_length=1),
+) -> Dict[str, Any]:
+    _rate_limit_check(request)
+    example, file_path = _resolve_example_track(example_id)
+    job_id = job_manager.create_job(
+        str(file_path),
+        analysis_pipeline,
+        metadata={
+            "filename": example["display_name"],
+            "content_type": example["content_type"],
+            "source": "example",
+            "example_id": example["id"],
+            "original_filename": example["filename"],
+        },
+    )
+    return {
+        "job_id": job_id,
+        "status_url": f"/status/{job_id}",
+        "results_url": f"/results/{job_id}",
+    }
+
+
 @router.post("/analyze")
 async def analyze_audio(request: Request, audio: UploadFile = File(...)) -> Dict[str, Any]:
     _rate_limit_check(request)
@@ -636,7 +740,7 @@ async def analyze_audio(request: Request, audio: UploadFile = File(...)) -> Dict
     job_id = job_manager.create_job(
         str(file_path),
         analysis_pipeline,
-        metadata={"filename": audio.filename, "content_type": audio.content_type},
+        metadata={"filename": audio.filename, "content_type": audio.content_type, "source": "upload"},
     )
     return {
         "job_id": job_id,
