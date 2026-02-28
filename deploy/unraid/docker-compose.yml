@@ -40,4 +40,4 @@ networks:
     internal: true
   caddy_proxy:
     external: true
-    name: caddy_proxy
+    name: caddy-proxy
