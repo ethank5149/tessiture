@@ -297,6 +297,51 @@ Internet -> Cloudflare Tunnel (externally managed/shared cloudflared) -> Tessitu
 - Compose stack: `deploy/unraid/docker-compose.yml`
 - Env template: `deploy/unraid/.env.unraid.example`
 
+### Unraid maintenance helpers (repo root)
+
+These scripts provide repeatable one-shot maintenance flows for build/deploy operations.
+
+1) Create runtime env file once:
+
+```bash
+cp deploy/unraid/.env.unraid.example deploy/unraid/.env.unraid
+```
+
+2) Edit `deploy/unraid/.env.unraid` and set at minimum:
+
+- `TESSITURE_IMAGE`
+- `TESSITURE_CORS_ORIGINS`
+- `TESSITURE_UPLOAD_HOST_PATH`
+- `TESSITURE_OUTPUT_HOST_PATH`
+
+3) Run helpers:
+
+```bash
+# Build local-only image (default: tessiture:local)
+bash deploy/unraid/scripts/build.sh
+
+# Build a specific tag (optional push)
+bash deploy/unraid/scripts/build.sh --image ghcr.io/your-org/tessiture:latest --push
+
+# Deploy stack with deploy/unraid/.env.unraid
+bash deploy/unraid/scripts/deploy.sh
+
+# One-shot: build + deploy + health verification
+bash deploy/unraid/scripts/one-shot.sh
+```
+
+Optional Make targets:
+
+```bash
+make unraid-build
+make unraid-deploy
+make unraid-one-shot
+# push flow (requires IMAGE value)
+make unraid-build-push IMAGE=ghcr.io/your-org/tessiture:latest
+```
+
+`deploy.sh` always reads `TESSITURE_IMAGE` from `deploy/unraid/.env.unraid` for deployment. `one-shot.sh` enforces the same image alignment to avoid drift between build and deploy.
+
 This stack provides:
 
 - Tessiture service (no bundled cloudflared service)
