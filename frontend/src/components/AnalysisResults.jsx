@@ -116,25 +116,29 @@ function AnalysisResults({
       ) : (
         <>
           <div className="results__summary" aria-label="Summary metrics">
+            <p>
+              This summary highlights how long the recording is, the lowest and highest detected pitches,
+              your typical singing range (tessitura), and how confident the system is in these results.
+            </p>
             <dl className="summary-list">
               <div className="summary-list__item">
-                <dt>Duration (s)</dt>
+                <dt>Recording length (seconds)</dt>
                 <dd>{formatValue(duration)}</dd>
               </div>
               <div className="summary-list__item">
-                <dt>F0 min (Hz)</dt>
+                <dt>Lowest detected pitch (F0, Hz)</dt>
                 <dd>{formatValue(f0Min)}</dd>
               </div>
               <div className="summary-list__item">
-                <dt>F0 max (Hz)</dt>
+                <dt>Highest detected pitch (F0, Hz)</dt>
                 <dd>{formatValue(f0Max)}</dd>
               </div>
               <div className="summary-list__item">
-                <dt>Tessitura range</dt>
+                <dt>Comfortable singing range (tessitura)</dt>
                 <dd>{formatValue(tessitura)}</dd>
               </div>
               <div className="summary-list__item">
-                <dt>Confidence</dt>
+                <dt>Overall confidence score</dt>
                 <dd className="summary-list__confidence">
                   <span>{formatValue(confidence)}</span>
                   {normalizedConfidence !== null ? (
@@ -157,9 +161,13 @@ function AnalysisResults({
 
           {inferentialMetrics.length ? (
             <section className="results__inferential" aria-label="Inferential statistics">
-              <h3 className="results__inferential-title">Per-metric inferential statistics</h3>
+              <h3 className="results__inferential-title">How consistent each metric is (inferential statistics)</h3>
               <p className="results__inferential-meta">
-                Preset: {inferentialStatistics?.preset ?? "unknown"} · CI level: {formatValue(inferentialStatistics?.confidence_level)}
+                Analysis preset: {inferentialStatistics?.preset ?? "unknown"} · Confidence interval level: {formatValue(inferentialStatistics?.confidence_level)}
+              </p>
+              <p>
+                In the table below, “Estimate” is the best single value, “Confidence interval” is a likely range,
+                “p-value” helps indicate whether a difference is meaningful, and “Samples (N)” is how many data points were used.
               </p>
               <div className="results__inferential-table-wrap">
                 <table className="results__inferential-table">
@@ -167,9 +175,9 @@ function AnalysisResults({
                     <tr>
                       <th scope="col">Metric</th>
                       <th scope="col">Estimate</th>
-                      <th scope="col">95% CI</th>
-                      <th scope="col">p-value</th>
-                      <th scope="col">N</th>
+                      <th scope="col">Confidence interval (95%)</th>
+                      <th scope="col">p-value (significance)</th>
+                      <th scope="col">Samples (N)</th>
                     </tr>
                   </thead>
                   <tbody>

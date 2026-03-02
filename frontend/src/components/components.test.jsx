@@ -274,7 +274,7 @@ describe("AnalysisResults", () => {
     expect(screen.getByRole("button", { name: "Download CSV" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Download JSON" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Download PDF" })).toBeInTheDocument();
-    expect(screen.getByText("Per-metric inferential statistics")).toBeInTheDocument();
+    expect(screen.getByText("How consistent each metric is (inferential statistics)")).toBeInTheDocument();
     expect(screen.getByText("F0 Mean Hz")).toBeInTheDocument();
     expect(screen.getByText("0.008")).toBeInTheDocument();
   });
