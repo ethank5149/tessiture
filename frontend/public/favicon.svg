@@ -1,0 +1,26 @@
+<svg viewBox="0 0 240 240" xmlns="http://www.w3.org/2000/svg">
+<!-- Background -->
+<rect width="240" height="240" fill="#050505"/>
+<!-- Tessitura band (primary hero) -->
+<path d="M40 125 Q120 75 200 125
+         L200 145 Q120 95 40 145 Z"
+fill="#00e5ff" opacity="0.6"/>
+<!-- Inner envelope (subtle secondary guide) -->
+<path d="M50 120 Q120 80 190 130"
+stroke="#a0f0ff" stroke-width="3" fill="none" stroke-linecap="round" opacity="0.5"/>
+<!-- Vocal waveform (multi-trace, realistic micro-variations, extends beyond tessitura) -->
+<g fill="none" stroke-linecap="round">
+  <path d="M35 123 C48 88, 52 95, 70 126 C92 155, 115 148, 135 128 C157 100, 180 112, 200 125"
+        stroke="#00ffff" stroke-width="2.2"/>
+  <path d="M35 121 C50 90, 55 97, 72 128 C95 160, 117 150, 137 130 C160 102, 182 115, 202 127"
+        stroke="#00aaff" stroke-width="1.8" opacity="0.8"/>
+  <path d="M35 124 C47 85, 53 93, 69 125 C91 158, 114 149, 133 127 C156 98, 179 110, 199 123"
+        stroke="#0088ff" stroke-width="1.5" opacity="0.7"/>
+</g>
+<!-- Harmonics (uneven, multi-colored, amplitude scaled to waveform) -->
+<g fill="none" stroke-linecap="round">
+  <path d="M50 115 Q83 85 127 118 Q168 150 205 125" stroke="#ff4fd8" stroke-width="2" opacity="0.85"/>
+  <path d="M50 112 Q90 80 135 115 Q175 148 215 120" stroke="#ffaa00" stroke-width="1.8" opacity="0.7"/>
+  <path d="M50 118 Q80 88 123 122 Q165 155 200 127" stroke="#ff66aa" stroke-width="1.5" opacity="0.65"/>
+</g>
+</svg>

@@ -37,7 +37,7 @@ If two sources at the same level conflict, prefer the more specific and more rec
 
 The following rules are always active and must be preserved:
 
-1. Use Python virtual environment at `.venv/` in project root when applicable.
+1. Use Python virtual environment at `.tessiture/` in project root when applicable.
 2. Active Caddyfile is located outside of project workspace at `/mnt/user/appdata/caddy/Caddyfile`.
 3. Tessiture production URL is `https://tess.indecisivephysicist.space`, use it for debugging/testing.
 
@@ -67,7 +67,7 @@ Automatic semantic versioning is an active, system-wide Kilo Code rule for this 
 - Activate venv before Python tooling:
 
 ```bash
-source .venv/bin/activate
+source .tessiture/bin/activate
 ```
 
 - Install/refresh dependencies as needed:
@@ -215,7 +215,7 @@ If external systems were touched (for example Caddyfile outside repo), explicitl
 ### 11.1 Backend Task Template
 
 ```bash
-source .venv/bin/activate
+source .tessiture/bin/activate
 python -m pytest -q
 ```
 

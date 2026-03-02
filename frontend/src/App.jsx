@@ -290,7 +290,16 @@ function App() {
       ) : null}
 
       <header className="app-shell__header">
-        <h1 className="app-shell__title">Tessitura Analysis</h1>
+        <h1 className="app-shell__title">
+          <img
+            src="/favicon.svg"
+            alt=""
+            className="app-shell__logo"
+            width="36"
+            height="36"
+          />
+          Tessitura Analysis
+        </h1>
         <p className="app-shell__subtitle">
           Upload an audio file, or pick a demo track in Example Gallery to run analysis here in the main tab.
         </p>

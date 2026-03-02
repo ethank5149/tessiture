@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 import types
 
+import pytest
 from fastapi.testclient import TestClient
 
 from api import job_manager
@@ -296,3 +297,98 @@ def test_analyze_example_rejects_unknown_or_non_discoverable_tracks(tmp_path, mo
 
         linked_response = client.post("/analyze/example?example_id=linked")
         assert linked_response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# _parse_example_stem – filename metadata extraction
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "stem, expected_artist, expected_album, expected_title",
+    [
+        pytest.param(
+            "Nessun Dorma",
+            None, None, "Nessun Dorma",
+            id="title-only",
+        ),
+        pytest.param(
+            "Maria Callas - Casta Diva",
+            "Maria Callas", None, "Casta Diva",
+            id="artist-title",
+        ),
+        pytest.param(
+            "Pavarotti - La Bohème - Che Gelida Manina",
+            "Pavarotti", "La Bohème", "Che Gelida Manina",
+            id="artist-album-title",
+        ),
+        pytest.param(
+            "A - B - C - D",
+            "A", "B - C", "D",
+            id="multi-segment-album",
+        ),
+        pytest.param(
+            "",
+            None, None, "",
+            id="empty-string",
+        ),
+        pytest.param(
+            "  Spaced  ",
+            None, None, "Spaced",
+            id="whitespace-stripped",
+        ),
+    ],
+)
+def test_parse_example_stem(stem, expected_artist, expected_album, expected_title):
+    from api.routes import _parse_example_stem
+
+    result = _parse_example_stem(stem)
+
+    assert result["artist"] == expected_artist, (
+        f"artist mismatch for stem {stem!r}: expected {expected_artist!r}, got {result['artist']!r}"
+    )
+    assert result["album"] == expected_album, (
+        f"album mismatch for stem {stem!r}: expected {expected_album!r}, got {result['album']!r}"
+    )
+    assert result["title"] == expected_title, (
+        f"title mismatch for stem {stem!r}: expected {expected_title!r}, got {result['title']!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# _build_example_payload – verify title/artist/album keys present
+# ---------------------------------------------------------------------------
+
+def test_build_example_payload_includes_metadata_keys(tmp_path):
+    from api.routes import _build_example_payload
+
+    audio_file = tmp_path / "sample.opus"
+    audio_file.write_bytes(b"OPUSDATA")
+
+    example = {
+        "id": "sample",
+        "display_name": "Sample Track",
+        "title": "Che Gelida Manina",
+        "artist": "Pavarotti",
+        "album": "La Bohème",
+        "content_type": "audio/opus",
+    }
+
+    payload = _build_example_payload(example, audio_file)
+
+    assert "title" in payload, "payload missing 'title' key"
+    assert "artist" in payload, "payload missing 'artist' key"
+    assert "album" in payload, "payload missing 'album' key"
+
+    assert payload["title"] == "Che Gelida Manina", (
+        f"expected title 'Che Gelida Manina', got {payload['title']!r}"
+    )
+    assert payload["artist"] == "Pavarotti", (
+        f"expected artist 'Pavarotti', got {payload['artist']!r}"
+    )
+    assert payload["album"] == "La Bohème", (
+        f"expected album 'La Bohème', got {payload['album']!r}"
+    )
+    assert payload["id"] == "sample"
+    assert payload["display_name"] == "Sample Track"
+    assert payload["filename"] == "sample.opus"
+    assert payload["size_bytes"] == len(b"OPUSDATA")

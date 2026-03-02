@@ -97,6 +97,16 @@ textarea {
   margin: 0;
   font-size: clamp(1.4rem, 1.15rem + 1.2vw, 2rem);
   text-wrap: balance;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.app-shell__logo {
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  flex-shrink: 0;
 }
 
 .app-shell__subtitle {

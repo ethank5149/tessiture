@@ -94,6 +94,9 @@ def _build_example_payload(example: Mapping[str, Any], file_path: Path) -> Dict[
     return {
         "id": str(example.get("id") or ""),
         "display_name": str(example.get("display_name") or file_path.stem),
+        "title": str(example.get("title") or file_path.stem),
+        "artist": example.get("artist"),
+        "album": example.get("album"),
         "filename": file_path.name,
         "content_type": str(example.get("content_type") or "audio/*"),
         "size_bytes": int(file_path.stat().st_size),
@@ -111,6 +114,30 @@ def _guess_example_content_type(file_path: Path) -> str:
         return EXAMPLE_CONTENT_TYPE_OVERRIDES[extension]
     guessed, _ = mimetypes.guess_type(file_path.name)
     return guessed or "audio/*"
+
+
+_FILENAME_DELIMITER = " - "
+
+
+def _parse_example_stem(stem: str) -> Dict[str, Optional[str]]:
+    """Parse artist, optional album, and title from an example filename stem.
+
+    Filename schema (delimiter is ' - '):
+        Title                        → title only
+        Artist - Title               → artist + title
+        Artist - Album - Title       → artist + album + title
+        Artist - A - B - Title       → artist + album('A - B') + title
+    """
+    parts = stem.split(_FILENAME_DELIMITER)
+    if len(parts) == 1:
+        return {"artist": None, "album": None, "title": parts[0].strip()}
+    if len(parts) == 2:
+        return {"artist": parts[0].strip(), "album": None, "title": parts[1].strip()}
+    return {
+        "artist": parts[0].strip(),
+        "album": _FILENAME_DELIMITER.join(parts[1:-1]).strip(),
+        "title": parts[-1].strip(),
+    }
 
 
 def _discover_example_tracks() -> List[tuple[Dict[str, Any], Path]]:
@@ -157,9 +184,13 @@ def _discover_example_tracks() -> List[tuple[Dict[str, Any], Path]]:
             dedupe_index += 1
         used_ids.add(example_id)
 
+        parsed = _parse_example_stem(candidate.stem)
         example_payload = {
             "id": example_id,
             "display_name": candidate.stem,
+            "title": parsed["title"],
+            "artist": parsed["artist"],
+            "album": parsed["album"],
             "filename": candidate.name,
             "content_type": _guess_example_content_type(candidate),
         }
