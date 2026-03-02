@@ -45,6 +45,16 @@ def _coerce_sequence(value: Any) -> list[Any]:
     return []
 
 
+def _first_float(mapping: Mapping[str, Any], keys: Sequence[str]) -> Optional[float]:
+    for key in keys:
+        if key not in mapping:
+            continue
+        value = _safe_float(mapping.get(key))
+        if value is not None:
+            return value
+    return None
+
+
 def _format_number(value: Any, *, decimals: int = 2) -> str:
     number = _safe_float(value)
     if number is None:
@@ -88,7 +98,7 @@ def _frame_time(frame: Mapping[str, Any], index: int, metadata: Mapping[str, Any
     if frame_rate and frame_rate > 0:
         return float(index / frame_rate)
     sample_rate = _safe_float(metadata.get("sample_rate"))
-    hop_length = _safe_float(metadata.get("hop_length") or metadata.get("frame_hop"))
+    hop_length = _first_float(metadata, ("hop_length", "frame_hop"))
     if sample_rate and hop_length:
         return float(index * hop_length / sample_rate)
     return float(index)
@@ -124,7 +134,7 @@ def _event_label(event: Mapping[str, Any]) -> Optional[str]:
 
 
 def _event_start(event: Mapping[str, Any]) -> Optional[float]:
-    return _safe_float(event.get("start") or event.get("time") or event.get("t"))
+    return _first_float(event, ("start", "time", "t"))
 
 
 def _event_end(event: Mapping[str, Any]) -> Optional[float]:
@@ -132,7 +142,7 @@ def _event_end(event: Mapping[str, Any]) -> Optional[float]:
 
 
 def _event_confidence(event: Mapping[str, Any]) -> Optional[float]:
-    return _safe_float(event.get("confidence") or event.get("probability"))
+    return _first_float(event, ("confidence", "probability"))
 
 
 def _summarize_timeline(events: Sequence[Mapping[str, Any]], *, label: str) -> tuple[str, list[list[str]]]:

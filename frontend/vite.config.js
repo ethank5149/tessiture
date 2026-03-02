@@ -12,8 +12,10 @@ export default defineConfig(({ mode }) => {
       port: 5173,
       proxy: {
         "/analyze": apiTarget,
+        "/analyze/example": apiTarget,
         "/status": apiTarget,
         "/results": apiTarget,
+        "/examples": apiTarget,
       },
     },
     preview: {

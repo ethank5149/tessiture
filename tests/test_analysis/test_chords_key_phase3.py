@@ -5,7 +5,7 @@ from analysis.chords.detector import (
     detect_chord,
     propagate_chord_probabilities,
 )
-from analysis.chords.key_detector import detect_key, entropy_confidence
+from analysis.chords.key_detector import detect_key, entropy_confidence, propagate_key_probabilities
 
 
 def test_detect_chord_finds_c_major_from_midi_notes() -> None:
@@ -53,3 +53,19 @@ def test_entropy_confidence_monotonic_behavior() -> None:
     flat = entropy_confidence([1 / 3, 1 / 3, 1 / 3])
 
     assert peaky > flat
+
+
+def test_propagate_key_probabilities_handles_chord_labels_and_unknowns() -> None:
+    probabilities, confidence = propagate_key_probabilities(
+        {
+            "C:maj": 0.5,
+            "G:maj": 0.3,
+            "A:min": 0.15,
+            "unknown_label": 0.05,
+        }
+    )
+
+    assert probabilities
+    assert np.isclose(sum(probabilities.values()), 1.0)
+    assert all(np.isfinite(value) and value >= 0.0 for value in probabilities.values())
+    assert 0.0 <= confidence <= 1.0

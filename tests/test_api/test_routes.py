@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone
 import sys
 import time
 from pathlib import Path
@@ -134,6 +135,111 @@ def test_results_downloads_csv_and_pdf(tmp_path, monkeypatch) -> None:
         assert pdf_response.headers["content-type"].startswith("application/pdf")
 
     _reset_job_state()
+
+
+def test_extract_result_path_json_allows_generic_fallback_only() -> None:
+    from api.routes import _extract_result_path
+
+    result = {"result_path": "/tmp/result.json"}
+
+    assert _extract_result_path(result, "json") == "/tmp/result.json"
+    assert _extract_result_path(result, "csv") is None
+    assert _extract_result_path(result, "pdf") is None
+
+
+def test_results_csv_pdf_require_explicit_artifact_paths(tmp_path, monkeypatch) -> None:
+    from api import routes
+
+    _reset_job_state()
+    routes.UPLOAD_DIR = tmp_path / "uploads"
+    routes.OUTPUT_DIR = tmp_path / "outputs"
+
+    async def fake_pipeline(file_path: str, metadata=None):
+        routes.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        stem = Path(file_path).stem
+        generic_json = routes.OUTPUT_DIR / f"{stem}.json"
+        generic_json.write_text("{}", encoding="utf-8")
+        return {
+            "summary": {"f0_min": 220.0, "f0_max": 220.0},
+            "result_path": str(generic_json),
+        }
+
+    monkeypatch.setattr(routes, "analysis_pipeline", fake_pipeline)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/analyze",
+            files={"audio": ("sample.wav", b"RIFFTEST", "audio/wav")},
+        )
+        assert response.status_code == 200
+        job_id = response.json()["job_id"]
+
+        status = _wait_for_completion(client, job_id)
+        assert status["status"] == "completed"
+
+        json_response = client.get(f"/results/{job_id}?format=json")
+        assert json_response.status_code == 200
+
+        csv_response = client.get(f"/results/{job_id}?format=csv")
+        assert csv_response.status_code == 404
+        assert csv_response.json()["detail"] == "No csv result available."
+
+        pdf_response = client.get(f"/results/{job_id}?format=pdf")
+        assert pdf_response.status_code == 404
+        assert pdf_response.json()["detail"] == "No pdf result available."
+
+    _reset_job_state()
+
+
+def test_status_error_payload_is_sanitized_for_failed_jobs(tmp_path, monkeypatch) -> None:
+    from api import routes
+
+    _reset_job_state()
+    routes.UPLOAD_DIR = tmp_path / "uploads"
+    routes.OUTPUT_DIR = tmp_path / "outputs"
+
+    async def fake_pipeline(_file_path: str, metadata=None):
+        raise RuntimeError("intentional failure for client")
+
+    monkeypatch.setattr(routes, "analysis_pipeline", fake_pipeline)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/analyze",
+            files={"audio": ("sample.wav", b"RIFFTEST", "audio/wav")},
+        )
+        assert response.status_code == 200
+        job_id = response.json()["job_id"]
+
+        status = _wait_for_completion(client, job_id)
+        assert status["status"] == "failed"
+        assert status["error"] == "intentional failure for client"
+        assert "Traceback" not in status["error"]
+        assert "\n" not in status["error"]
+
+    _reset_job_state()
+
+
+def test_serialize_status_sanitizes_traceback_content() -> None:
+    from api import routes
+
+    now = datetime.now(timezone.utc)
+    job = job_manager.JobStatus(
+        job_id="job-1",
+        status="failed",
+        progress=100,
+        created_at=now,
+        updated_at=now,
+        error=(
+            "Traceback (most recent call last):\n"
+            "  File \"worker.py\", line 1, in <module>\n"
+            "ValueError: unsafe detail"
+        ),
+    )
+
+    payload = routes._serialize_status(job)
+
+    assert payload["error"] == "unsafe detail"
 
 
 def test_analyze_accepts_opus_upload(tmp_path, monkeypatch) -> None:

@@ -1,3 +1,4 @@
+import json
 import numpy as np
 
 from analysis.advanced.phrase_segmentation import (
@@ -13,6 +14,8 @@ from calibration.models.confidence_models import (
 from calibration.monte_carlo.uncertainty_analyzer import summarize_uncertainty
 from reporting.csv_generator import generate_csv_report
 from reporting.json_generator import generate_json_report
+from reporting.pdf_composer import _event_confidence, _event_start
+from reporting.visualization import plot_key_stability, plot_piano_roll
 
 
 def test_analyze_tessitura_returns_metrics_and_pdf() -> None:
@@ -108,6 +111,29 @@ def test_uncertainty_summary_contains_expected_keys() -> None:
     assert len(summary["frequency_bins_hz"]) >= 2
 
 
+def test_uncertainty_summary_bin_aggregation_is_frequency_aligned() -> None:
+    results = [
+        {
+            "metadata": {
+                "note_frequencies_hz": [100.0, 100.0, 200.0, 200.0, None, "invalid"],
+            },
+            "pitch_error_cents": [1.0, 2.0, 10.0, 20.0, 999.0, -999.0],
+        }
+    ]
+
+    summary = summarize_uncertainty(results)
+
+    counts = np.asarray(summary["sample_counts"], dtype=int)
+    bias = np.asarray(summary["pitch_bias_cents"], dtype=float)
+
+    nonzero_bins = np.flatnonzero(counts)
+    assert nonzero_bins.tolist() == [0, 11]
+    assert counts[0] == 2
+    assert counts[11] == 2
+    assert np.isclose(bias[0], 1.5)
+    assert np.isclose(bias[11], 15.0)
+
+
 def test_reporting_generators_emit_expected_fields() -> None:
     payload = {
         "metadata": {"sample_rate": 44100, "hop_length": 512, "frame_rate": 86.13},
@@ -134,3 +160,61 @@ def test_reporting_generators_emit_expected_fields() -> None:
     assert "time,f0,note,cents,confidence,chord,key" in csv_text
     assert "pitch_frames" in json_text
     assert "tessitura_metrics" in json_text
+
+
+def test_json_report_preserves_zero_start_timestamps() -> None:
+    payload = {
+        "metadata": {"sample_rate": 44100, "hop_length": 512},
+        "pitch": {
+            "frames": [
+                {
+                    "time": 0.0,
+                    "f0_hz": 220.0,
+                    "midi": 57.0,
+                    "confidence": 0.0,
+                }
+            ]
+        },
+        "note_events": [{"start": 0.0, "end": 0.5, "label": "A3", "confidence": 0.0}],
+        "chords": {"timeline": [{"start": 0.0, "end": 1.0, "label": "A:min", "confidence": 0.0}]},
+        "keys": {"trajectory": [{"start": 0.0, "end": 1.0, "label": "A:min", "confidence": 0.0}]},
+    }
+
+    parsed = json.loads(generate_json_report(payload))
+
+    assert parsed["pitch_frames"][0]["time"] == 0.0
+    assert parsed["note_events"][0]["start"] == 0.0
+    assert parsed["chord_timeline"][0]["start"] == 0.0
+    assert parsed["key_trajectory"][0]["start"] == 0.0
+
+
+def test_pdf_helpers_preserve_zero_start_and_confidence() -> None:
+    assert _event_start({"start": 0.0}) == 0.0
+    assert _event_start({"time": 0.0}) == 0.0
+    assert _event_confidence({"confidence": 0.0}) == 0.0
+    assert _event_confidence({"probability": 0.0}) == 0.0
+
+
+def test_visualization_transforms_preserve_zero_start() -> None:
+    piano_roll_payload = {
+        "note_events": [
+            {"start": 0.0, "end": 0.5, "midi": 60.0, "label": "C4", "confidence": 0.0}
+        ]
+    }
+    piano_roll = plot_piano_roll(piano_roll_payload, backend="plotly")
+    shapes = piano_roll["layout"]["shapes"]
+
+    assert shapes
+    assert shapes[0]["x0"] == 0.0
+
+    key_payload = {
+        "keys": {
+            "trajectory": [
+                {"start": 0.0, "label": "C:maj", "confidence": 0.0}
+            ]
+        }
+    }
+    key_plot = plot_key_stability(key_payload, backend="plotly")
+
+    assert key_plot["data"][0]["x"][0] == 0.0
+    assert key_plot["data"][0]["y"][0] == 0.0

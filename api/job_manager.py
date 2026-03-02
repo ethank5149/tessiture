@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 import traceback
 import uuid
 from dataclasses import dataclass, replace
@@ -12,6 +13,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional
 JobState = str
 AnalysisResult = Dict[str, Any]
 AnalysisFn = Callable[[str, Optional[Mapping[str, Any]]], Awaitable[AnalysisResult] | AnalysisResult]
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -62,8 +64,9 @@ async def _run_job(
             result_path=result_path,
         )
     except Exception as exc:
-        error_text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-        _set_status(job_id, status="failed", progress=100, error=error_text)
+        logger.exception("Job %s failed during analysis", job_id)
+        safe_error = str(exc).strip() or "Analysis failed."
+        _set_status(job_id, status="failed", progress=100, error=safe_error)
 
 
 def create_job(

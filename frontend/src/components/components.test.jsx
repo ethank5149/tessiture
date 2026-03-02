@@ -1,13 +1,14 @@
 import "@testing-library/jest-dom/vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "../App";
 import {
   fetchExampleTracks,
   fetchJobResults,
   fetchJobStatus,
+  submitAnalysisJob,
   submitExampleAnalysisJob,
 } from "../api";
 import AnalysisResults from "./AnalysisResults";
@@ -26,6 +27,11 @@ vi.mock("../api", () => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 describe("AudioUploader", () => {
@@ -168,6 +174,34 @@ describe("AnalysisResults", () => {
 });
 
 describe("App example gallery wiring", () => {
+  it("uses relative example API paths compatible with Vite dev proxy", async () => {
+    const actualApi = await vi.importActual("../api");
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ examples: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ job_id: "job-demo" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })
+      );
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    await actualApi.fetchExampleTracks();
+    await actualApi.submitExampleAnalysisJob("demo-1");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/examples", { method: "GET" });
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/analyze/example?example_id=demo-1", {
+      method: "POST",
+    });
+  });
+
   it("uses gallery as selector-only input and runs processing in main tab", async () => {
     const user = userEvent.setup();
 
@@ -209,5 +243,33 @@ describe("App example gallery wiring", () => {
 
     expect(screen.queryByRole("heading", { name: "Example gallery" })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Upload audio" })).toBeInTheDocument();
+  });
+
+  it("stops polling after first status failure", async () => {
+    vi.useFakeTimers();
+
+    fetchExampleTracks.mockResolvedValue([]);
+    submitAnalysisJob.mockResolvedValue({ job_id: "job-fail" });
+    fetchJobStatus.mockRejectedValue(new Error("status down"));
+
+    render(<App />);
+
+    const input = screen.getByLabelText("Audio file");
+    const file = new File(["wave"], "sample.wav", { type: "audio/wav" });
+    fireEvent.change(input, { target: { files: [file] } });
+    fireEvent.click(screen.getByRole("button", { name: "Start analysis" }));
+
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+
+    expect(fetchJobStatus).toHaveBeenCalledTimes(1);
+    expect(screen.getAllByText("status down").length).toBeGreaterThan(0);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+
+    expect(fetchJobStatus).toHaveBeenCalledTimes(1);
   });
 });

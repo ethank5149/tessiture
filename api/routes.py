@@ -304,8 +304,29 @@ def _serialize_status(job: job_manager.JobStatus) -> Dict[str, Any]:
         "created_at": job.created_at.isoformat(),
         "updated_at": job.updated_at.isoformat(),
         "result_path": job.result_path,
-        "error": job.error,
+        "error": _sanitize_error(job.error),
     }
+
+
+def _sanitize_error(error: Optional[str]) -> Optional[str]:
+    if error is None:
+        return None
+    text = str(error).strip()
+    if not text:
+        return "Analysis failed."
+    if "Traceback (most recent call last):" in text:
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if lines:
+            tail = lines[-1]
+            if ":" in tail:
+                _, detail = tail.split(":", 1)
+                detail = detail.strip()
+                if detail:
+                    return detail
+        return "Analysis failed."
+    if "\n" in text:
+        return text.splitlines()[0].strip() or "Analysis failed."
+    return text
 
 
 def _extract_result_path(result: Mapping[str, Any], fmt: str) -> Optional[str]:
@@ -315,7 +336,7 @@ def _extract_result_path(result: Mapping[str, Any], fmt: str) -> Optional[str]:
     key = f"{fmt}_path"
     if isinstance(result, Mapping) and result.get(key):
         return str(result.get(key))
-    if isinstance(result, Mapping) and result.get("result_path"):
+    if fmt == "json" and isinstance(result, Mapping) and result.get("result_path"):
         return str(result.get("result_path"))
     return None
 

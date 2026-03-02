@@ -3,12 +3,61 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple
+import re
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 from analysis.chords.pitch_class_histogram import Observation, build_pitch_class_histogram
 from analysis.chords.tonal_profiles import build_tonal_profile_map, iter_key_labels
+
+
+_PITCH_CLASS_BY_NOTE = {
+    "C": 0,
+    "D": 2,
+    "E": 4,
+    "F": 5,
+    "G": 7,
+    "A": 9,
+    "B": 11,
+}
+
+_CHORD_ROOT_PATTERN = re.compile(r"^\s*([A-Ga-g])([#b♯♭]*)")
+
+
+def _parse_pitch_class_observation(observation: Any) -> Optional[float]:
+    if isinstance(observation, (int, float, np.integer, np.floating)):
+        value = float(observation)
+        if np.isfinite(value):
+            return float(int(round(value)) % 12)
+        return None
+
+    if not isinstance(observation, str):
+        return None
+
+    token = observation.strip()
+    if not token:
+        return None
+
+    try:
+        numeric_value = float(token)
+    except (TypeError, ValueError):
+        numeric_value = None
+    if numeric_value is not None and np.isfinite(numeric_value):
+        return float(int(round(numeric_value)) % 12)
+
+    match = _CHORD_ROOT_PATTERN.match(token)
+    if not match:
+        return None
+
+    pitch_class = _PITCH_CLASS_BY_NOTE[match.group(1).upper()]
+    for accidental in match.group(2):
+        if accidental in {"#", "♯"}:
+            pitch_class += 1
+        elif accidental in {"b", "♭"}:
+            pitch_class -= 1
+
+    return float(pitch_class % 12)
 
 
 @dataclass(frozen=True)
@@ -116,14 +165,27 @@ def propagate_key_probabilities(
     if not chord_probabilities:
         return {}, 0.0
 
-    chord_names = list(chord_probabilities.keys())
-    weights = [float(chord_probabilities[name]) for name in chord_names]
-    histogram = build_pitch_class_histogram(
-        chord_names,
-        weights=weights,
-        input_unit="pc",
-        normalize=True,
-    )
+    observations: List[float] = []
+    weights: List[float] = []
+    for chord_name, raw_weight in chord_probabilities.items():
+        weight = float(raw_weight)
+        if not np.isfinite(weight) or weight <= 0.0:
+            continue
+        pitch_class = _parse_pitch_class_observation(chord_name)
+        if pitch_class is None:
+            continue
+        observations.append(pitch_class)
+        weights.append(weight)
+
+    if observations:
+        histogram = build_pitch_class_histogram(
+            observations,
+            weights=weights,
+            input_unit="pc",
+            normalize=True,
+        )
+    else:
+        histogram = np.zeros(12, dtype=np.float64)
 
     if profile_map is None:
         profile_map = build_tonal_profile_map()

@@ -224,11 +224,16 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!jobId) {
+    const clearPollingTimer = () => {
       if (pollingRef.current) {
         clearInterval(pollingRef.current);
         pollingRef.current = null;
       }
+    };
+
+    if (!jobId) {
+      clearPollingTimer();
+      setIsPolling(false);
       return undefined;
     }
 
@@ -243,10 +248,7 @@ function App() {
         setStatus(nextStatus);
 
         if (isTerminalStatus(nextStatus?.status)) {
-          if (pollingRef.current) {
-            clearInterval(pollingRef.current);
-            pollingRef.current = null;
-          }
+          clearPollingTimer();
           setIsPolling(false);
 
           if (nextStatus?.status === "completed") {
@@ -260,6 +262,7 @@ function App() {
           return;
         }
         const message = getErrorMessage(pollError, "Unable to fetch job status.");
+        clearPollingTimer();
         setError(message);
         setIsPolling(false);
       }
@@ -271,10 +274,7 @@ function App() {
 
     return () => {
       isMounted = false;
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current);
-        pollingRef.current = null;
-      }
+      clearPollingTimer();
       setIsPolling(false);
     };
   }, [jobId, fetchResults]);

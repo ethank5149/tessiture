@@ -44,6 +44,16 @@ def _coerce_sequence(value: Any) -> list[Any]:
     return []
 
 
+def _first_float(mapping: Mapping[str, Any], keys: Sequence[str]) -> Optional[float]:
+    for key in keys:
+        if key not in mapping:
+            continue
+        value = _safe_float(mapping.get(key))
+        if value is not None:
+            return value
+    return None
+
+
 def _extract_frames(result: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     for path in (
         ("frames",),
@@ -83,7 +93,7 @@ def _frame_time(frame: Mapping[str, Any], index: int, metadata: Mapping[str, Any
     if frame_rate and frame_rate > 0:
         return float(index / frame_rate)
     sample_rate = _safe_float(metadata.get("sample_rate"))
-    hop_length = _safe_float(metadata.get("hop_length") or metadata.get("frame_hop"))
+    hop_length = _first_float(metadata, ("hop_length", "frame_hop"))
     if sample_rate and hop_length:
         return float(index * hop_length / sample_rate)
     return float(index)
@@ -104,14 +114,14 @@ def _frame_f0(frame: Mapping[str, Any]) -> Optional[float]:
         value = _safe_float(frame.get(key))
         if value is not None:
             return value
-    midi_value = _safe_float(frame.get("midi") or frame.get("midi_value"))
+    midi_value = _first_float(frame, ("midi", "midi_value"))
     if midi_value is not None:
         return _midi_to_hz(midi_value)
     return None
 
 
 def _frame_midi(frame: Mapping[str, Any]) -> Optional[float]:
-    midi_value = _safe_float(frame.get("midi") or frame.get("midi_value"))
+    midi_value = _first_float(frame, ("midi", "midi_value"))
     if midi_value is not None:
         return midi_value
     f0 = _frame_f0(frame)
@@ -307,10 +317,10 @@ def plot_piano_roll(
 
     note_events: list[dict[str, Any]] = []
     for event in events:
-        start = _safe_float(event.get("start") or event.get("time") or event.get("t"))
+        start = _first_float(event, ("start", "time", "t"))
         end = _safe_float(event.get("end"))
         label = event.get("label") or event.get("note") or event.get("name")
-        confidence = _safe_float(event.get("confidence") or event.get("probability"))
+        confidence = _first_float(event, ("confidence", "probability"))
         pitch = _event_pitch(event)
         if start is None or pitch is None:
             continue
@@ -520,7 +530,7 @@ def plot_chord_timeline(
 
     timeline: list[dict[str, Any]] = []
     for event in events:
-        start = _safe_float(event.get("start") or event.get("time") or event.get("t"))
+        start = _first_float(event, ("start", "time", "t"))
         end = _safe_float(event.get("end"))
         label = event.get("label") or event.get("chord") or event.get("name")
         if start is None:
@@ -602,9 +612,9 @@ def plot_key_stability(
     confidences: list[float] = []
     labels: list[Optional[str]] = []
     for event in events:
-        start = _safe_float(event.get("start") or event.get("time") or event.get("t"))
+        start = _first_float(event, ("start", "time", "t"))
         end = _safe_float(event.get("end"))
-        confidence = _safe_float(event.get("confidence") or event.get("probability"))
+        confidence = _first_float(event, ("confidence", "probability"))
         label = event.get("label") or event.get("key") or event.get("name")
         if start is None:
             continue
