@@ -8,6 +8,7 @@ import {
   fetchExampleTracks,
   fetchJobResults,
   fetchJobStatus,
+  normalizeJobStatus,
   submitAnalysisJob,
   submitExampleAnalysisJob,
 } from "../api";
@@ -21,6 +22,7 @@ vi.mock("../api", () => ({
   fetchExampleTracks: vi.fn(),
   fetchJobResults: vi.fn(),
   fetchJobStatus: vi.fn(),
+  normalizeJobStatus: vi.fn((payload) => payload),
   submitAnalysisJob: vi.fn(),
   submitExampleAnalysisJob: vi.fn(),
 }));
@@ -128,7 +130,97 @@ describe("AnalysisStatus", () => {
     );
 
     expect(screen.getByText("Polling for updates…")).toBeInTheDocument();
-    expect(screen.getByText("processing")).toBeInTheDocument();
+    expect(screen.getByText("processing", { selector: ".status__value" })).toBeInTheDocument();
+  });
+
+  it("shows idle state without a progress bar before any job is submitted", () => {
+    render(<AnalysisStatus jobId={null} status={null} isPolling={false} isFetchingResults={false} />);
+
+    expect(screen.getByText("No active job")).toBeInTheDocument();
+    expect(screen.getByText("idle", { selector: ".status__value" })).toBeInTheDocument();
+    expect(screen.getByText("not started")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Progress")).not.toBeInTheDocument();
+    expect(screen.getByText("Progress will appear after you submit a job.")).toBeInTheDocument();
+  });
+
+  it("shows stage, progress bar, and polling activity", () => {
+    render(
+      <AnalysisStatus
+        jobId="job-1"
+        status={{
+          status: "processing",
+          stage: "pitch_extraction",
+          progress: 42,
+          message: "Extracting pitch and harmonic tracks.",
+        }}
+        isPolling
+        isFetchingResults={false}
+      />
+    );
+
+    expect(screen.getByText("processing", { selector: ".status__value" })).toBeInTheDocument();
+    expect(screen.getByText("pitch extraction")).toBeInTheDocument();
+    expect(screen.getByText("Extracting pitch and harmonic tracks.")).toBeInTheDocument();
+    expect(screen.getByText("Polling for updates…")).toBeInTheDocument();
+    expect(screen.getByLabelText("Progress")).toHaveAttribute("value", "42");
+    expect(screen.getByText("42%", { selector: ".status__progress-value" })).toBeInTheDocument();
+  });
+});
+
+describe("API status normalization", () => {
+  it("normalizes progress, stage, and backward-compatible detail fields", async () => {
+    const actualApi = await vi.importActual("../api");
+
+    const normalized = actualApi.normalizeJobStatus({
+      status: "processing",
+      progress: "61.2",
+      stage: "advanced_analysis",
+      message: "Running advanced analysis.",
+    });
+
+    expect(normalized.status).toBe("processing");
+    expect(normalized.progress).toBe(61);
+    expect(normalized.stage).toBe("advanced_analysis");
+    expect(normalized.message).toBe("Running advanced analysis.");
+    expect(normalized.detail).toBe("Running advanced analysis.");
+  });
+
+  it("fills defaults for missing stage and terminal progress", async () => {
+    const actualApi = await vi.importActual("../api");
+
+    const normalized = actualApi.normalizeJobStatus({
+      status: "completed",
+      detail: "Analysis completed.",
+    });
+
+    expect(normalized.status).toBe("completed");
+    expect(normalized.progress).toBe(100);
+    expect(normalized.stage).toBe("completed");
+    expect(normalized.message).toBe("Analysis completed.");
+    expect(normalized.detail).toBe("Analysis completed.");
+  });
+
+  it("normalizes inferential statistics shape for analysis results", async () => {
+    const actualApi = await vi.importActual("../api");
+
+    const normalized = actualApi.normalizeAnalysisResult({
+      inferential_statistics: {
+        preset: "casual",
+        confidence_level: 0.95,
+        metrics: {
+          f0_mean_hz: {
+            estimate: 220.1,
+            confidence_interval: { low: 210.2, high: 230.3, level: 0.95 },
+            p_value: 0.012,
+            n_samples: 120,
+          },
+        },
+      },
+    });
+
+    expect(normalized.inferential_statistics).toBeDefined();
+    expect(normalized.inferential_statistics.metrics).toBeDefined();
+    expect(normalized.inferential_statistics.metrics.f0_mean_hz.estimate).toBe(220.1);
   });
 });
 
@@ -142,6 +234,18 @@ describe("AnalysisResults", () => {
         f0_max: 440.0,
         tessitura_range: [57.0, 69.0],
         confidence: 0.92,
+      },
+      inferential_statistics: {
+        preset: "casual",
+        confidence_level: 0.95,
+        metrics: {
+          f0_mean_hz: {
+            estimate: 221.4,
+            confidence_interval: { low: 215.2, high: 228.7, level: 0.95 },
+            p_value: 0.008,
+            n_samples: 140,
+          },
+        },
       },
       pitch: {
         frames: [
@@ -170,11 +274,15 @@ describe("AnalysisResults", () => {
     expect(screen.getByRole("button", { name: "Download CSV" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Download JSON" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Download PDF" })).toBeInTheDocument();
+    expect(screen.getByText("Per-metric inferential statistics")).toBeInTheDocument();
+    expect(screen.getByText("F0 Mean Hz")).toBeInTheDocument();
+    expect(screen.getByText("0.008")).toBeInTheDocument();
   });
 });
 
 describe("App example gallery wiring", () => {
   it("uses relative example API paths compatible with Vite dev proxy", async () => {
+    normalizeJobStatus.mockImplementation((payload) => payload);
     const actualApi = await vi.importActual("../api");
     const fetchMock = vi
       .fn()

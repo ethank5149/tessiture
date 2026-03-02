@@ -14,6 +14,7 @@ JobState = str
 AnalysisResult = Dict[str, Any]
 AnalysisFn = Callable[[str, Optional[Mapping[str, Any]]], Awaitable[AnalysisResult] | AnalysisResult]
 logger = logging.getLogger(__name__)
+_PROGRESS_CALLBACK_KEY = "_progress_callback"
 
 
 @dataclass
@@ -23,6 +24,8 @@ class JobStatus:
     progress: int
     created_at: datetime
     updated_at: datetime
+    stage: Optional[str] = None
+    message: Optional[str] = None
     result_path: Optional[str] = None
     result: Optional[AnalysisResult] = None
     error: Optional[str] = None
@@ -36,11 +39,35 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _coerce_progress(value: Any) -> int:
+    try:
+        number = int(round(float(value)))
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(100, number))
+
+
 def _set_status(job_id: str, **updates: Any) -> None:
     job = _jobs[job_id]
+    if "progress" in updates:
+        updates["progress"] = _coerce_progress(updates["progress"])
     for key, value in updates.items():
         setattr(job, key, value)
     job.updated_at = _now()
+
+
+def _build_progress_callback(job_id: str) -> Callable[[int, Optional[str], Optional[str]], None]:
+    def _update(progress: int, stage: Optional[str] = None, message: Optional[str] = None) -> None:
+        updates: Dict[str, Any] = {"progress": progress}
+        if stage is not None:
+            updates["stage"] = stage
+        if message is not None:
+            updates["message"] = message
+        if _jobs[job_id].status == "queued":
+            updates["status"] = "processing"
+        _set_status(job_id, **updates)
+
+    return _update
 
 
 async def _run_job(
@@ -49,9 +76,11 @@ async def _run_job(
     analysis_fn: AnalysisFn,
     metadata: Optional[Mapping[str, Any]],
 ) -> None:
-    _set_status(job_id, status="processing", progress=10)
+    _set_status(job_id, status="processing", progress=5, stage="starting", message="Analysis job started.")
     try:
-        result_or_coro = analysis_fn(file_path, metadata)
+        job_metadata = dict(metadata or {})
+        job_metadata[_PROGRESS_CALLBACK_KEY] = _build_progress_callback(job_id)
+        result_or_coro = analysis_fn(file_path, job_metadata)
         result = await result_or_coro if inspect.isawaitable(result_or_coro) else result_or_coro
         result_path = None
         if isinstance(result, Mapping):
@@ -60,13 +89,22 @@ async def _run_job(
             job_id,
             status="completed",
             progress=100,
+            stage="completed",
+            message="Analysis completed.",
             result=dict(result) if isinstance(result, Mapping) else result,
             result_path=result_path,
         )
     except Exception as exc:
         logger.exception("Job %s failed during analysis", job_id)
         safe_error = str(exc).strip() or "Analysis failed."
-        _set_status(job_id, status="failed", progress=100, error=safe_error)
+        _set_status(
+            job_id,
+            status="failed",
+            progress=100,
+            stage="failed",
+            message="Analysis failed.",
+            error=safe_error,
+        )
 
 
 def create_job(
@@ -87,6 +125,8 @@ def create_job(
         progress=0,
         created_at=now,
         updated_at=now,
+        stage="queued",
+        message="Job queued.",
     )
     loop = asyncio.get_running_loop()
     _tasks[job_id] = loop.create_task(_run_job(job_id, file_path, analysis_fn, metadata))

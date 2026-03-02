@@ -81,12 +81,80 @@ def test_analyze_status_results_json(tmp_path, monkeypatch) -> None:
 
         status = _wait_for_completion(client, job_id)
         assert status["status"] == "completed"
+        assert status["progress"] == 100
+        assert status["stage"] == "completed"
+        assert status["message"] == "Analysis completed."
+        assert status["detail"] == "Analysis completed."
 
         result_response = client.get(f"/results/{job_id}?format=json")
         assert result_response.status_code == 200
         result_payload = result_response.json()
         assert "summary" in result_payload
         assert result_payload["summary"]["f0_min"] == 440.0
+
+    _reset_job_state()
+
+
+def test_status_endpoint_reports_mid_pipeline_progress_fields(tmp_path, monkeypatch) -> None:
+    from api import routes
+
+    _reset_job_state()
+    routes.UPLOAD_DIR = tmp_path / "uploads"
+    routes.OUTPUT_DIR = tmp_path / "outputs"
+
+    async def fake_pipeline(file_path: str, metadata=None):
+        progress_callback = (metadata or {}).get("_progress_callback")
+        if callable(progress_callback):
+            progress_callback(25, "preprocessing", "Preparing audio for analysis.")
+            await asyncio.sleep(0.12)
+            progress_callback(55, "pitch_extraction", "Extracting pitch contours.")
+            await asyncio.sleep(0.12)
+
+        routes.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        stem = Path(file_path).stem
+        json_path = routes.OUTPUT_DIR / f"{stem}.json"
+        json_path.write_text("{}", encoding="utf-8")
+        return {
+            "summary": {"f0_min": 220.0, "f0_max": 220.0},
+            "files": {"json": str(json_path)},
+            "result_path": str(json_path),
+        }
+
+    monkeypatch.setattr(routes, "analysis_pipeline", fake_pipeline)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/analyze",
+            files={"audio": ("sample.wav", b"RIFFTEST", "audio/wav")},
+        )
+        assert response.status_code == 200
+        job_id = response.json()["job_id"]
+
+        deadline = time.time() + 3.0
+        in_flight_status = None
+        while time.time() < deadline:
+            status_response = client.get(f"/status/{job_id}")
+            assert status_response.status_code == 200
+            payload = status_response.json()
+            if payload.get("stage") in {"preprocessing", "pitch_extraction"}:
+                in_flight_status = payload
+                break
+            if payload.get("status") in {"completed", "failed"}:
+                break
+            time.sleep(0.03)
+
+        assert in_flight_status is not None
+        assert in_flight_status["status"] == "processing"
+        assert in_flight_status["progress"] >= 25
+        assert in_flight_status["progress"] < 100
+        assert isinstance(in_flight_status["message"], str)
+        assert in_flight_status["detail"] == in_flight_status["message"]
+
+        final_status = _wait_for_completion(client, job_id)
+        assert final_status["status"] == "completed"
+        assert final_status["progress"] == 100
+        assert final_status["stage"] == "completed"
+        assert final_status["message"] == "Analysis completed."
 
     _reset_job_state()
 
@@ -240,6 +308,84 @@ def test_serialize_status_sanitizes_traceback_content() -> None:
     payload = routes._serialize_status(job)
 
     assert payload["error"] == "unsafe detail"
+
+
+def test_serialize_status_defaults_stage_when_missing() -> None:
+    from api import routes
+
+    now = datetime.now(timezone.utc)
+    job = job_manager.JobStatus(
+        job_id="job-2",
+        status="processing",
+        progress=42,
+        created_at=now,
+        updated_at=now,
+        stage=None,
+        message=None,
+    )
+
+    payload = routes._serialize_status(job)
+
+    assert payload["status"] == "processing"
+    assert payload["progress"] == 42
+    assert payload["stage"] == "processing"
+    assert payload["message"] is None
+    assert payload["detail"] is None
+
+
+def test_build_inferential_statistics_emits_per_metric_ci_and_p_values() -> None:
+    from api.routes import _build_inferential_statistics
+
+    payload = _build_inferential_statistics(
+        voiced_f0=[220.0, 222.0, 224.0, 226.0, 228.0],
+        voiced_midi=[57.0, 58.0, 59.0, 60.0, 61.0],
+        pitch_errors=[0.5, -0.25, 0.1, -0.1, 0.0],
+        metadata={"inferential_preset": "casual"},
+    )
+
+    assert payload["preset"] == "casual"
+    assert payload["confidence_level"] == 0.95
+    assert payload["bootstrap_samples"] >= 200
+
+    metrics = payload["metrics"]
+    assert "f0_mean_hz" in metrics
+    assert "f0_min_hz" in metrics
+    assert "f0_max_hz" in metrics
+    assert "tessitura_center_midi" in metrics
+    assert "pitch_error_mean_cents" in metrics
+
+    for metric in metrics.values():
+        assert metric["estimate"] is not None
+        assert metric["confidence_interval"]["low"] is not None
+        assert metric["confidence_interval"]["high"] is not None
+        assert metric["n_samples"] > 0
+        if metric["p_value"] is not None:
+            assert 0.0 <= metric["p_value"] <= 1.0
+
+
+def test_build_summary_includes_separate_pitch_and_key_confidence_fields() -> None:
+    from api.routes import _build_summary
+
+    result = {
+        "pitch": {
+            "frames": [
+                {"f0_hz": 220.0, "confidence": 0.8},
+                {"f0_hz": 230.0, "confidence": 0.6},
+            ]
+        },
+        "keys": {
+            "trajectory": [
+                {"label": "A:min", "confidence": 0.4}
+            ]
+        },
+    }
+
+    summary = _build_summary(result, duration_seconds=1.0)
+
+    assert "pitch_confidence" in summary
+    assert "key_confidence" in summary
+    assert summary["pitch_confidence"] == summary["confidence"]
+    assert summary["key_confidence"] == 0.4
 
 
 def test_analyze_accepts_opus_upload(tmp_path, monkeypatch) -> None:

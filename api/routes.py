@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import mimetypes
 import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Set
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set
 from uuid import uuid4
 
 import numpy as np
@@ -68,6 +69,32 @@ MAX_UPLOAD_BYTES = int(os.getenv("TESSITURE_UPLOAD_MAX_BYTES", str(25 * 1024 * 1
 TARGET_SAMPLE_RATE = int(os.getenv("TESSITURE_TARGET_SAMPLE_RATE", "44100"))
 STFT_NFFT = int(os.getenv("TESSITURE_STFT_NFFT", "4096"))
 STFT_HOP = int(os.getenv("TESSITURE_STFT_HOP", "512"))
+BOOTSTRAP_SAMPLES = int(os.getenv("TESSITURE_BOOTSTRAP_SAMPLES", "1000"))
+BOOTSTRAP_CONFIDENCE_LEVEL = float(os.getenv("TESSITURE_BOOTSTRAP_CONFIDENCE_LEVEL", "0.95"))
+DEFAULT_INFERENTIAL_PRESET = os.getenv("TESSITURE_INFERENTIAL_PRESET", "casual").strip().lower()
+INFERENTIAL_NULL_PRESETS: Dict[str, Dict[str, float]] = {
+    "casual": {
+        "f0_mean_hz": 196.0,
+        "f0_min_hz": 130.81,
+        "f0_max_hz": 440.0,
+        "tessitura_center_midi": 57.0,
+        "pitch_error_mean_cents": 0.0,
+    },
+    "intermediate": {
+        "f0_mean_hz": 220.0,
+        "f0_min_hz": 130.81,
+        "f0_max_hz": 523.25,
+        "tessitura_center_midi": 60.0,
+        "pitch_error_mean_cents": 0.0,
+    },
+    "vocalist": {
+        "f0_mean_hz": 246.94,
+        "f0_min_hz": 146.83,
+        "f0_max_hz": 659.25,
+        "tessitura_center_midi": 64.0,
+        "pitch_error_mean_cents": 0.0,
+    },
+}
 
 # Rate limiting placeholder (token bucket per client IP).
 RATE_LIMIT_CAPACITY = int(os.getenv("TESSITURE_RATE_LIMIT_CAPACITY", "10"))
@@ -297,10 +324,15 @@ def _rate_limit_check(request: Request) -> None:
 
 
 def _serialize_status(job: job_manager.JobStatus) -> Dict[str, Any]:
+    stage = job.stage or job.status
+    message = job.message
     return {
         "job_id": job.job_id,
         "status": job.status,
         "progress": job.progress,
+        "stage": stage,
+        "message": message,
+        "detail": message,
         "created_at": job.created_at.isoformat(),
         "updated_at": job.updated_at.isoformat(),
         "result_path": job.result_path,
@@ -349,6 +381,187 @@ def _safe_float(value: Any) -> Optional[float]:
     except (TypeError, ValueError):
         return None
     return number if np.isfinite(number) else None
+
+
+def _as_finite_array(values: Sequence[Any]) -> np.ndarray:
+    numeric: List[float] = []
+    for value in values:
+        number = _safe_float(value)
+        if number is None:
+            continue
+        numeric.append(float(number))
+    return np.asarray(numeric, dtype=float)
+
+
+def _resolve_inferential_preset(metadata: Optional[Mapping[str, Any]]) -> tuple[str, Dict[str, float]]:
+    requested = None
+    if isinstance(metadata, Mapping):
+        requested = metadata.get("inferential_preset")
+    preset = str(requested or DEFAULT_INFERENTIAL_PRESET).strip().lower()
+    if preset not in INFERENTIAL_NULL_PRESETS:
+        logger.warning("inferential_preset_unknown preset=%s fallback=%s", preset, DEFAULT_INFERENTIAL_PRESET)
+        preset = DEFAULT_INFERENTIAL_PRESET if DEFAULT_INFERENTIAL_PRESET in INFERENTIAL_NULL_PRESETS else "casual"
+    return preset, dict(INFERENTIAL_NULL_PRESETS[preset])
+
+
+def _bootstrap_two_sided_p_value(replicates: np.ndarray, null_value: Optional[float]) -> Optional[float]:
+    if null_value is None or replicates.size == 0:
+        return None
+    left_tail = float(np.mean(replicates <= float(null_value)))
+    right_tail = float(np.mean(replicates >= float(null_value)))
+    return float(np.clip(2.0 * min(left_tail, right_tail), 0.0, 1.0))
+
+
+def _build_metric_inference(
+    metric_name: str,
+    values: np.ndarray,
+    reducer: Callable[[np.ndarray], float],
+    null_value: Optional[float],
+    unit: str,
+    confidence_level: float,
+    bootstrap_samples: int,
+    rng: np.random.Generator,
+) -> Dict[str, Any]:
+    if values.size == 0:
+        return {
+            "estimate": None,
+            "confidence_interval": {
+                "level": confidence_level,
+                "low": None,
+                "high": None,
+            },
+            "p_value": None,
+            "null_hypothesis": {
+                "value": null_value,
+                "description": f"{metric_name} equals {null_value}",
+            },
+            "n_samples": 0,
+            "unit": unit,
+            "method": "bootstrap_percentile",
+        }
+
+    estimate = float(reducer(values))
+
+    if values.size == 1:
+        replicates = np.asarray([estimate], dtype=float)
+        low = estimate
+        high = estimate
+    else:
+        replicates = np.empty(int(bootstrap_samples), dtype=float)
+        for idx in range(int(bootstrap_samples)):
+            draw = values[rng.integers(0, values.size, size=values.size)]
+            replicates[idx] = float(reducer(draw))
+        alpha = (1.0 - confidence_level) / 2.0
+        low = float(np.quantile(replicates, alpha))
+        high = float(np.quantile(replicates, 1.0 - alpha))
+
+    p_value = _bootstrap_two_sided_p_value(replicates, null_value)
+
+    return {
+        "estimate": estimate,
+        "confidence_interval": {
+            "level": confidence_level,
+            "low": low,
+            "high": high,
+        },
+        "p_value": p_value,
+        "null_hypothesis": {
+            "value": null_value,
+            "description": f"{metric_name} equals {null_value}",
+        },
+        "n_samples": int(values.size),
+        "unit": unit,
+        "method": "bootstrap_percentile",
+    }
+
+
+def _build_inferential_statistics(
+    voiced_f0: Sequence[float],
+    voiced_midi: Sequence[float],
+    pitch_errors: Sequence[float],
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    preset_name, nulls = _resolve_inferential_preset(metadata)
+    confidence_level = float(np.clip(BOOTSTRAP_CONFIDENCE_LEVEL, 0.5, 0.999))
+    bootstrap_samples = max(200, int(BOOTSTRAP_SAMPLES))
+    rng = np.random.default_rng(20260302)
+
+    voiced_f0_arr = _as_finite_array(voiced_f0)
+    voiced_midi_arr = _as_finite_array(voiced_midi)
+    pitch_error_arr = _as_finite_array(pitch_errors)
+
+    metrics = {
+        "f0_mean_hz": _build_metric_inference(
+            "f0_mean_hz",
+            voiced_f0_arr,
+            lambda data: float(np.mean(data)),
+            nulls.get("f0_mean_hz"),
+            "Hz",
+            confidence_level,
+            bootstrap_samples,
+            rng,
+        ),
+        "f0_min_hz": _build_metric_inference(
+            "f0_min_hz",
+            voiced_f0_arr,
+            lambda data: float(np.min(data)),
+            nulls.get("f0_min_hz"),
+            "Hz",
+            confidence_level,
+            bootstrap_samples,
+            rng,
+        ),
+        "f0_max_hz": _build_metric_inference(
+            "f0_max_hz",
+            voiced_f0_arr,
+            lambda data: float(np.max(data)),
+            nulls.get("f0_max_hz"),
+            "Hz",
+            confidence_level,
+            bootstrap_samples,
+            rng,
+        ),
+        "tessitura_center_midi": _build_metric_inference(
+            "tessitura_center_midi",
+            voiced_midi_arr,
+            lambda data: float(np.mean(data)),
+            nulls.get("tessitura_center_midi"),
+            "MIDI",
+            confidence_level,
+            bootstrap_samples,
+            rng,
+        ),
+        "pitch_error_mean_cents": _build_metric_inference(
+            "pitch_error_mean_cents",
+            pitch_error_arr,
+            lambda data: float(np.mean(data)),
+            nulls.get("pitch_error_mean_cents"),
+            "cents",
+            confidence_level,
+            bootstrap_samples,
+            rng,
+        ),
+    }
+
+    for metric_name, payload in metrics.items():
+        ci = payload.get("confidence_interval") if isinstance(payload, Mapping) else None
+        logger.info(
+            "analysis_metric_inference metric=%s preset=%s estimate=%s ci_low=%s ci_high=%s p_value=%s n=%s",
+            metric_name,
+            preset_name,
+            payload.get("estimate") if isinstance(payload, Mapping) else None,
+            ci.get("low") if isinstance(ci, Mapping) else None,
+            ci.get("high") if isinstance(ci, Mapping) else None,
+            payload.get("p_value") if isinstance(payload, Mapping) else None,
+            payload.get("n_samples") if isinstance(payload, Mapping) else None,
+        )
+
+    return {
+        "preset": preset_name,
+        "confidence_level": confidence_level,
+        "bootstrap_samples": bootstrap_samples,
+        "metrics": metrics,
+    }
 
 
 def _midi_to_note_name(midi_value: float) -> str:
@@ -584,13 +797,28 @@ def _build_summary(result: Mapping[str, Any], duration_seconds: float) -> Dict[s
     if isinstance(key_trajectory, Sequence) and key_trajectory:
         key_confidence = _safe_float(key_trajectory[0].get("confidence")) or 0.0
 
+    overall_confidence = float(np.clip((mean_confidence + key_confidence) / 2.0, 0.0, 1.0))
+    logger.info(
+        "analysis_confidence_summary duration=%.3fs total_frames=%d voiced_frames=%d confidence_min=%.4f confidence_max=%.4f confidence_mean=%.4f key_confidence=%.4f overall_confidence=%.4f",
+        float(duration_seconds),
+        len(pitch_frames),
+        len(voiced_f0),
+        float(np.min(confidences)) if confidences else 0.0,
+        float(np.max(confidences)) if confidences else 0.0,
+        mean_confidence,
+        key_confidence,
+        overall_confidence,
+    )
+
     return {
         "duration_seconds": float(duration_seconds),
         "f0_min": float(np.min(voiced_f0)) if voiced_f0 else None,
         "f0_max": float(np.max(voiced_f0)) if voiced_f0 else None,
         "tessitura_range": tessitura_band,
-        "overall_confidence": float(np.clip((mean_confidence + key_confidence) / 2.0, 0.0, 1.0)),
+        "overall_confidence": overall_confidence,
         "confidence": mean_confidence,
+        "pitch_confidence": mean_confidence,
+        "key_confidence": key_confidence,
     }
 
 
@@ -614,10 +842,55 @@ def _decode_audio_file(file_path: str) -> tuple[np.ndarray, int]:
     return np.asarray(audio), int(sample_rate)
 
 
+def _noop_progress_update(
+    _progress: int,
+    _stage: Optional[str] = None,
+    _message: Optional[str] = None,
+) -> None:
+    return
+
+
+def _resolve_progress_update(
+    metadata: Optional[Mapping[str, Any]],
+) -> Callable[[int, Optional[str], Optional[str]], None]:
+    callback = metadata.get("_progress_callback") if isinstance(metadata, Mapping) else None
+    if not callable(callback):
+        return _noop_progress_update
+
+    log_context = {
+        "filename": metadata.get("filename") if isinstance(metadata, Mapping) else None,
+        "source": metadata.get("source") if isinstance(metadata, Mapping) else None,
+        "example_id": metadata.get("example_id") if isinstance(metadata, Mapping) else None,
+    }
+
+    def _safe_progress_update(progress: int, stage: Optional[str] = None, message: Optional[str] = None) -> None:
+        logger.info(
+            "analysis_progress_emit progress=%s stage=%s message=%s context=%s",
+            progress,
+            stage,
+            message,
+            log_context,
+        )
+        try:
+            callback(progress, stage, message)
+        except Exception:
+            logger.debug("progress_update_callback_failed", exc_info=True)
+
+    return _safe_progress_update
+
+
 def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
     _ensure_output_dir()
     warnings: List[str] = []
-
+    report_progress = _resolve_progress_update(metadata)
+    logger.info(
+        "analysis_pipeline_start file_path=%s filename=%s source=%s example_id=%s",
+        file_path,
+        metadata.get("filename") if isinstance(metadata, Mapping) else None,
+        metadata.get("source") if isinstance(metadata, Mapping) else None,
+        metadata.get("example_id") if isinstance(metadata, Mapping) else None,
+    )
+    report_progress(15, "preprocessing", "Decoding and preprocessing audio.")
     audio, sample_rate = _decode_audio_file(file_path)
     preprocessed = preprocess_audio(
         audio,
@@ -629,6 +902,7 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
     mono_audio = preprocessed.audio
     sample_rate = int(preprocessed.sample_rate)
 
+    report_progress(35, "pitch_extraction", "Extracting pitch and harmonic tracks.")
     stft_result = compute_stft(
         mono_audio,
         sample_rate=sample_rate,
@@ -676,6 +950,7 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
     note_events = _build_note_events(pitch_frames)
     chord_timeline = _build_chord_timeline(note_events)
 
+    report_progress(65, "advanced_analysis", "Running advanced musical and vocal analysis.")
     voiced_midi = [float(frame["midi"]) for frame in pitch_frames if _safe_float(frame.get("midi"))]
     voiced_f0 = [float(frame["f0_hz"]) for frame in pitch_frames if _safe_float(frame.get("f0_hz"))]
     voiced_confidence = [
@@ -754,8 +1029,14 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
             }
         ]
     )
+    inferential_statistics = _build_inferential_statistics(
+        voiced_f0=voiced_f0,
+        voiced_midi=voiced_midi,
+        pitch_errors=pitch_errors,
+        metadata=metadata,
+    )
 
-    result: Dict[str, Any] = {
+    results: Dict[str, Any] = {
         "metadata": {
             "analysis_version": "0.1.0",
             "source": "tessiture-api",
@@ -790,39 +1071,42 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
             "phrase_segmentation": phrase_payload,
         },
         "uncertainty": uncertainty,
+        "inferential_statistics": inferential_statistics,
     }
-    result["summary"] = _build_summary(result, duration_seconds)
+    results["summary"] = _build_summary(results, duration_seconds)
 
     artifact_stem = f"{Path(file_path).stem}_{uuid4().hex[:10]}"
     json_path = OUTPUT_DIR / f"{artifact_stem}.json"
     csv_path = OUTPUT_DIR / f"{artifact_stem}.csv"
     pdf_path = OUTPUT_DIR / f"{artifact_stem}.pdf"
 
+    report_progress(85, "reporting", "Generating report artifacts.")
     generated_files: Dict[str, str] = {}
-    generate_json_report(result, output_path=str(json_path))
+    generate_json_report(results, output_path=str(json_path))
     generated_files["json"] = str(json_path)
 
-    generate_csv_report(result, output_path=str(csv_path))
+    generate_csv_report(results, output_path=str(csv_path))
     generated_files["csv"] = str(csv_path)
 
     try:
-        generate_pdf_report(result, output_path=str(pdf_path))
+        generate_pdf_report(results, output_path=str(pdf_path))
         generated_files["pdf"] = str(pdf_path)
     except Exception as exc:
         warnings.append(f"PDF report unavailable: {exc}")
 
-    result["files"] = generated_files
-    result["result_path"] = generated_files.get("json")
+    results["files"] = generated_files
+    results["result_path"] = generated_files.get("json")
     if warnings:
-        result["warnings"] = warnings
-    return result
+        results["warnings"] = warnings
+    report_progress(95, "reporting", "Finalizing analysis outputs.")
+    return results
 
 
 async def analysis_pipeline(
     file_path: str,
     metadata: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
-    return _run_analysis_pipeline(file_path=file_path, metadata=metadata)
+    return await asyncio.to_thread(_run_analysis_pipeline, file_path=file_path, metadata=metadata)
 
 
 @router.get("/examples")
@@ -878,6 +1162,13 @@ def get_status(job_id: str) -> Dict[str, Any]:
     job = job_manager.get_status(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found.")
+    logger.info(
+        "analysis_status_poll job_id=%s status=%s progress=%s stage=%s",
+        job_id,
+        job.status,
+        job.progress,
+        job.stage,
+    )
     return _serialize_status(job)
 
 

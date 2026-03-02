@@ -14,6 +14,21 @@ const formatValue = (value) => {
   return String(value);
 };
 
+const formatPValue = (value) => {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "—";
+  }
+  if (value < 0.001) {
+    return "<0.001";
+  }
+  return value.toFixed(3);
+};
+
+const prettifyMetricName = (name) =>
+  String(name || "")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+
 const normalizeConfidence = (value) => {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return null;
@@ -46,6 +61,14 @@ function AnalysisResults({
   const tessitura = summary?.tessitura_range ?? summary?.range;
   const confidence = summary?.confidence ?? summary?.overall_confidence;
   const normalizedConfidence = normalizeConfidence(confidence);
+  const inferentialStatistics =
+    results?.inferential_statistics && typeof results.inferential_statistics === "object"
+      ? results.inferential_statistics
+      : null;
+  const inferentialMetrics =
+    inferentialStatistics?.metrics && typeof inferentialStatistics.metrics === "object"
+      ? Object.entries(inferentialStatistics.metrics)
+      : [];
 
   useEffect(() => {
     if (!hasResults || !results) {
@@ -72,8 +95,10 @@ function AnalysisResults({
       tessituraKeys: results?.tessitura && typeof results.tessitura === "object" ? Object.keys(results.tessitura) : [],
       tessituraPdfDensityLength: tessituraPdfDensity.length,
       tessituraHistogramLength: Array.isArray(results?.tessitura?.histogram) ? results.tessitura.histogram.length : 0,
+      inferentialPreset: inferentialStatistics?.preset ?? null,
+      inferentialMetricCount: inferentialMetrics.length,
     });
-  }, [hasResults, results, status?.status]);
+  }, [hasResults, results, status?.status, inferentialStatistics?.preset, inferentialMetrics.length]);
 
   return (
     <section className="card results" aria-labelledby={titleId} aria-busy={isFetchingResults}>
@@ -129,6 +154,42 @@ function AnalysisResults({
               </div>
             </dl>
           </div>
+
+          {inferentialMetrics.length ? (
+            <section className="results__inferential" aria-label="Inferential statistics">
+              <h3 className="results__inferential-title">Per-metric inferential statistics</h3>
+              <p className="results__inferential-meta">
+                Preset: {inferentialStatistics?.preset ?? "unknown"} · CI level: {formatValue(inferentialStatistics?.confidence_level)}
+              </p>
+              <div className="results__inferential-table-wrap">
+                <table className="results__inferential-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Metric</th>
+                      <th scope="col">Estimate</th>
+                      <th scope="col">95% CI</th>
+                      <th scope="col">p-value</th>
+                      <th scope="col">N</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {inferentialMetrics.map(([metricName, metricPayload]) => {
+                      const ci = metricPayload?.confidence_interval ?? null;
+                      return (
+                        <tr key={metricName}>
+                          <th scope="row">{prettifyMetricName(metricName)}</th>
+                          <td>{formatValue(metricPayload?.estimate)}</td>
+                          <td>{`[${formatValue(ci?.low)}, ${formatValue(ci?.high)}]`}</td>
+                          <td>{formatPValue(metricPayload?.p_value)}</td>
+                          <td>{formatValue(metricPayload?.n_samples)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          ) : null}
 
           <div className="results__visuals">
             <PitchCurve results={results} />

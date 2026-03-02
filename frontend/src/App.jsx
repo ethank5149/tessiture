@@ -8,6 +8,7 @@ import {
   fetchExampleTracks,
   fetchJobResults,
   fetchJobStatus,
+  normalizeJobStatus,
   submitAnalysisJob,
   submitExampleAnalysisJob,
 } from "./api";
@@ -91,7 +92,7 @@ function App() {
       : isSubmitting
         ? "Submitting analysis job."
         : isPolling
-          ? `Analysis status: ${status?.status ?? "queued"}.`
+          ? `Analysis status: ${status?.stage ?? status?.status ?? "queued"} (${status?.progress ?? 0}%).`
           : status?.status === "completed"
             ? "Analysis completed."
             : "";
@@ -114,7 +115,7 @@ function App() {
       const nextJobId = response?.job_id ?? null;
       setJobId(nextJobId);
       if (nextJobId) {
-        setStatus({ job_id: nextJobId, status: "queued" });
+        setStatus(normalizeJobStatus({ job_id: nextJobId, status: "queued", progress: 0 }));
       }
       return response;
     } catch (submitError) {
@@ -241,7 +242,7 @@ function App() {
 
     const poll = async () => {
       try {
-        const nextStatus = await fetchJobStatus(jobId);
+        const nextStatus = normalizeJobStatus(await fetchJobStatus(jobId));
         if (!isMounted) {
           return;
         }

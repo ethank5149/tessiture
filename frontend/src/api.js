@@ -5,6 +5,7 @@ const DEFAULT_API_BASE_URL =
   "";
 
 const API_BASE_URL = DEFAULT_API_BASE_URL.replace(/\/$/, "");
+const TERMINAL_STATUSES = new Set(["completed", "failed", "error"]);
 
 const buildUrl = (path) => {
   if (!path) {
@@ -80,6 +81,47 @@ const normalizeSummary = (summary = {}, metadata = {}, pitch = {}, tessitura = {
   };
 };
 
+const normalizeProgress = (progress, status) => {
+  const numeric = Number(progress);
+  if (Number.isFinite(numeric)) {
+    return Math.max(0, Math.min(100, Math.round(numeric)));
+  }
+  if (TERMINAL_STATUSES.has(status)) {
+    return 100;
+  }
+  if (status === "queued") {
+    return 0;
+  }
+  return 0;
+};
+
+export const normalizeJobStatus = (payload = {}) => {
+  const normalized = payload && typeof payload === "object" ? payload : {};
+  const status =
+    typeof normalized.status === "string" && normalized.status.trim()
+      ? normalized.status.trim()
+      : "queued";
+  const message =
+    typeof normalized.message === "string" && normalized.message.trim()
+      ? normalized.message.trim()
+      : typeof normalized.detail === "string" && normalized.detail.trim()
+        ? normalized.detail.trim()
+        : null;
+  const stage =
+    typeof normalized.stage === "string" && normalized.stage.trim()
+      ? normalized.stage.trim()
+      : status;
+
+  return {
+    ...normalized,
+    status,
+    progress: normalizeProgress(normalized.progress, status),
+    stage,
+    message,
+    detail: message,
+  };
+};
+
 export const normalizeAnalysisResult = (payload = {}) => {
   if (!payload || typeof payload !== "object") {
     return {
@@ -92,6 +134,7 @@ export const normalizeAnalysisResult = (payload = {}) => {
       tessitura: {},
       advanced: {},
       uncertainty: {},
+      inferential_statistics: { metrics: {} },
       files: {},
     };
   }
@@ -156,6 +199,17 @@ export const normalizeAnalysisResult = (payload = {}) => {
       payload.uncertainty && typeof payload.uncertainty === "object"
         ? payload.uncertainty
         : {},
+    inferential_statistics:
+      payload.inferential_statistics && typeof payload.inferential_statistics === "object"
+        ? {
+            ...payload.inferential_statistics,
+            metrics:
+              payload.inferential_statistics.metrics &&
+              typeof payload.inferential_statistics.metrics === "object"
+                ? payload.inferential_statistics.metrics
+                : {},
+          }
+        : { metrics: {} },
     files:
       payload.files && typeof payload.files === "object"
         ? payload.files
@@ -210,7 +264,7 @@ export const fetchJobStatus = async (jobId) => {
       method: "GET",
     })
   );
-  return response.json();
+  return normalizeJobStatus(await response.json());
 };
 
 export const fetchJobResults = async (jobId, format = "json") => {

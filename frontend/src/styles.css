@@ -395,6 +395,36 @@ a:focus-visible {
   margin: 0;
 }
 
+.status__stage {
+  margin: 0;
+  color: var(--text-primary);
+  text-transform: capitalize;
+}
+
+.status__progress-group {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.status__progress-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.status__progress {
+  inline-size: 100%;
+  block-size: 0.75rem;
+  accent-color: var(--brand-strong);
+}
+
+.status__progress-value {
+  color: var(--text-soft);
+  font-variant-numeric: tabular-nums;
+  min-inline-size: 3ch;
+  text-align: right;
+}
+
 .summary-list {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
