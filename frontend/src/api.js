@@ -326,3 +326,22 @@ export const downloadJobResults = async (jobId, format = "csv") => {
     url,
   };
 };
+
+export const prepareReferenceFromExample = async (exampleId) => {
+  const response = await fetch(buildUrl(`/reference/from-example/${encodeURIComponent(exampleId)}`), {
+    method: "POST",
+  });
+  await ensureOk(response);
+  return response.json();
+};
+
+export const prepareReferenceFromUpload = async (audioFile) => {
+  const formData = new FormData();
+  formData.append("audio", audioFile);
+  const response = await fetch(buildUrl("/reference/upload"), {
+    method: "POST",
+    body: formData,
+  });
+  await ensureOk(response);
+  return response.json();
+};

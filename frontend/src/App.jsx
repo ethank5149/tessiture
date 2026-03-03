@@ -3,6 +3,9 @@ import AudioUploader from "./components/AudioUploader";
 import AnalysisStatus from "./components/AnalysisStatus";
 import AnalysisResults from "./components/AnalysisResults";
 import ExampleGallery from "./components/ExampleGallery";
+import ReferenceTrackSelector from "./components/ReferenceTrackSelector";
+import LiveComparisonView from "./components/LiveComparisonView";
+import ComparisonResults from "./components/ComparisonResults";
 import {
   downloadJobResults,
   fetchExampleTracks,
@@ -18,6 +21,7 @@ const POLL_INTERVAL_MS = 2000;
 const APP_VIEWS = {
   upload: "upload",
   examples: "examples",
+  comparison: "comparison",
 };
 
 const isLikelyIosDevice = () => {
@@ -93,6 +97,12 @@ function App() {
   const [exampleError, setExampleError] = useState(null);
   const [activeView, setActiveView] = useState(APP_VIEWS.upload);
   const [selectedExampleId, setSelectedExampleId] = useState(null);
+
+  // Comparison state
+  const [referenceId, setReferenceId] = useState(null);
+  const [referenceInfo, setReferenceInfo] = useState(null);
+  const [sessionReport, setSessionReport] = useState(null);
+
   const appReleaseVersion = normalizeReleaseVersion(import.meta?.env?.VITE_APP_VERSION);
 
   const pollingRef = useRef(null);
@@ -344,6 +354,20 @@ function App() {
         >
           Example gallery
         </button>
+        <button
+          id="tab-comparison"
+          className={`button app-shell__tab${activeView === APP_VIEWS.comparison ? " app-shell__tab--active" : ""}`}
+          type="button"
+          role="tab"
+          aria-selected={activeView === APP_VIEWS.comparison}
+          aria-controls="panel-comparison"
+          onClick={() => {
+            setActiveView(APP_VIEWS.comparison);
+            setSessionReport(null);
+          }}
+        >
+          Compare
+        </button>
       </div>
 
       <div id="main-content" className="app-shell__content" tabIndex={-1}>
@@ -396,6 +420,40 @@ function App() {
               isSelecting={isSubmitting}
               error={exampleError}
             />
+          </div>
+        ) : null}
+
+        {activeView === APP_VIEWS.comparison ? (
+          <div id="panel-comparison" role="tabpanel" aria-labelledby="tab-comparison" className="app-shell__panel">
+            {sessionReport ? (
+              <ComparisonResults
+                sessionReport={sessionReport}
+                onClose={() => {
+                  setSessionReport(null);
+                  setReferenceInfo(null);
+                  setReferenceId(null);
+                }}
+                onStartNew={() => setSessionReport(null)}
+              />
+            ) : referenceInfo ? (
+              <LiveComparisonView
+                referenceId={referenceId}
+                referenceInfo={referenceInfo}
+                onSessionComplete={setSessionReport}
+                onClose={() => {
+                  setReferenceInfo(null);
+                  setReferenceId(null);
+                }}
+              />
+            ) : (
+              <ReferenceTrackSelector
+                exampleTracks={exampleTracks}
+                onReferenceReady={(refId, refInfo) => {
+                  setReferenceId(refId);
+                  setReferenceInfo(refInfo);
+                }}
+              />
+            )}
           </div>
         ) : null}
       </div>

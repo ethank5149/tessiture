@@ -15,7 +15,10 @@ import {
 import AnalysisResults from "./AnalysisResults";
 import AnalysisStatus from "./AnalysisStatus";
 import AudioUploader from "./AudioUploader";
+import ComparisonMetricsPanel from "./ComparisonMetricsPanel";
+import ComparisonResults from "./ComparisonResults";
 import ExampleGallery from "./ExampleGallery";
+import ReferenceTrackSelector from "./ReferenceTrackSelector";
 
 vi.mock("../api", () => ({
   downloadJobResults: vi.fn(),
@@ -737,5 +740,238 @@ describe("App example gallery wiring", () => {
     render(<App />);
 
     expect(screen.queryByText(/^Release\s+/)).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Minimal mock session report used across ComparisonResults tests
+// ---------------------------------------------------------------------------
+const mockSessionReport = {
+  session_id: "sess-001",
+  reference_id: "ref-001",
+  duration_s: 60.0,
+  comparison: {
+    pitch: {
+      frame_deviations_cents: [],
+      frame_times_s: [],
+      mean_absolute_pitch_error_cents: 0,
+      pitch_accuracy_ratio: 1.0,
+      pitch_bias_cents: 0,
+      pitch_stability_cents: 0,
+      voiced_frame_count: 0,
+    },
+    rhythm: {
+      onset_deviations_ms: [],
+      duration_ratios: [],
+      mean_onset_error_ms: 0,
+      rhythmic_consistency_ms: 0,
+      note_hit_rate: 0,
+      matched_note_count: 0,
+      reference_note_count: 0,
+    },
+    range: {
+      user_range_min_midi: null,
+      user_range_max_midi: null,
+      reference_range_min_midi: null,
+      reference_range_max_midi: null,
+      range_overlap_semitones: 0,
+      range_coverage_ratio: 0,
+      tessitura_center_offset_semitones: null,
+      out_of_range_note_fraction: 0,
+      strain_zone_incursion_ratio: 0,
+    },
+    formants: {
+      mean_f1_deviation_hz: null,
+      mean_f2_deviation_hz: null,
+      spectral_centroid_deviation_hz: null,
+      formant_data_available: false,
+    },
+  },
+};
+
+// ---------------------------------------------------------------------------
+// ReferenceTrackSelector tests
+// ---------------------------------------------------------------------------
+describe("ReferenceTrackSelector", () => {
+  it("renders reference selector with tabs", () => {
+    render(
+      <ReferenceTrackSelector
+        exampleTracks={[]}
+        onReferenceReady={vi.fn()}
+        isLoading={false}
+        error={null}
+      />
+    );
+
+    expect(screen.getByRole("tab", { name: "From Library" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Upload Reference" })).toBeInTheDocument();
+  });
+
+  it("renders example tracks in library tab", () => {
+    const tracks = [
+      { id: "t1", display_name: "Track One", artist: "Artist A" },
+      { id: "t2", display_name: "Track Two", artist: "Artist B" },
+    ];
+
+    render(
+      <ReferenceTrackSelector
+        exampleTracks={tracks}
+        onReferenceReady={vi.fn()}
+        isLoading={false}
+        error={null}
+      />
+    );
+
+    expect(screen.getByText("Track One")).toBeInTheDocument();
+    expect(screen.getByText("Track Two")).toBeInTheDocument();
+  });
+
+  it("renders loading state", () => {
+    render(
+      <ReferenceTrackSelector
+        exampleTracks={[]}
+        onReferenceReady={vi.fn()}
+        isLoading={true}
+        error={null}
+      />
+    );
+
+    expect(screen.getByText(/Preparing reference track/i)).toBeInTheDocument();
+  });
+
+  it("renders error message", () => {
+    render(
+      <ReferenceTrackSelector
+        exampleTracks={[]}
+        onReferenceReady={vi.fn()}
+        isLoading={false}
+        error="Test error"
+      />
+    );
+
+    expect(screen.getByText("Test error")).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ComparisonMetricsPanel tests
+// ---------------------------------------------------------------------------
+describe("ComparisonMetricsPanel", () => {
+  it("renders without data", () => {
+    expect(() =>
+      render(
+        <ComparisonMetricsPanel
+          runningSummary={null}
+          latestFeedback={null}
+          sessionElapsedS={0}
+        />
+      )
+    ).not.toThrow();
+  });
+
+  it("renders running summary metrics", () => {
+    const runningSummary = {
+      session_elapsed_s: 30,
+      voiced_chunk_count: 20,
+      total_chunk_count: 25,
+      mean_pitch_deviation_cents: 12.5,
+      pitch_accuracy_ratio: 0.84,
+    };
+
+    render(
+      <ComparisonMetricsPanel
+        runningSummary={runningSummary}
+        latestFeedback={null}
+        sessionElapsedS={30}
+      />
+    );
+
+    // pitch_accuracy_ratio 0.84 → "84%"
+    expect(screen.getByText("84%")).toBeInTheDocument();
+  });
+
+  it("renders current note from feedback", () => {
+    const latestFeedback = {
+      user_note_name: "A4",
+      reference_note_name: "A4",
+      pitch_deviation_cents: -5.2,
+      in_tune: true,
+    };
+
+    render(
+      <ComparisonMetricsPanel
+        runningSummary={null}
+        latestFeedback={latestFeedback}
+        sessionElapsedS={0}
+      />
+    );
+
+    // "A4" should appear as the user note (and reference note)
+    const a4Elements = screen.getAllByText("A4");
+    expect(a4Elements.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ComparisonResults tests
+// ---------------------------------------------------------------------------
+describe("ComparisonResults", () => {
+  it("renders session complete", () => {
+    render(
+      <ComparisonResults
+        sessionReport={mockSessionReport}
+        onClose={vi.fn()}
+        onStartNew={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole("heading", { name: "Session Complete" })).toBeInTheDocument();
+  });
+
+  it("calls onClose when close button clicked", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+
+    render(
+      <ComparisonResults
+        sessionReport={mockSessionReport}
+        onClose={onClose}
+        onStartNew={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: /close/i }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("calls onStartNew when start new session clicked", async () => {
+    const user = userEvent.setup();
+    const onStartNew = vi.fn();
+
+    render(
+      <ComparisonResults
+        sessionReport={mockSessionReport}
+        onClose={vi.fn()}
+        onStartNew={onStartNew}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: /start new session/i }));
+    expect(onStartNew).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// api.js comparison function export tests
+// ---------------------------------------------------------------------------
+describe("api.js comparison function exports", () => {
+  it("prepareReferenceFromExample is exported", async () => {
+    const actualApi = await vi.importActual("../api");
+    expect(actualApi.prepareReferenceFromExample).toBeDefined();
+  });
+
+  it("prepareReferenceFromUpload is exported", async () => {
+    const actualApi = await vi.importActual("../api");
+    expect(actualApi.prepareReferenceFromUpload).toBeDefined();
   });
 });

@@ -703,3 +703,531 @@ a:focus-visible {
     forced-color-adjust: auto;
   }
 }
+
+/* ============================================================
+   Reference Comparison — Phase 4
+   ============================================================ */
+
+/* Pitch deviation color states */
+.note-in-tune {
+  color: var(--success);
+}
+
+.note-warning {
+  color: #facc15; /* yellow-400 equivalent */
+}
+
+.note-off-pitch {
+  color: var(--danger);
+}
+
+/* ── Comparison view container ── */
+.comparison-view {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  padding: 1rem;
+  max-width: 800px;
+  margin: 0 auto;
+}
+
+.comparison-view--report pre.comparison-view__report-json {
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 1rem;
+  overflow-x: auto;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── Post-session comparison results ── */
+.comparison-results__header {
+  border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: 0.75rem;
+}
+
+.comparison-results__title {
+  margin: 0 0 0.35rem;
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.comparison-results__meta {
+  display: flex;
+  gap: 1.25rem;
+  color: var(--text-muted);
+  font-size: 0.88rem;
+  flex-wrap: wrap;
+}
+
+.comparison-results__section {
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 1rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.comparison-results__section-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: 0.01em;
+}
+
+.comparison-results__coaching {
+  margin: 0;
+  font-size: 0.88rem;
+  color: var(--text-muted);
+  border-left: 3px solid var(--brand);
+  padding-left: 0.75rem;
+}
+
+.comparison-results__unavailable {
+  margin: 0;
+  color: var(--text-soft);
+  font-style: italic;
+  font-size: 0.9rem;
+}
+
+.comparison-results__actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding-top: 0.5rem;
+}
+
+/* ── Reference selector ── */
+.reference-selector {
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.reference-selector__heading {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.reference-selector__description {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.reference-selector__tabs {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.reference-selector__tab {
+  font-size: 0.9rem;
+  padding: 0.4rem 0.85rem;
+  border-radius: 6px;
+  color: var(--text-muted);
+}
+
+.reference-selector__tab--active {
+  background: var(--brand-strong);
+  border-color: var(--brand-strong);
+  color: #ffffff;
+}
+
+.reference-selector__panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.reference-selector__track-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.reference-selector__track-item {
+  display: contents;
+}
+
+.reference-selector__track-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  padding: 0.6rem 0.85rem;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s;
+  width: 100%;
+}
+
+.reference-selector__track-btn:hover:not(:disabled) {
+  border-color: var(--brand);
+}
+
+.reference-selector__track-btn--selected {
+  border-color: var(--brand-strong);
+  background: color-mix(in oklab, var(--surface-2) 70%, var(--brand-strong));
+}
+
+.reference-selector__track-title {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 0.95rem;
+}
+
+.reference-selector__track-artist {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.reference-selector__empty {
+  color: var(--text-muted);
+  font-style: italic;
+  margin: 0;
+}
+
+.reference-selector__file-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  cursor: pointer;
+}
+
+.reference-selector__file-label-text {
+  font-weight: 600;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.reference-selector__file-input {
+  display: block;
+  color: var(--text-primary);
+  font-size: 0.9rem;
+}
+
+.reference-selector__file-hint {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 0.82rem;
+}
+
+.reference-selector__loading {
+  margin: 0;
+  color: var(--brand);
+  font-size: 0.9rem;
+}
+
+.reference-selector__error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 0.9rem;
+  background: color-mix(in oklab, var(--surface-2) 70%, var(--danger));
+  border: 1px solid var(--danger);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+}
+
+/* ── Live session header ── */
+.live-session-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.live-session-header__back {
+  flex-shrink: 0;
+}
+
+.live-session-header__info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.live-session-header__title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.live-session-header__meta {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+/* ── Reference audio player ── */
+.live-session-player {
+  display: flex;
+  align-items: center;
+}
+
+.live-session-player__audio {
+  width: 100%;
+  accent-color: var(--brand-strong);
+}
+
+.live-session-player--none {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 0.88rem;
+  font-style: italic;
+}
+
+/* ── Live pitch display ── */
+.live-pitch-display {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 1.25rem;
+}
+
+.live-pitch-display__note {
+  font-size: 3.5rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1;
+  min-height: 1.2em;
+  color: var(--text-primary);
+  transition: color 0.15s;
+}
+
+/* ── Deviation meter ── */
+.pitch-deviation-meter {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  max-width: 400px;
+}
+
+.pitch-deviation-meter__label {
+  color: var(--text-soft);
+  font-size: 0.78rem;
+  white-space: nowrap;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.pitch-deviation-meter__track {
+  position: relative;
+  flex: 1;
+  height: 14px;
+  background: var(--surface-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.pitch-deviation-meter__center-mark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  background: var(--text-soft);
+  transform: translateX(-50%);
+  opacity: 0.5;
+}
+
+.pitch-deviation-needle {
+  position: absolute;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-primary);
+  transform: translate(-50%, -50%);
+  transition: left 0.1s linear, background-color 0.1s;
+  z-index: 1;
+}
+
+.pitch-deviation-needle.note-in-tune {
+  background: var(--success);
+}
+
+.pitch-deviation-needle.note-warning {
+  background: #facc15;
+}
+
+.pitch-deviation-needle.note-off-pitch {
+  background: var(--danger);
+}
+
+/* ── Metrics panel ── */
+.metrics-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.note-display {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 1rem 1.25rem;
+}
+
+.note-display__note {
+  font-size: 2.5rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text-primary);
+  transition: color 0.15s;
+}
+
+.note-display__deviation {
+  font-size: 1.4rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  transition: color 0.15s;
+}
+
+.note-display__ref-note {
+  font-size: 1rem;
+  color: var(--text-muted);
+}
+
+.note-display__status {
+  font-size: 0.88rem;
+  font-weight: 600;
+  margin-left: auto;
+}
+
+.note-display__silent {
+  font-size: 2rem;
+  color: var(--text-soft);
+  font-weight: 400;
+}
+
+.metrics-panel__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 0.65rem;
+  margin: 0;
+}
+
+.metric-card {
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 0.65rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.metric-card__label {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.metric-card__value {
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  margin: 0;
+}
+
+/* ── Session controls ── */
+.live-session-controls {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.live-session-controls__start,
+.live-session-controls__stop {
+  min-width: 160px;
+}
+
+.button--primary {
+  background: var(--brand-strong);
+  border-color: var(--brand-strong);
+  color: #ffffff;
+}
+
+.button--primary:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--brand-strong) 85%, white);
+}
+
+.button--danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #ffffff;
+}
+
+.button--danger:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--danger) 85%, white);
+}
+
+.live-session-controls__status {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--danger);
+  letter-spacing: 0.03em;
+}
+
+/* ── Session errors ── */
+.live-session-error {
+  margin: 0;
+  color: var(--danger);
+  background: color-mix(in oklab, var(--surface-2) 70%, var(--danger));
+  border: 1px solid var(--danger);
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.9rem;
+}
+
+/* ── Responsive adjustments ── */
+@media (max-width: 480px) {
+  .live-pitch-display__note {
+    font-size: 2.5rem;
+  }
+
+  .note-display__note {
+    font-size: 1.8rem;
+  }
+
+  .metrics-panel__grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}

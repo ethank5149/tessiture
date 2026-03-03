@@ -200,4 +200,27 @@ def generate_json_report(result: Mapping[str, Any], output_path: Optional[str] =
     return json_text
 
 
+def generate_comparison_json_report(
+    session_report: dict,
+    output_path: str,
+) -> str:
+    """Write a comparison session report to a JSON file.
+
+    Args:
+        session_report: Dict from ``session_report_to_dict()`` or from the WS
+            ``session_report`` message.
+        output_path: Path to write the JSON file.
+
+    Returns:
+        The *output_path* string.
+    """
+    import json
+    from pathlib import Path
+
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as fh:
+        json.dump(session_report, fh, indent=2, default=str)
+    return output_path
+
+
 __all__ = ["generate_json_report"]

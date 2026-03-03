@@ -333,4 +333,198 @@ def generate_pdf_report(result: Mapping[str, Any], output_path: Optional[str] = 
     return output_path
 
 
-__all__ = ["generate_pdf_report"]
+def generate_comparison_pdf_report(
+    session_report: dict,
+    output_path: str,
+) -> str:
+    """Generate a PDF vocal coaching comparison report from a session report.
+
+    Sections:
+
+    1. Session overview (reference track, duration, date)
+    2. Pitch accuracy (mean error, accuracy ratio, bias, stability)
+    3. Rhythm accuracy (note hit rate, mean onset error, rhythmic consistency)
+    4. Range comparison (overlap, coverage, tessitura offset)
+    5. Formant/timbre (if data available)
+    6. Coaching recommendations (generated from metrics, quantitative statements only)
+
+    Args:
+        session_report: Dict from ``session_report_to_dict()`` or WS
+            ``session_report`` message.
+        output_path: Path to write the PDF.
+
+    Returns:
+        The *output_path* string.
+    """
+    if not _REPORTLAB_AVAILABLE:
+        raise ImportError(
+            "reportlab is required for PDF report composition. "
+            "Install it with 'pip install reportlab'."
+        ) from _REPORTLAB_IMPORT_ERROR
+
+    from pathlib import Path
+
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+    pitch = _ensure_mapping(session_report.get("pitch_comparison"))
+    rhythm = _ensure_mapping(session_report.get("rhythm_comparison"))
+    rng = _ensure_mapping(session_report.get("range_comparison"))
+    formants = _ensure_mapping(session_report.get("formant_comparison"))
+
+    styles = getSampleStyleSheet()
+    title_style: ParagraphStyle = styles["Title"]
+    heading_style: ParagraphStyle = styles["Heading1"]
+    body_style: ParagraphStyle = styles["BodyText"]
+
+    story: list[Any] = []
+
+    # --- Title ---
+    story.append(Paragraph("Vocal Comparison Report", title_style))
+    story.append(Spacer(1, 12))
+
+    # --- Section 1: Session Overview ---
+    story.append(Paragraph("Session Overview", heading_style))
+    ref_source = str(session_report.get("reference_source") or "N/A")
+    ref_source_id = str(session_report.get("reference_source_id") or "N/A")
+    ref_key = str(session_report.get("reference_key") or "N/A")
+    started_at = str(session_report.get("session_started_at") or "N/A")
+    duration_s = _safe_float(session_report.get("session_duration_s"))
+    total_chunks = session_report.get("total_chunks_processed")
+    voiced_chunks = session_report.get("voiced_chunks")
+
+    overview_rows = [
+        ["Field", "Value"],
+        ["Reference source", ref_source],
+        ["Reference file / ID", ref_source_id],
+        ["Reference key", ref_key],
+        ["Session started", started_at],
+        ["Duration (s)", _format_number(duration_s)],
+        ["Total chunks processed", str(total_chunks) if total_chunks is not None else "N/A"],
+        ["Voiced chunks", str(voiced_chunks) if voiced_chunks is not None else "N/A"],
+    ]
+    story.append(_build_table(overview_rows))
+    story.append(Spacer(1, 12))
+
+    # --- Section 2: Pitch Accuracy ---
+    story.append(Paragraph("Pitch Accuracy", heading_style))
+    pitch_rows = [
+        ["Metric", "Value"],
+        ["Mean absolute pitch error (cents)", _format_number(pitch.get("mean_absolute_pitch_error_cents"))],
+        ["Pitch accuracy ratio (within ±50 ct)", _format_number(pitch.get("pitch_accuracy_ratio"))],
+        ["Pitch bias (cents, + = sharp)", _format_number(pitch.get("pitch_bias_cents"))],
+        ["Pitch stability / std dev (cents)", _format_number(pitch.get("pitch_stability_cents"))],
+        ["Voiced frame count", _format_number(pitch.get("voiced_frame_count"))],
+    ]
+    story.append(_build_table(pitch_rows))
+    mape = _safe_float(pitch.get("mean_absolute_pitch_error_cents"))
+    if mape is not None:
+        if mape <= 25.0:
+            pitch_feedback = f"Mean pitch error of {mape:.1f} cents — within target of ±25 cents."
+        elif mape <= 50.0:
+            pitch_feedback = f"Mean pitch error of {mape:.1f} cents — slightly above target of ±25 cents."
+        else:
+            pitch_feedback = f"Mean pitch error of {mape:.1f} cents — significantly above target of ±25 cents."
+        story.append(Spacer(1, 6))
+        story.append(Paragraph(pitch_feedback, body_style))
+    story.append(Spacer(1, 12))
+
+    # --- Section 3: Rhythm Accuracy ---
+    story.append(Paragraph("Rhythm Accuracy", heading_style))
+    hit_rate = _safe_float(rhythm.get("note_hit_rate"))
+    matched = rhythm.get("matched_note_count")
+    ref_notes = rhythm.get("reference_note_count")
+    rhythm_rows = [
+        ["Metric", "Value"],
+        ["Note hit rate", _format_number(hit_rate)],
+        ["Matched / reference notes",
+         f"{matched} / {ref_notes}" if matched is not None and ref_notes is not None else "N/A"],
+        ["Mean onset error (ms)", _format_number(rhythm.get("mean_onset_error_ms"))],
+        ["Rhythmic consistency / std dev (ms)", _format_number(rhythm.get("rhythmic_consistency_ms"))],
+    ]
+    story.append(_build_table(rhythm_rows))
+    if hit_rate is not None and ref_notes:
+        moe_ms = _safe_float(rhythm.get("mean_onset_error_ms")) or 0.0
+        tol = 150.0  # onset_tolerance_s * 1000
+        within = "within" if moe_ms <= tol else "outside"
+        story.append(Spacer(1, 6))
+        story.append(Paragraph(
+            f"{hit_rate * 100:.1f}% of reference notes were matched. "
+            f"Mean onset error {moe_ms:.1f} ms — {within} the {tol:.0f} ms onset tolerance.",
+            body_style,
+        ))
+    story.append(Spacer(1, 12))
+
+    # --- Section 4: Vocal Range ---
+    story.append(Paragraph("Vocal Range Comparison", heading_style))
+    range_rows = [
+        ["Metric", "Value"],
+        ["User range min (MIDI)", _format_number(rng.get("user_range_min_midi"))],
+        ["User range max (MIDI)", _format_number(rng.get("user_range_max_midi"))],
+        ["Reference range min (MIDI)", _format_number(rng.get("reference_range_min_midi"))],
+        ["Reference range max (MIDI)", _format_number(rng.get("reference_range_max_midi"))],
+        ["Range overlap (semitones)", _format_number(rng.get("range_overlap_semitones"))],
+        ["Range coverage ratio", _format_number(rng.get("range_coverage_ratio"))],
+        ["Tessitura center offset (semitones)", _format_number(rng.get("tessitura_center_offset_semitones"))],
+        ["Out-of-range note fraction", _format_number(rng.get("out_of_range_note_fraction"))],
+    ]
+    story.append(_build_table(range_rows))
+    coverage = _safe_float(rng.get("range_coverage_ratio"))
+    if coverage is not None:
+        story.append(Spacer(1, 6))
+        story.append(Paragraph(
+            f"Your observed range covered {coverage * 100:.1f}% of the reference pitch range.",
+            body_style,
+        ))
+    story.append(Spacer(1, 12))
+
+    # --- Section 5: Formant / Timbre ---
+    story.append(Paragraph("Formant / Timbre", heading_style))
+    formant_available = formants.get("formant_data_available", False)
+    if formant_available:
+        formant_rows = [
+            ["Metric", "Value"],
+            ["Mean F1 deviation (Hz)", _format_number(formants.get("mean_f1_deviation_hz"))],
+            ["Mean F2 deviation (Hz)", _format_number(formants.get("mean_f2_deviation_hz"))],
+            ["Spectral centroid deviation (Hz)", _format_number(formants.get("spectral_centroid_deviation_hz"))],
+        ]
+        story.append(_build_table(formant_rows))
+    else:
+        story.append(Paragraph(
+            "Formant comparison is unavailable in live streaming mode. "
+            "Upload the recorded audio for a full formant/timbre analysis.",
+            body_style,
+        ))
+    story.append(Spacer(1, 12))
+
+    # --- Section 6: Coaching Recommendations ---
+    story.append(Paragraph("Coaching Recommendations", heading_style))
+    coaching_lines: list[str] = []
+    if mape is not None:
+        coaching_lines.append(
+            f"• Pitch: Mean pitch error {mape:.1f} cents — "
+            + ("within target range (±25 ct)." if mape <= 25.0 else
+               "slightly above target (±25 ct); focus on intonation control." if mape <= 50.0 else
+               "significantly above target (±25 ct); intensive pitch training recommended.")
+        )
+    if hit_rate is not None:
+        coaching_lines.append(
+            f"• Rhythm: {hit_rate * 100:.1f}% of reference notes matched — "
+            + ("excellent rhythmic alignment." if hit_rate >= 0.8 else
+               "adequate rhythmic alignment; work on note onset timing." if hit_rate >= 0.5 else
+               "significant rhythmic misalignment; use a metronome and slow practice.")
+        )
+    if coverage is not None:
+        coaching_lines.append(
+            f"• Range: {coverage * 100:.1f}% reference range covered — "
+            + ("good range match." if coverage >= 0.7 else
+               "partial range coverage; work on extending into missed areas.")
+        )
+    for line in coaching_lines:
+        story.append(Paragraph(line, body_style))
+
+    doc = SimpleDocTemplate(output_path, pagesize=letter, title="Vocal Comparison Report")
+    doc.build(story)
+    return output_path
+
+
+__all__ = ["generate_pdf_report", "generate_comparison_pdf_report"]

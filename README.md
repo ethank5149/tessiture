@@ -15,6 +15,7 @@ It extracts musical and voice features such as:
 ## Table of Contents
 
 - [Overview](#overview)
+- [Use Case 2: Reference Track Comparison](#use-case-2-reference-track-comparison)
 - [Architecture](#architecture)
 - [Quick Start (Local Development)](#quick-start-local-development)
 - [API Endpoints](#api-endpoints)
@@ -38,6 +39,46 @@ Tessiture uses an asynchronous API workflow:
 3. Retrieve results via `GET /results/{job_id}` in JSON, CSV, or PDF format
 
 The backend processing pipeline combines DSP, pitch tracking, symbolic aggregation, and report generation.
+
+---
+
+## Use Case 2: Reference Track Comparison
+
+### Overview
+
+A singer can compare their live voice to a reference track in real time. The app captures microphone audio via the browser and streams it to the backend over a WebSocket, which returns per-chunk pitch feedback and running session metrics. When the session ends, a full comparison report is generated.
+
+### How to use
+
+1. Navigate to the **Compare** tab in the app.
+2. Select a reference track from the library or upload an audio file of your own.
+3. Put on headphones and begin playback of the reference track in your preferred player.
+4. Click **Start Session** — the app requests microphone access and begins streaming audio to the backend analysis pipeline.
+5. Watch the live pitch deviation meter and running metrics update in real time.
+6. Click **Stop** when done — a full post-session comparison report is generated and displayed automatically.
+
+### Comparison metrics explained
+
+| Metric | Description |
+|---|---|
+| **Pitch deviation (cents)** | Real-time offset between your sung pitch and the reference. Negative = flat, positive = sharp. |
+| **Pitch accuracy ratio** | Fraction of voiced frames within ±50 cents of the reference pitch. |
+| **Pitch bias (cents)** | Systematic tendency to sing sharp or flat relative to the reference (signed mean deviation). |
+| **Pitch stability (cents)** | Consistency of voiced pitch across the session (standard deviation of frame deviations). |
+| **Note hit rate** | Fraction of reference note events that were successfully matched in your performance. |
+| **Onset timing error (ms)** | Average how early or late your notes are sung relative to the reference onset times. |
+| **Range coverage** | Fraction of the reference track's pitch range that you voiced during the session. |
+| **Tessitura center offset** | Difference in semitones between your vocal comfort zone center and the center of the reference's pitch demand. |
+
+### Technical notes
+
+- **Headphones required**: playing the reference without headphones causes microphone bleed that degrades pitch tracking accuracy.
+- Audio is captured at the browser's native sample rate (typically 44.1 kHz) and streamed as PCM chunks over a WebSocket connection to `WS /compare/live?reference_id=<id>`.
+- Formant and timbre comparison is unavailable in live streaming mode. To obtain formant analysis, upload the recorded audio to the main **Upload audio** tab after the session.
+
+### Deployment note (WebSocket support)
+
+The production deployment uses Caddy as a reverse proxy (`reverse_proxy tessiture:8000`). Caddy passes WebSocket `Upgrade` and `Connection` headers transparently by default when no explicit `header` rewrites suppress them. The existing Caddyfile configuration does not strip these headers, so WebSocket connections to `WS /compare/live` work without any additional proxy configuration.
 
 ---
 
@@ -454,7 +495,8 @@ docker compose -f docker-compose.yml --env-file .env.unraid down
 - [ ] JSON/CSV/PDF outputs write to configured Unraid outputs path
 - [ ] Browser/API clients succeed from allowed CORS origins
 - [ ] Rate limiting and max upload settings match expected policy
-- [ ] No internet traffic is routed through Caddy in the recommended production flow
+- [ ]
+No internet traffic is routed through Caddy in the recommended production flow
 
 ---
 

@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from api.routes import router as api_router
+from api.streaming import streaming_router
 
 app = FastAPI(title="Tessiture API", version="0.1.0")
 
@@ -23,6 +24,7 @@ app.add_middleware(
 )
 
 app.include_router(api_router)
+app.include_router(streaming_router)
 
 frontend_dist = Path(os.getenv("TESSITURE_FRONTEND_DIST", "frontend/dist"))
 if frontend_dist.exists() and (frontend_dist / "index.html").exists():

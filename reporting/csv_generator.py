@@ -252,4 +252,108 @@ def generate_csv_report(result: Mapping[str, Any], output_path: Optional[str] = 
     return csv_text
 
 
-__all__ = ["generate_csv_report"]
+def generate_comparison_csv_report(
+    session_report: dict,
+    output_path: str,
+) -> str:
+    """Write a comparison session report to a CSV file.
+
+    Sections are separated by blank lines:
+
+    1. Session metadata (key/value rows)
+    2. Pitch comparison metrics
+    3. Rhythm comparison metrics
+    4. Range comparison metrics
+    5. Frame-level pitch deviation data (if available)
+
+    Args:
+        session_report: Dict from ``session_report_to_dict()`` or the WS
+            ``session_report`` message.
+        output_path: Path to write the CSV.
+
+    Returns:
+        The *output_path* string.
+    """
+    from pathlib import Path
+
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+    output = StringIO()
+    writer = csv.writer(output)
+
+    def _fv(v: Any) -> str:
+        """Format a single value for CSV."""
+        if v is None:
+            return ""
+        num = _safe_float(v)
+        if num is not None:
+            return f"{num:.4f}" if not num.is_integer() else str(int(num))
+        return str(v)
+
+    # -- Section 1: Session metadata --
+    writer.writerow(["# Session Metadata"])
+    writer.writerow(["Field", "Value"])
+    for key in (
+        "session_id", "reference_id", "reference_source", "reference_source_id",
+        "reference_key", "session_started_at", "session_duration_s",
+        "total_chunks_processed", "voiced_chunks",
+    ):
+        writer.writerow([key, _fv(session_report.get(key))])
+
+    writer.writerow([])  # blank separator
+
+    # -- Section 2: Pitch comparison --
+    writer.writerow(["# Pitch Comparison"])
+    pitch = session_report.get("pitch_comparison") or {}
+    writer.writerow(["Metric", "Value"])
+    writer.writerow(["mean_absolute_pitch_error_cents", _fv(pitch.get("mean_absolute_pitch_error_cents"))])
+    writer.writerow(["pitch_accuracy_ratio", _fv(pitch.get("pitch_accuracy_ratio"))])
+    writer.writerow(["pitch_bias_cents", _fv(pitch.get("pitch_bias_cents"))])
+    writer.writerow(["pitch_stability_cents", _fv(pitch.get("pitch_stability_cents"))])
+    writer.writerow(["voiced_frame_count", _fv(pitch.get("voiced_frame_count"))])
+
+    writer.writerow([])
+
+    # -- Section 3: Rhythm comparison --
+    writer.writerow(["# Rhythm Comparison"])
+    rhythm = session_report.get("rhythm_comparison") or {}
+    writer.writerow(["Metric", "Value"])
+    writer.writerow(["note_hit_rate", _fv(rhythm.get("note_hit_rate"))])
+    writer.writerow(["matched_note_count", _fv(rhythm.get("matched_note_count"))])
+    writer.writerow(["reference_note_count", _fv(rhythm.get("reference_note_count"))])
+    writer.writerow(["mean_onset_error_ms", _fv(rhythm.get("mean_onset_error_ms"))])
+    writer.writerow(["rhythmic_consistency_ms", _fv(rhythm.get("rhythmic_consistency_ms"))])
+
+    writer.writerow([])
+
+    # -- Section 4: Range comparison --
+    writer.writerow(["# Range Comparison"])
+    rng = session_report.get("range_comparison") or {}
+    writer.writerow(["Metric", "Value"])
+    writer.writerow(["user_range_min_midi", _fv(rng.get("user_range_min_midi"))])
+    writer.writerow(["user_range_max_midi", _fv(rng.get("user_range_max_midi"))])
+    writer.writerow(["reference_range_min_midi", _fv(rng.get("reference_range_min_midi"))])
+    writer.writerow(["reference_range_max_midi", _fv(rng.get("reference_range_max_midi"))])
+    writer.writerow(["range_overlap_semitones", _fv(rng.get("range_overlap_semitones"))])
+    writer.writerow(["range_coverage_ratio", _fv(rng.get("range_coverage_ratio"))])
+    writer.writerow(["tessitura_center_offset_semitones", _fv(rng.get("tessitura_center_offset_semitones"))])
+    writer.writerow(["out_of_range_note_fraction", _fv(rng.get("out_of_range_note_fraction"))])
+
+    writer.writerow([])
+
+    # -- Section 5: Frame-level pitch deviation data --
+    frame_times = pitch.get("frame_times_s") or []
+    frame_devs = pitch.get("frame_deviations_cents") or []
+    if frame_times and frame_devs:
+        writer.writerow(["# Frame-Level Pitch Deviation"])
+        writer.writerow(["time_s", "deviation_cents"])
+        for t, d in zip(frame_times, frame_devs):
+            writer.writerow([_fv(t), _fv(d)])
+
+    csv_text = output.getvalue()
+    with open(output_path, "w", encoding="utf-8", newline="") as handle:
+        handle.write(csv_text)
+    return output_path
+
+
+__all__ = ["generate_csv_report", "generate_comparison_csv_report"]
