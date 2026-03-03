@@ -9,4 +9,5 @@ python-multipart==0.0.20
 matplotlib==3.8.4
 plotly==5.24.1
 reportlab==4.2.5
+mutagen==1.47.0
 pytest
