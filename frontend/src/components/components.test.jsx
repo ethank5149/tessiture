@@ -614,7 +614,7 @@ describe("App example gallery wiring", () => {
     });
   });
 
-  it("uses gallery as selector-only input and runs processing in main tab", async () => {
+  it("uses example gallery source card and runs full analysis via intent panel", async () => {
     const user = userEvent.setup();
 
     fetchExampleTracks.mockResolvedValue([
@@ -635,7 +635,8 @@ describe("App example gallery wiring", () => {
 
     render(<App />);
 
-    await user.click(screen.getByRole("tab", { name: "Example gallery" }));
+    // Step 1: select the Example Library source card
+    await user.click(screen.getByRole("button", { name: /Example Library/i }));
 
     expect(screen.queryByRole("heading", { name: "Analysis status" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Analysis results" })).not.toBeInTheDocument();
@@ -645,31 +646,47 @@ describe("App example gallery wiring", () => {
     });
     await user.click(selectButton);
 
+    // Step 2: intent panel appears — click Full analysis
+    const fullAnalysisBtn = await screen.findByRole("button", { name: /Full analysis/i });
+    await user.click(fullAnalysisBtn);
+
     await waitFor(() => {
       expect(submitExampleAnalysisJob).toHaveBeenCalledWith("demo-1");
     });
 
+    // Results region should appear after job completes
     await waitFor(() => {
-      expect(screen.getByRole("tab", { name: "Upload audio" })).toHaveAttribute("aria-selected", "true");
+      expect(screen.getByRole("heading", { name: "Analysis results" })).toBeInTheDocument();
     });
-
-    expect(screen.queryByRole("heading", { name: "Example gallery" })).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Upload audio" })).toBeInTheDocument();
   });
 
   it("stops polling after first status failure", async () => {
-    vi.useFakeTimers();
-
     fetchExampleTracks.mockResolvedValue([]);
     submitAnalysisJob.mockResolvedValue({ job_id: "job-fail" });
     fetchJobStatus.mockRejectedValue(new Error("status down"));
 
     render(<App />);
 
+    // Step 1: select Upload source card to reveal the file input
+    fireEvent.click(screen.getByRole("button", { name: /Upload a File/i }));
+
     const input = screen.getByLabelText("Audio file");
     const file = new File(["wave"], "sample.wav", { type: "audio/wav" });
     fireEvent.change(input, { target: { files: [file] } });
+    // AudioUploader's submit captures the file, intent panel appears
     fireEvent.click(screen.getByRole("button", { name: "Start analysis" }));
+
+    // Step 2: intent panel is synchronously rendered after acceptedFile is set —
+    // grab the button with real timers still active (avoids fake-timer deadlock
+    // inside screen.findByRole's internal polling)
+    const fullAnalysisBtn = screen.getByRole("button", { name: /Full analysis/i });
+
+    // Switch to fake timers only after UI navigation is complete, so the
+    // polling setInterval can be controlled without blocking async queries above
+    vi.useFakeTimers();
+
+    // Click Full analysis intent card to actually submit the job
+    fireEvent.click(fullAnalysisBtn);
 
     await act(async () => {
       await vi.runAllTimersAsync();
@@ -709,10 +726,18 @@ describe("App example gallery wiring", () => {
 
     render(<App />);
 
+    // Step 1: select Upload source card to reveal the file input
+    fireEvent.click(screen.getByRole("button", { name: /Upload a File/i }));
+
     const input = screen.getByLabelText("Audio file");
     const file = new File(["wave"], "sample.wav", { type: "audio/wav" });
     fireEvent.change(input, { target: { files: [file] } });
+    // AudioUploader's submit captures the file, intent panel appears
     fireEvent.click(screen.getByRole("button", { name: "Start analysis" }));
+
+    // Step 2: click Full analysis intent card to submit the job
+    const fullAnalysisBtn = await screen.findByRole("button", { name: /Full analysis/i });
+    fireEvent.click(fullAnalysisBtn);
 
     await waitFor(() => {
       expect(fetchJobResults).toHaveBeenCalledWith("job-calibration", "json");

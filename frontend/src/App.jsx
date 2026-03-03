@@ -18,11 +18,9 @@ import {
 
 const POLL_INTERVAL_MS = 2000;
 
-const APP_VIEWS = {
-  upload: "upload",
-  examples: "examples",
-  comparison: "comparison",
-};
+// Two-axis state replaces the old APP_VIEWS tab constant.
+// source: 'upload' | 'example' | 'live' | null
+// mode:   'analyze' | 'compare' | null
 
 const isLikelyIosDevice = () => {
   if (typeof navigator === "undefined") {
@@ -84,6 +82,13 @@ const normalizeReleaseVersion = (value) => {
   return trimmed.replace(/^v/, "");
 };
 
+// Source card definitions
+const SOURCE_CARDS = [
+  { id: "upload",  emoji: "📁", label: "Upload a File",    desc: "Analyze your own recording" },
+  { id: "example", emoji: "🎵", label: "Example Library",  desc: "Pick a demo track" },
+  { id: "live",    emoji: "🎤", label: "Record Live",       desc: "Mic comparison session" },
+];
+
 function App() {
   const [jobId, setJobId] = useState(null);
   const [status, setStatus] = useState(null);
@@ -95,8 +100,14 @@ function App() {
   const [exampleTracks, setExampleTracks] = useState([]);
   const [isLoadingExamples, setIsLoadingExamples] = useState(false);
   const [exampleError, setExampleError] = useState(null);
-  const [activeView, setActiveView] = useState(APP_VIEWS.upload);
+
+  // Two-axis state machine — replaces activeView / APP_VIEWS
+  const [audioSource, setAudioSource] = useState(null); // 'upload' | 'example' | 'live' | null
+  const [analysisMode, setAnalysisMode] = useState(null); // 'analyze' | 'compare' | null
+
+  // Per-source transient state
   const [selectedExampleId, setSelectedExampleId] = useState(null);
+  const [acceptedFile, setAcceptedFile] = useState(null); // file accepted by uploader before intent
 
   // Comparison state
   const [referenceId, setReferenceId] = useState(null);
@@ -119,12 +130,44 @@ function App() {
             ? "Analysis completed."
             : "";
 
+  // ── Reset helpers ──────────────────────────────────────────────────────────
+
   const resetJob = useCallback(() => {
     setJobId(null);
     setStatus(null);
     setResults(null);
     setError(null);
   }, []);
+
+  /** Full reset — back to Step 1 */
+  const resetAll = useCallback(() => {
+    resetJob();
+    setAudioSource(null);
+    setAnalysisMode(null);
+    setSelectedExampleId(null);
+    setAcceptedFile(null);
+    setReferenceId(null);
+    setReferenceInfo(null);
+    setSessionReport(null);
+  }, [resetJob]);
+
+  /** Change source — resets downstream state */
+  const selectSource = useCallback(
+    (src) => {
+      if (src === audioSource) return;
+      resetJob();
+      setAudioSource(src);
+      setAnalysisMode(src === "live" ? "compare" : null);
+      setSelectedExampleId(null);
+      setAcceptedFile(null);
+      setReferenceId(null);
+      setReferenceInfo(null);
+      setSessionReport(null);
+    },
+    [audioSource, resetJob]
+  );
+
+  // ── Job submission helpers ──────────────────────────────────────────────────
 
   const submitJob = useCallback(async (submitter) => {
     setIsSubmitting(true);
@@ -162,17 +205,50 @@ function App() {
     [submitJob]
   );
 
-  const handleExampleSelection = useCallback(
-    async (example) => {
-      if (!example?.id) {
-        return;
-      }
-      setSelectedExampleId(example.id);
-      setActiveView(APP_VIEWS.upload);
-      await submitExampleJob(example.id);
-    },
-    [submitExampleJob]
-  );
+  // ── Intent handlers (Step 2 → Step 3) ─────────────────────────────────────
+
+  /**
+   * Called when user picks "Full analysis" intent for an upload file.
+   * Immediately starts the job.
+   */
+  const handleUploadAnalyzeIntent = useCallback(async () => {
+    if (!acceptedFile) return;
+    setAnalysisMode("analyze");
+    await submitUploadJob(acceptedFile);
+  }, [acceptedFile, submitUploadJob]);
+
+  /**
+   * Called when user picks "Full analysis" intent for an example.
+   */
+  const handleExampleAnalyzeIntent = useCallback(async () => {
+    if (!selectedExampleId) return;
+    setAnalysisMode("analyze");
+    await submitExampleJob(selectedExampleId);
+  }, [selectedExampleId, submitExampleJob]);
+
+  /**
+   * AudioUploader's onSubmit callback — in the new flow, we use this to
+   * capture the file and show the intent panel, not to immediately start a job.
+   * The component itself calls onSubmit with the file; we intercept and store it.
+   */
+  const handleFileAccepted = useCallback((file) => {
+    setAcceptedFile(file);
+    setAnalysisMode(null); // reset intent so intent panel appears
+    resetJob();
+  }, [resetJob]);
+
+  /**
+   * Called by ExampleGallery when user picks an example track.
+   * Stores selected ID and shows intent panel.
+   */
+  const handleExampleSelected = useCallback((example) => {
+    if (!example?.id) return;
+    setSelectedExampleId(example.id);
+    setAnalysisMode(null); // show intent panel
+    resetJob();
+  }, [resetJob]);
+
+  // ── Results fetching ───────────────────────────────────────────────────────
 
   const fetchResults = useCallback(
     async (targetId = jobId) => {
@@ -216,6 +292,8 @@ function App() {
     },
     [jobId]
   );
+
+  // ── Side effects ───────────────────────────────────────────────────────────
 
   useEffect(() => {
     let isMounted = true;
@@ -302,6 +380,16 @@ function App() {
     };
   }, [jobId, fetchResults]);
 
+  // ── Derived booleans ───────────────────────────────────────────────────────
+
+  const hasJobInProgress = isSubmitting || isPolling || isFetchingResults;
+  const showResults = results !== null || error !== null || isSubmitting || isPolling || isFetchingResults;
+
+  // Whether the results/status region should be shown (Step 3)
+  const showStep3 =
+    showResults ||
+    (analysisMode === "compare" && (referenceInfo !== null || sessionReport !== null));
+
   return (
     <main className="app-shell">
       <a className="skip-link" href="#main-content">Skip to main content</a>
@@ -324,107 +412,212 @@ function App() {
           Tessitura Analysis
         </h1>
         <p className="app-shell__subtitle">
-          Upload an audio file, or pick a demo track in Example Gallery to run analysis here in the main tab.
+          Choose an audio source below to get started. Upload your own file, pick a demo track, or use your microphone for a live session.
         </p>
         {appReleaseVersion ? (
           <p className="app-shell__release-version">Release {appReleaseVersion}</p>
         ) : null}
       </header>
 
-      <div className="app-shell__tabs" role="tablist" aria-label="Analysis input mode">
-        <button
-          id="tab-upload"
-          className={`button app-shell__tab${activeView === APP_VIEWS.upload ? " app-shell__tab--active" : ""}`}
-          type="button"
-          role="tab"
-          aria-selected={activeView === APP_VIEWS.upload}
-          aria-controls="panel-upload"
-          onClick={() => setActiveView(APP_VIEWS.upload)}
-        >
-          Upload audio
-        </button>
-        <button
-          id="tab-examples"
-          className={`button app-shell__tab${activeView === APP_VIEWS.examples ? " app-shell__tab--active" : ""}`}
-          type="button"
-          role="tab"
-          aria-selected={activeView === APP_VIEWS.examples}
-          aria-controls="panel-examples"
-          onClick={() => setActiveView(APP_VIEWS.examples)}
-        >
-          Example gallery
-        </button>
-        <button
-          id="tab-comparison"
-          className={`button app-shell__tab${activeView === APP_VIEWS.comparison ? " app-shell__tab--active" : ""}`}
-          type="button"
-          role="tab"
-          aria-selected={activeView === APP_VIEWS.comparison}
-          aria-controls="panel-comparison"
-          onClick={() => {
-            setActiveView(APP_VIEWS.comparison);
-            setSessionReport(null);
-          }}
-        >
-          Compare
-        </button>
-      </div>
+      {/* ── Step 1: Audio Source Selector ──────────────────────────────────── */}
+      <section className="source-selector" aria-label="Step 1: Choose audio source">
+        <div className="source-selector__grid" role="group" aria-label="Audio source">
+          {SOURCE_CARDS.map(({ id, emoji, label, desc }) => (
+            <button
+              key={id}
+              type="button"
+              className={`source-card${audioSource === id ? " source-card--active" : ""}`}
+              aria-pressed={audioSource === id}
+              onClick={() => selectSource(id)}
+            >
+              <span className="source-card__emoji" aria-hidden="true">{emoji}</span>
+              <span className="source-card__label">{label}</span>
+              <span className="source-card__desc">{desc}</span>
+            </button>
+          ))}
+        </div>
+      </section>
 
       <div id="main-content" className="app-shell__content" tabIndex={-1}>
-        {activeView === APP_VIEWS.upload ? (
+        {/* ── Step 2: Context-Sensitive Panel ──────────────────────────────── */}
+
+        {/* Upload source: show uploader; after file accepted show intent panel */}
+        {audioSource === "upload" ? (
           <section
-            id="panel-upload"
-            role="tabpanel"
-            aria-labelledby="tab-upload"
-            className="app-shell__upload-layout"
+            className={`step-panel${audioSource ? " step-panel--visible" : ""}`}
+            aria-label="Step 2: Upload and select analysis type"
           >
-            <div className="app-shell__upload-support">
-              <AudioUploader
-                onSubmit={submitUploadJob}
-                isSubmitting={isSubmitting}
-                jobId={jobId}
-                status={status}
-                error={error}
-              />
+            <AudioUploader
+              onSubmit={handleFileAccepted}
+              isSubmitting={isSubmitting}
+              jobId={jobId}
+              status={status}
+              error={acceptedFile ? null : error}
+            />
 
-              <AnalysisStatus
-                jobId={jobId}
-                status={status}
-                error={error}
-                isPolling={isPolling}
-                isFetchingResults={isFetchingResults}
-              />
-            </div>
+            {acceptedFile && analysisMode === null ? (
+              <div className="intent-panel">
+                <p className="intent-panel__prompt">What would you like to do with <strong>{acceptedFile.name}</strong>?</p>
+                <div className="intent-panel__cards">
+                  <button
+                    type="button"
+                    className="intent-card"
+                    onClick={handleUploadAnalyzeIntent}
+                    disabled={hasJobInProgress}
+                  >
+                    <span className="intent-card__emoji" aria-hidden="true">🔬</span>
+                    <span className="intent-card__label">Full analysis</span>
+                    <span className="intent-card__desc">Tessitura, pitch range, and statistics</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="intent-card"
+                    onClick={() => setAnalysisMode("compare")}
+                    disabled={hasJobInProgress}
+                  >
+                    <span className="intent-card__emoji" aria-hidden="true">🎯</span>
+                    <span className="intent-card__label">Compare to a reference</span>
+                    <span className="intent-card__desc">Match your performance against a reference track</span>
+                  </button>
+                </div>
+              </div>
+            ) : null}
 
-            <div className="app-shell__results-pane">
-              <AnalysisResults
-                results={results}
-                status={status}
-                error={error}
-                isFetchingResults={isFetchingResults}
-                onDownloadCsv={() => downloadResults("csv")}
-                onDownloadJson={() => downloadResults("json")}
-                onDownloadPdf={() => downloadResults("pdf")}
-              />
-            </div>
+            {/* Upload + compare intent: show reference selector then start job */}
+            {acceptedFile && analysisMode === "compare" && !referenceInfo && !sessionReport ? (
+              <div className="step-panel__section">
+                <ReferenceTrackSelector
+                  exampleTracks={exampleTracks}
+                  onReferenceReady={(refId, refInfo) => {
+                    setReferenceId(refId);
+                    setReferenceInfo(refInfo);
+                  }}
+                />
+              </div>
+            ) : null}
           </section>
         ) : null}
 
-        {activeView === APP_VIEWS.examples ? (
-          <div id="panel-examples" role="tabpanel" aria-labelledby="tab-examples" className="app-shell__panel">
+        {/* Example source: show gallery; after selection show intent panel */}
+        {audioSource === "example" ? (
+          <section
+            className={`step-panel${audioSource ? " step-panel--visible" : ""}`}
+            aria-label="Step 2: Example library and analysis type"
+          >
             <ExampleGallery
               examples={exampleTracks}
               isLoading={isLoadingExamples}
-              onSelectExample={handleExampleSelection}
+              onSelectExample={handleExampleSelected}
               selectedExampleId={selectedExampleId}
               isSelecting={isSubmitting}
               error={exampleError}
             />
-          </div>
+
+            {selectedExampleId && analysisMode === null ? (
+              <div className="intent-panel">
+                <p className="intent-panel__prompt">What would you like to do with this example?</p>
+                <div className="intent-panel__cards">
+                  <button
+                    type="button"
+                    className="intent-card"
+                    onClick={handleExampleAnalyzeIntent}
+                    disabled={hasJobInProgress}
+                  >
+                    <span className="intent-card__emoji" aria-hidden="true">🔬</span>
+                    <span className="intent-card__label">Full analysis</span>
+                    <span className="intent-card__desc">Tessitura, pitch range, and statistics</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="intent-card"
+                    onClick={() => setAnalysisMode("compare")}
+                    disabled={hasJobInProgress}
+                  >
+                    <span className="intent-card__emoji" aria-hidden="true">🎯</span>
+                    <span className="intent-card__label">Compare to a reference</span>
+                    <span className="intent-card__desc">Match your performance against a reference track</span>
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {/* Example + compare intent: show reference selector */}
+            {selectedExampleId && analysisMode === "compare" && !referenceInfo && !sessionReport ? (
+              <div className="step-panel__section">
+                <ReferenceTrackSelector
+                  exampleTracks={exampleTracks}
+                  onReferenceReady={(refId, refInfo) => {
+                    setReferenceId(refId);
+                    setReferenceInfo(refInfo);
+                  }}
+                />
+              </div>
+            ) : null}
+          </section>
         ) : null}
 
-        {activeView === APP_VIEWS.comparison ? (
-          <div id="panel-comparison" role="tabpanel" aria-labelledby="tab-comparison" className="app-shell__panel">
+        {/* Live mic source: skip intent panel, go directly to reference selector */}
+        {audioSource === "live" ? (
+          <section
+            className={`step-panel${audioSource ? " step-panel--visible" : ""}`}
+            aria-label="Step 2: Select reference track for live comparison"
+          >
+            {!referenceInfo && !sessionReport ? (
+              <>
+                <p className="step-panel__note">
+                  <strong>Live mic mode</strong> — comparison only. Select a reference track below then start your session.
+                  For full formant analysis, upload a recording after the session.
+                </p>
+                <ReferenceTrackSelector
+                  exampleTracks={exampleTracks}
+                  onReferenceReady={(refId, refInfo) => {
+                    setReferenceId(refId);
+                    setReferenceInfo(refInfo);
+                  }}
+                />
+              </>
+            ) : null}
+          </section>
+        ) : null}
+
+        {/* ── Step 3: Results region ────────────────────────────────────────── */}
+
+        {/* Full analysis results (upload or example → analyze) */}
+        {analysisMode === "analyze" && showStep3 ? (
+          <section
+            className={`step-panel step-panel--results${showStep3 ? " step-panel--visible" : ""}`}
+            aria-label="Step 3: Analysis results"
+          >
+            <AnalysisStatus
+              jobId={jobId}
+              status={status}
+              error={error}
+              isPolling={isPolling}
+              isFetchingResults={isFetchingResults}
+            />
+            <AnalysisResults
+              results={results}
+              status={status}
+              error={error}
+              isFetchingResults={isFetchingResults}
+              onDownloadCsv={() => downloadResults("csv")}
+              onDownloadJson={() => downloadResults("json")}
+              onDownloadPdf={() => downloadResults("pdf")}
+            />
+            <div className="step-panel__actions">
+              <button type="button" className="button" onClick={resetAll}>
+                ↩ Analyze another
+              </button>
+            </div>
+          </section>
+        ) : null}
+
+        {/* Comparison results: live session or upload/example compare path */}
+        {analysisMode === "compare" && (referenceInfo || sessionReport) ? (
+          <section
+            className={`step-panel step-panel--results step-panel--visible`}
+            aria-label="Step 3: Comparison session"
+          >
             {sessionReport ? (
               <ComparisonResults
                 sessionReport={sessionReport}
@@ -433,7 +626,7 @@ function App() {
                   setReferenceInfo(null);
                   setReferenceId(null);
                 }}
-                onStartNew={() => setSessionReport(null)}
+                onStartNew={resetAll}
               />
             ) : referenceInfo ? (
               <LiveComparisonView
@@ -445,16 +638,8 @@ function App() {
                   setReferenceId(null);
                 }}
               />
-            ) : (
-              <ReferenceTrackSelector
-                exampleTracks={exampleTracks}
-                onReferenceReady={(refId, refInfo) => {
-                  setReferenceId(refId);
-                  setReferenceInfo(refInfo);
-                }}
-              />
-            )}
-          </div>
+            ) : null}
+          </section>
         ) : null}
       </div>
     </main>
