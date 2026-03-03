@@ -797,9 +797,8 @@ def _build_summary(result: Mapping[str, Any], duration_seconds: float) -> Dict[s
     if isinstance(key_trajectory, Sequence) and key_trajectory:
         key_confidence = _safe_float(key_trajectory[0].get("confidence")) or 0.0
 
-    overall_confidence = float(np.clip((mean_confidence + key_confidence) / 2.0, 0.0, 1.0))
     logger.info(
-        "analysis_confidence_summary duration=%.3fs total_frames=%d voiced_frames=%d confidence_min=%.4f confidence_max=%.4f confidence_mean=%.4f key_confidence=%.4f overall_confidence=%.4f",
+        "analysis_confidence_summary duration=%.3fs total_frames=%d voiced_frames=%d confidence_min=%.4f confidence_max=%.4f confidence_mean=%.4f key_confidence=%.4f",
         float(duration_seconds),
         len(pitch_frames),
         len(voiced_f0),
@@ -807,7 +806,6 @@ def _build_summary(result: Mapping[str, Any], duration_seconds: float) -> Dict[s
         float(np.max(confidences)) if confidences else 0.0,
         mean_confidence,
         key_confidence,
-        overall_confidence,
     )
 
     return {
@@ -815,7 +813,6 @@ def _build_summary(result: Mapping[str, Any], duration_seconds: float) -> Dict[s
         "f0_min": float(np.min(voiced_f0)) if voiced_f0 else None,
         "f0_max": float(np.max(voiced_f0)) if voiced_f0 else None,
         "tessitura_range": tessitura_band,
-        "overall_confidence": overall_confidence,
         "confidence": mean_confidence,
         "pitch_confidence": mean_confidence,
         "key_confidence": key_confidence,
@@ -953,74 +950,91 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
     report_progress(65, "advanced_analysis", "Running advanced musical and vocal analysis.")
     voiced_midi = [float(frame["midi"]) for frame in pitch_frames if _safe_float(frame.get("midi"))]
     voiced_f0 = [float(frame["f0_hz"]) for frame in pitch_frames if _safe_float(frame.get("f0_hz"))]
-    voiced_confidence = [
-        float(frame.get("confidence") or 0.0) for frame in pitch_frames if _safe_float(frame.get("midi"))
+    pitch_errors = [
+        float(frame["cents"]) for frame in pitch_frames if _safe_float(frame.get("cents")) is not None
     ]
-    duration_seconds = float(max((len(pitch_frames) - 1) * STFT_HOP / max(sample_rate, 1), 0.0))
+    frame_confidences = [
+        float(frame["confidence"])
+        for frame in pitch_frames
+        if _safe_float(frame.get("midi")) is not None and _safe_float(frame.get("confidence")) is not None
+    ]
+    frame_uncertainties = [
+        float(frame["uncertainty"])
+        for frame in pitch_frames
+        if _safe_float(frame.get("midi")) is not None and _safe_float(frame.get("uncertainty")) is not None
+    ]
+    duration_seconds = float(mono_audio.shape[-1] / max(sample_rate, 1))
 
-    key_probabilities: Dict[str, float] = {}
+    key_detection_result = detect_key(voiced_midi, input_unit="midi") if voiced_midi else None
     key_trajectory: List[Dict[str, Any]] = []
-    if voiced_midi:
-        key_result = detect_key(voiced_midi, input_unit="midi")
-        key_probabilities = key_result.probabilities
-        if key_result.best_key:
+    key_probabilities: Dict[str, float] = {}
+    if key_detection_result is not None:
+        key_probabilities = {
+            str(label): float(probability)
+            for label, probability in key_detection_result.probabilities.items()
+        }
+        if key_detection_result.best_key:
             key_trajectory.append(
                 {
                     "start": 0.0,
                     "end": duration_seconds,
-                    "label": key_result.best_key,
-                    "confidence": float(key_result.confidence),
+                    "label": key_detection_result.best_key,
+                    "confidence": float(key_detection_result.confidence),
                 }
             )
 
     tessitura_payload: Dict[str, Any] = {}
     if voiced_midi:
         try:
-            tessitura_payload = _serialize_tessitura_payload(
-                analyze_tessitura(
-                    voiced_midi,
-                    weights=voiced_confidence if voiced_confidence else None,
-                    return_pdf=True,
-                )
+            tessitura_result = analyze_tessitura(
+                voiced_midi,
+                confidences=frame_confidences if frame_confidences else None,
+                uncertainties=frame_uncertainties if frame_uncertainties else None,
+                return_pdf=True,
             )
+            tessitura_payload = _serialize_tessitura_payload(tessitura_result)
         except Exception as exc:
             warnings.append(f"Tessitura analysis unavailable: {exc}")
 
-    vibrato_payload: Dict[str, Any] = {}
+    advanced_payload: Dict[str, Any] = {}
     try:
-        vibrato = detect_vibrato(optimized.f0_hz, sample_rate=sample_rate, hop_length=STFT_HOP)
-        vibrato_payload = {
-            "rate_hz": float(vibrato.rate_hz),
-            "depth_cents": float(vibrato.depth_cents),
-            "peak_power": float(vibrato.peak_power),
-            "power_ratio": float(vibrato.power_ratio),
+        vibrato = detect_vibrato(
+            voiced_f0,
+            sample_rate=sample_rate,
+            hop_length=STFT_HOP,
+        )
+        advanced_payload["vibrato"] = {
             "valid": bool(vibrato.valid),
+            "rate_hz": _safe_float(vibrato.rate_hz),
+            "depth_cents": _safe_float(vibrato.depth_cents),
+            "peak_power": _safe_float(vibrato.peak_power),
+            "power_ratio": _safe_float(vibrato.power_ratio),
+            "start_index": int(vibrato.start_index),
+            "n_frames": int(vibrato.n_frames),
         }
     except Exception as exc:
         warnings.append(f"Vibrato analysis unavailable: {exc}")
 
-    formants_payload: Dict[str, Any] = {}
     try:
         formant_track = estimate_formants_from_audio(
             mono_audio,
-            sample_rate,
+            sample_rate=sample_rate,
             hop_length=STFT_HOP,
-            preprocess=False,
         )
-        formants_payload = _summarize_formants(formant_track)
+        advanced_payload["formants"] = _summarize_formants(formant_track)
     except Exception as exc:
         warnings.append(f"Formant analysis unavailable: {exc}")
 
-    phrase_payload: Dict[str, Any] = {}
     try:
-        phrase_result = segment_phrases_from_audio(mono_audio, sample_rate, hop_length=STFT_HOP)
-        phrase_payload = _summarize_phrases(phrase_result)
+        phrase_result = segment_phrases_from_audio(
+            mono_audio,
+            sample_rate=sample_rate,
+            hop_length=STFT_HOP,
+        )
+        advanced_payload["phrases"] = _summarize_phrases(phrase_result)
     except Exception as exc:
         warnings.append(f"Phrase segmentation unavailable: {exc}")
 
-    pitch_errors = [
-        float(frame["cents"]) for frame in pitch_frames if _safe_float(frame.get("cents")) is not None
-    ]
     uncertainty = summarize_uncertainty(
         [
             {
@@ -1036,70 +1050,42 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
         metadata=metadata,
     )
 
-    results: Dict[str, Any] = {
-        "metadata": {
-            "analysis_version": "0.1.0",
-            "source": "tessiture-api",
-            "input_path": file_path,
-            "filename": metadata.get("filename") if metadata else None,
-            "content_type": metadata.get("content_type") if metadata else None,
-            "input_type": metadata.get("source") if metadata else "upload",
-            "example_id": metadata.get("example_id") if metadata else None,
-            "original_filename": metadata.get("original_filename") if metadata else None,
-            "sample_rate": sample_rate,
-            "hop_length": STFT_HOP,
-            "frame_rate": float(sample_rate / max(STFT_HOP, 1)),
-            "duration_seconds": duration_seconds,
-        },
-        "pitch": {
-            "frames": pitch_frames,
-            "f0_min": float(np.min(voiced_f0)) if voiced_f0 else None,
-            "f0_max": float(np.max(voiced_f0)) if voiced_f0 else None,
-        },
-        "pitch_frames": pitch_frames,
-        "notes": {"events": note_events},
-        "note_events": note_events,
-        "chords": {"timeline": chord_timeline},
-        "keys": {
-            "trajectory": key_trajectory,
-            "probabilities": key_probabilities,
-        },
-        "tessitura": tessitura_payload,
-        "advanced": {
-            "vibrato": vibrato_payload,
-            "formants": formants_payload,
-            "phrase_segmentation": phrase_payload,
-        },
-        "uncertainty": uncertainty,
-        "inferential_statistics": inferential_statistics,
+    metadata_payload: Dict[str, Any] = {
+        "sample_rate": sample_rate,
+        "hop_length": STFT_HOP,
+        "frame_rate": float(sample_rate) / float(max(STFT_HOP, 1)),
+        "duration_seconds": duration_seconds,
     }
-    results["summary"] = _build_summary(results, duration_seconds)
+    if isinstance(metadata, Mapping):
+        for key, value in metadata.items():
+            if str(key).startswith("_"):
+                continue
+            metadata_payload[str(key)] = value
 
-    artifact_stem = f"{Path(file_path).stem}_{uuid4().hex[:10]}"
-    json_path = OUTPUT_DIR / f"{artifact_stem}.json"
-    csv_path = OUTPUT_DIR / f"{artifact_stem}.csv"
-    pdf_path = OUTPUT_DIR / f"{artifact_stem}.pdf"
-
-    report_progress(85, "reporting", "Generating report artifacts.")
-    generated_files: Dict[str, str] = {}
-    generate_json_report(results, output_path=str(json_path))
-    generated_files["json"] = str(json_path)
-
-    generate_csv_report(results, output_path=str(csv_path))
-    generated_files["csv"] = str(csv_path)
-
-    try:
-        generate_pdf_report(results, output_path=str(pdf_path))
-        generated_files["pdf"] = str(pdf_path)
-    except Exception as exc:
-        warnings.append(f"PDF report unavailable: {exc}")
-
-    results["files"] = generated_files
-    results["result_path"] = generated_files.get("json")
-    if warnings:
-        results["warnings"] = warnings
-    report_progress(95, "reporting", "Finalizing analysis outputs.")
-    return results
+    return {
+        "analysis": {
+            "metadata": metadata_payload,
+            "summary": {},
+            "pitch": {
+                "frames": pitch_frames,
+                "f0_min": float(np.min(voiced_f0)) if voiced_f0 else None,
+                "f0_max": float(np.max(voiced_f0)) if voiced_f0 else None,
+            },
+            "pitch_frames": pitch_frames,
+            "note_events": note_events,
+            "notes": {"events": note_events},
+            "chords": {"timeline": chord_timeline},
+            "keys": {
+                "trajectory": key_trajectory,
+                "probabilities": key_probabilities,
+                "best_key": key_detection_result.best_key if key_detection_result else None,
+            },
+            "tessitura": tessitura_payload,
+            "advanced": advanced_payload,
+            "uncertainty": uncertainty,
+            "inferential_statistics": inferential_statistics,
+        }
+    }
 
 
 async def analysis_pipeline(

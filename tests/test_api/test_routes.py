@@ -57,7 +57,6 @@ def test_analyze_status_results_json(tmp_path, monkeypatch) -> None:
                 "f0_min": 440.0,
                 "f0_max": 440.0,
                 "tessitura_range": [69.0, 69.0],
-                "overall_confidence": 1.0,
             },
             "files": {
                 "json": str(json_path),

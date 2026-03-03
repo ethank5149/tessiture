@@ -29,17 +29,12 @@ const prettifyMetricName = (name) =>
     .replace(/_/g, " ")
     .replace(/\b\w/g, (char) => char.toUpperCase());
 
-const normalizeConfidence = (value) => {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return null;
+const formatRangeValue = (value) => {
+  if (Array.isArray(value) && value.length >= 2) {
+    const [low, high] = value;
+    return `${formatValue(low)} to ${formatValue(high)}`;
   }
-  if (value >= 0 && value <= 1) {
-    return value;
-  }
-  if (value > 1 && value <= 100) {
-    return value / 100;
-  }
-  return null;
+  return formatValue(value);
 };
 
 function AnalysisResults({
@@ -59,8 +54,6 @@ function AnalysisResults({
   const f0Min = results?.pitch?.f0_min ?? summary?.f0_min ?? summary?.min_f0;
   const f0Max = results?.pitch?.f0_max ?? summary?.f0_max ?? summary?.max_f0;
   const tessitura = summary?.tessitura_range ?? summary?.range;
-  const confidence = summary?.confidence ?? summary?.overall_confidence;
-  const normalizedConfidence = normalizeConfidence(confidence);
   const inferentialStatistics =
     results?.inferential_statistics && typeof results.inferential_statistics === "object"
       ? results.inferential_statistics
@@ -69,44 +62,31 @@ function AnalysisResults({
     inferentialStatistics?.metrics && typeof inferentialStatistics.metrics === "object"
       ? Object.entries(inferentialStatistics.metrics)
       : [];
-
-  useEffect(() => {
-    if (!hasResults || !results) {
-      return;
-    }
-
-    const pitchFrames = Array.isArray(results?.pitch?.frames) ? results.pitch.frames : [];
-    const firstFrame = pitchFrames[0] ?? null;
-    const notesNode = results?.notes;
-    const noteEvents = Array.isArray(results?.note_events) ? results.note_events : [];
-    const tessituraPdfDensity = Array.isArray(results?.tessitura?.pdf?.density)
-      ? results.tessitura.pdf.density
-      : [];
-
-    console.info("[diagnostic] analysis payload shape", {
-      jobStatus: status?.status ?? null,
-      pitchFramesLength: pitchFrames.length,
-      firstPitchFrameKeys: firstFrame ? Object.keys(firstFrame) : [],
-      firstPitchFrameHasF0Hz: Boolean(firstFrame && Object.prototype.hasOwnProperty.call(firstFrame, "f0_hz")),
-      firstPitchFrameHasF0: Boolean(firstFrame && Object.prototype.hasOwnProperty.call(firstFrame, "f0")),
-      notesType: notesNode === null ? "null" : Array.isArray(notesNode) ? "array" : typeof notesNode,
-      notesEventsLength: Array.isArray(results?.notes?.events) ? results.notes.events.length : 0,
-      noteEventsLength: noteEvents.length,
-      tessituraKeys: results?.tessitura && typeof results.tessitura === "object" ? Object.keys(results.tessitura) : [],
-      tessituraPdfDensityLength: tessituraPdfDensity.length,
-      tessituraHistogramLength: Array.isArray(results?.tessitura?.histogram) ? results.tessitura.histogram.length : 0,
-      inferentialPreset: inferentialStatistics?.preset ?? null,
-      inferentialMetricCount: inferentialMetrics.length,
-    });
-  }, [hasResults, results, status?.status, inferentialStatistics?.preset, inferentialMetrics.length]);
+  const hasPitchFrames = Array.isArray(results?.pitch?.frames) && results.pitch.frames.length > 0;
+  const hasNoteEvents =
+    (Array.isArray(results?.note_events) && results.note_events.length > 0) ||
+    (Array.isArray(results?.notes?.events) && results.notes.events.length > 0);
+  const hasTessituraHistogram =
+    (Array.isArray(results?.tessitura?.histogram) && results.tessitura.histogram.length > 0) ||
+    (Array.isArray(results?.tessitura?.pdf?.density) && results.tessitura.pdf.density.length > 0);
+  const hasInferentialMetrics = inferentialMetrics.length > 0;
+  const isSparseCompletedResults =
+    status?.status === "completed" &&
+    hasResults &&
+    !hasPitchFrames &&
+    !hasNoteEvents &&
+    !hasTessituraHistogram &&
+    !hasInferentialMetrics;
+  const readableStatus = (status?.status ?? "waiting").replace(/_/g, " ");
 
   return (
     <section className="card results" aria-labelledby={titleId} aria-busy={isFetchingResults}>
-      <header className="card__header">
-        <h2 id={titleId} className="card__title">Analysis results</h2>
-        <p className="card__meta">
-          {status?.status ? `Status: ${status.status}` : "Waiting for completed analysis."}
-        </p>
+      <header className="card__header results__header">
+        <div className="results__header-row">
+          <h2 id={titleId} className="card__title">Analysis results</h2>
+          <p className={`results__status results__status--${status?.status ?? "idle"}`}>{readableStatus}</p>
+        </div>
+        <p className="card__meta">Key outcomes are shown first, with detailed plots and statistics below.</p>
       </header>
 
       {error ? <p className="results__error" role="alert">{error}</p> : null}
@@ -115,10 +95,16 @@ function AnalysisResults({
         <p className="results__empty">Results will appear here after the job completes.</p>
       ) : (
         <>
-          <div className="results__summary" aria-label="Summary metrics">
-            <p>
-              This summary highlights how long the recording is, the lowest and highest detected pitches,
-              your typical singing range (tessitura), and how confident the system is in these results.
+          {isSparseCompletedResults ? (
+            <p className="results__empty" role="status">
+              Analysis completed, but the file did not contain enough detectable pitch activity to populate detailed charts.
+            </p>
+          ) : null}
+
+          <section className="results__section results__section--summary" aria-label="Summary metrics">
+            <h3 className="results__section-title">Summary</h3>
+            <p className="results__summary-intro">
+              This overview highlights duration, pitch limits, and tessitura range.
             </p>
             <dl className="summary-list">
               <div className="summary-list__item">
@@ -135,37 +121,34 @@ function AnalysisResults({
               </div>
               <div className="summary-list__item">
                 <dt>Comfortable singing range (tessitura)</dt>
-                <dd>{formatValue(tessitura)}</dd>
-              </div>
-              <div className="summary-list__item">
-                <dt>Overall confidence score</dt>
-                <dd className="summary-list__confidence">
-                  <span>{formatValue(confidence)}</span>
-                  {normalizedConfidence !== null ? (
-                    <meter
-                      className="summary-list__meter"
-                      min={0}
-                      max={1}
-                      low={0.5}
-                      high={0.8}
-                      optimum={1}
-                      value={normalizedConfidence}
-                    >
-                      {(normalizedConfidence * 100).toFixed(0)}%
-                    </meter>
-                  ) : null}
-                </dd>
+                <dd>{formatRangeValue(tessitura)}</dd>
               </div>
             </dl>
-          </div>
+          </section>
+
+          <section className="results__section results__section--visuals" aria-label="Analysis visualizations">
+            <div className="results__section-header">
+              <h3 className="results__section-title">Visualizations</h3>
+              <p className="results__section-meta">
+                Inspect pitch contour, note activity, and tessitura density in dedicated charts.
+              </p>
+            </div>
+            <div className="results__visuals">
+              <PitchCurve results={results} />
+              <PianoRoll results={results} />
+              <TessituraHeatmap results={results} />
+            </div>
+          </section>
 
           {inferentialMetrics.length ? (
-            <section className="results__inferential" aria-label="Inferential statistics">
-              <h3 className="results__inferential-title">How consistent each metric is (inferential statistics)</h3>
-              <p className="results__inferential-meta">
-                Analysis preset: {inferentialStatistics?.preset ?? "unknown"} · Confidence interval level: {formatValue(inferentialStatistics?.confidence_level)}
-              </p>
-              <p>
+            <section className="results__section results__inferential" aria-label="Inferential statistics">
+              <div className="results__section-header">
+                <h3 className="results__section-title">How consistent each metric is (inferential statistics)</h3>
+                <p className="results__inferential-meta">
+                  Analysis preset: {inferentialStatistics?.preset ?? "unknown"} · Confidence interval level: {formatValue(inferentialStatistics?.confidence_level)}
+                </p>
+              </div>
+              <p className="results__section-copy">
                 In the table below, “Estimate” is the best single value, “Confidence interval” is a likely range,
                 “p-value” helps indicate whether a difference is meaningful, and “Samples (N)” is how many data points were used.
               </p>
@@ -198,12 +181,6 @@ function AnalysisResults({
               </div>
             </section>
           ) : null}
-
-          <div className="results__visuals">
-            <PitchCurve results={results} />
-            <PianoRoll results={results} />
-            <TessituraHeatmap results={results} />
-          </div>
 
           <ReportExporter
             disabled={isFetchingResults}

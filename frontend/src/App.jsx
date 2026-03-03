@@ -333,8 +333,13 @@ function App() {
 
       <div id="main-content" className="app-shell__content" tabIndex={-1}>
         {activeView === APP_VIEWS.upload ? (
-          <>
-            <div id="panel-upload" role="tabpanel" aria-labelledby="tab-upload" className="app-shell__panel">
+          <section
+            id="panel-upload"
+            role="tabpanel"
+            aria-labelledby="tab-upload"
+            className="app-shell__upload-layout"
+          >
+            <div className="app-shell__upload-support">
               <AudioUploader
                 onSubmit={submitUploadJob}
                 isSubmitting={isSubmitting}
@@ -342,26 +347,28 @@ function App() {
                 status={status}
                 error={error}
               />
+
+              <AnalysisStatus
+                jobId={jobId}
+                status={status}
+                error={error}
+                isPolling={isPolling}
+                isFetchingResults={isFetchingResults}
+              />
             </div>
 
-            <AnalysisStatus
-              jobId={jobId}
-              status={status}
-              error={error}
-              isPolling={isPolling}
-              isFetchingResults={isFetchingResults}
-            />
-
-            <AnalysisResults
-              results={results}
-              status={status}
-              error={error}
-              isFetchingResults={isFetchingResults}
-              onDownloadCsv={() => downloadResults("csv")}
-              onDownloadJson={() => downloadResults("json")}
-              onDownloadPdf={() => downloadResults("pdf")}
-            />
-          </>
+            <div className="app-shell__results-pane">
+              <AnalysisResults
+                results={results}
+                status={status}
+                error={error}
+                isFetchingResults={isFetchingResults}
+                onDownloadCsv={() => downloadResults("csv")}
+                onDownloadJson={() => downloadResults("json")}
+                onDownloadPdf={() => downloadResults("pdf")}
+              />
+            </div>
+          </section>
         ) : null}
 
         {activeView === APP_VIEWS.examples ? (

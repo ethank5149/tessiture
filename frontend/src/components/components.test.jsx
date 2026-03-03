@@ -270,6 +270,9 @@ describe("AnalysisResults", () => {
     );
 
     expect(screen.getByText("Analysis results")).toBeInTheDocument();
+    expect(screen.getByText("Summary")).toBeInTheDocument();
+    expect(screen.getByText("Visualizations")).toBeInTheDocument();
+    expect(screen.getByText("completed", { selector: ".results__status" })).toBeInTheDocument();
     expect(screen.getByText("10.00")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Download CSV" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Download JSON" })).toBeInTheDocument();

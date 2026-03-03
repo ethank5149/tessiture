@@ -50,6 +50,9 @@ const extractFilename = (contentDisposition, fallback) => {
 };
 
 const toNumberOrNull = (value) => {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : null;
 };
@@ -66,18 +69,14 @@ const normalizeSummary = (summary = {}, metadata = {}, pitch = {}, tessitura = {
     summary?.tessitura_range ??
     tessitura?.metrics?.tessitura_band ??
     null;
-  const overallConfidence =
-    summary?.overall_confidence ??
-    summary?.confidence ??
-    null;
+  const confidence = summary?.confidence ?? null;
 
   return {
     duration_seconds: toNumberOrNull(duration),
     f0_min: toNumberOrNull(f0Min),
     f0_max: toNumberOrNull(f0Max),
     tessitura_range: tessituraRange,
-    overall_confidence: toNumberOrNull(overallConfidence),
-    confidence: toNumberOrNull(summary?.confidence ?? overallConfidence),
+    confidence: toNumberOrNull(confidence),
   };
 };
 
@@ -152,6 +151,29 @@ export const normalizeAnalysisResult = (payload = {}) => {
       ? payload.tessitura
       : {};
 
+  let normalizedInferential;
+  if (payload.inferential_statistics && typeof payload.inferential_statistics === "object") {
+    normalizedInferential = {
+      ...payload.inferential_statistics,
+      metrics:
+        payload.inferential_statistics.metrics &&
+        typeof payload.inferential_statistics.metrics === "object"
+          ? payload.inferential_statistics.metrics
+          : {},
+    };
+  } else {
+    normalizedInferential = { metrics: {} };
+    if (payload.metrics && typeof payload.metrics === "object") {
+      console.warn(
+        "[diagnostic] normalizeAnalysisResult schema mismatch: inferential payload is at top-level",
+        {
+          topLevelKeys: Object.keys(payload),
+          metricCount: Object.keys(payload.metrics).length,
+        }
+      );
+    }
+  }
+
   const frames = Array.isArray(pitch.frames)
     ? pitch.frames
     : Array.isArray(payload.pitch_frames)
@@ -199,17 +221,7 @@ export const normalizeAnalysisResult = (payload = {}) => {
       payload.uncertainty && typeof payload.uncertainty === "object"
         ? payload.uncertainty
         : {},
-    inferential_statistics:
-      payload.inferential_statistics && typeof payload.inferential_statistics === "object"
-        ? {
-            ...payload.inferential_statistics,
-            metrics:
-              payload.inferential_statistics.metrics &&
-              typeof payload.inferential_statistics.metrics === "object"
-                ? payload.inferential_statistics.metrics
-                : {},
-          }
-        : { metrics: {} },
+    inferential_statistics: normalizedInferential,
     files:
       payload.files && typeof payload.files === "object"
         ? payload.files
