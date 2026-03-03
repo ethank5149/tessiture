@@ -69,6 +69,17 @@ const getErrorMessage = (error, fallback) => {
 const isTerminalStatus = (status) =>
   status === "completed" || status === "failed" || status === "error";
 
+const normalizeReleaseVersion = (value) => {
+  if (typeof value !== "string") {
+    return "";
+  }
+  const trimmed = value.trim();
+  if (!/^v?\d+\.\d+\.\d+$/.test(trimmed)) {
+    return "";
+  }
+  return trimmed.replace(/^v/, "");
+};
+
 function App() {
   const [jobId, setJobId] = useState(null);
   const [status, setStatus] = useState(null);
@@ -82,6 +93,7 @@ function App() {
   const [exampleError, setExampleError] = useState(null);
   const [activeView, setActiveView] = useState(APP_VIEWS.upload);
   const [selectedExampleId, setSelectedExampleId] = useState(null);
+  const appReleaseVersion = normalizeReleaseVersion(import.meta?.env?.VITE_APP_VERSION);
 
   const pollingRef = useRef(null);
 
@@ -304,6 +316,9 @@ function App() {
         <p className="app-shell__subtitle">
           Upload an audio file, or pick a demo track in Example Gallery to run analysis here in the main tab.
         </p>
+        {appReleaseVersion ? (
+          <p className="app-shell__release-version">Release {appReleaseVersion}</p>
+        ) : null}
       </header>
 
       <div className="app-shell__tabs" role="tablist" aria-label="Analysis input mode">

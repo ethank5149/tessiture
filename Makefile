@@ -7,6 +7,7 @@ VENV_PIP ?= $(VENV_PYTHON) -m pip
 VERSION_BUMP ?= auto
 BASE_VERSION ?= 0.0.0
 UNRAID_ENV_FILE ?= deploy/unraid/.env.unraid
+RELEASE_VERSION_FILE ?= .release-version
 
 .PHONY: help install install-dev test lint format typecheck run-api run-frontend build-frontend docker-build docker-run-unraid unraid-build unraid-build-push unraid-deploy unraid-one-shot clean
 
@@ -82,7 +83,14 @@ run-frontend:
 	cd frontend && $(NPM) install && $(NPM) run dev
 
 build-frontend:
-	cd frontend && $(NPM) install && $(NPM) run build
+	@if [ -f "$(RELEASE_VERSION_FILE)" ] && grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+$$' "$(RELEASE_VERSION_FILE)"; then \
+		APP_VERSION="$$(tr -d '[:space:]' < $(RELEASE_VERSION_FILE))"; \
+		APP_VERSION="$${APP_VERSION#v}"; \
+		echo "Using VITE_APP_VERSION=$${APP_VERSION} from $(RELEASE_VERSION_FILE)"; \
+		cd frontend && VITE_APP_VERSION=$${APP_VERSION} $(NPM) install && VITE_APP_VERSION=$${APP_VERSION} $(NPM) run build; \
+	else \
+		cd frontend && $(NPM) install && $(NPM) run build; \
+	fi
 
 docker-build:
 	docker build -t tessiture:latest .

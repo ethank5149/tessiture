@@ -37,8 +37,8 @@ If two sources at the same level conflict, prefer the more specific and more rec
 
 The following rules are always active and must be preserved:
 
-1. **Python Interpreter**: Use Python interpreter at `/lsiopy/bin/python3.12` (In fact, treat the `/lsiopy` directory as the system Python install path).
-2. Use Python virtual environment at `.venv/` in project root when applicable.
+1. **Python Interpreter**: Use Python interpreter at `.venv/bin/python3.12`.
+2. **Python Virtual Environment**: Use Python virtual environment at `.venv/` in project root when applicable.
 3. Active Caddyfile is located outside of project workspace at `/mnt/user/appdata/caddy/Caddyfile`.
 4. Tessiture production URL is `https://tess.indecisivephysicist.space`, use it for debugging/testing.
 

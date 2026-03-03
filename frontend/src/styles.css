@@ -116,6 +116,12 @@ textarea {
   text-wrap: pretty;
 }
 
+.app-shell__release-version {
+  margin: 0.2rem 0 0;
+  color: var(--text-soft);
+  font-size: 0.8rem;
+}
+
 .app-shell__tabs {
   display: flex;
   flex-wrap: wrap;

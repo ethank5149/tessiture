@@ -72,6 +72,9 @@ MAX_UPLOAD_BYTES = int(os.getenv("TESSITURE_UPLOAD_MAX_BYTES", str(25 * 1024 * 1
 TARGET_SAMPLE_RATE = int(os.getenv("TESSITURE_TARGET_SAMPLE_RATE", "44100"))
 STFT_NFFT = int(os.getenv("TESSITURE_STFT_NFFT", "4096"))
 STFT_HOP = int(os.getenv("TESSITURE_STFT_HOP", "512"))
+NOTE_EVENT_MIN_CONFIDENCE = float(os.getenv("TESSITURE_NOTE_EVENT_MIN_CONFIDENCE", "0.15"))
+NOTE_EVENT_MIN_FRAMES = int(os.getenv("TESSITURE_NOTE_EVENT_MIN_FRAMES", "3"))
+NOTE_EVENT_SPLIT_HYSTERESIS_MIDI = float(os.getenv("TESSITURE_NOTE_EVENT_SPLIT_HYSTERESIS_MIDI", "0.45"))
 BOOTSTRAP_SAMPLES = int(os.getenv("TESSITURE_BOOTSTRAP_SAMPLES", "1000"))
 BOOTSTRAP_CONFIDENCE_LEVEL = float(os.getenv("TESSITURE_BOOTSTRAP_CONFIDENCE_LEVEL", "0.95"))
 REFERENCE_CALIBRATION_SAMPLE_COUNT = int(os.getenv("TESSITURE_REFERENCE_CALIBRATION_SAMPLES", "24"))
@@ -800,14 +803,19 @@ def _build_note_events(frames: Sequence[Mapping[str, Any]]) -> List[Dict[str, An
     start_idx: Optional[int] = None
     active_values: List[float] = []
     active_confidence: List[float] = []
+    min_event_frames = max(int(NOTE_EVENT_MIN_FRAMES), 1)
+
+    def _reset_active() -> None:
+        nonlocal start_idx, active_values, active_confidence
+        start_idx = None
+        active_values = []
+        active_confidence = []
 
     def _close_event(end_idx: int) -> None:
-        nonlocal start_idx, active_values, active_confidence
         if start_idx is None or not active_values:
-            start_idx = None
-            active_values = []
-            active_confidence = []
+            _reset_active()
             return
+
         start_time = _safe_float(frames[start_idx].get("time")) or 0.0
         end_time = _safe_float(frames[end_idx].get("time")) or start_time
         midi_mean = float(np.mean(np.asarray(active_values, dtype=float)))
@@ -826,20 +834,42 @@ def _build_note_events(frames: Sequence[Mapping[str, Any]]) -> List[Dict[str, An
                 "confidence": confidence,
             }
         )
-        start_idx = None
-        active_values = []
-        active_confidence = []
+        _reset_active()
 
     for idx, frame in enumerate(frames):
         midi_value = _safe_float(frame.get("midi"))
-        if midi_value is None:
+        confidence_value = _safe_float(frame.get("confidence")) or 0.0
+
+        if midi_value is None or confidence_value < NOTE_EVENT_MIN_CONFIDENCE:
             if start_idx is not None:
                 _close_event(idx - 1)
             continue
+
         if start_idx is None:
             start_idx = idx
+            active_values.append(midi_value)
+            active_confidence.append(confidence_value)
+            continue
+
+        lookback_count = min(len(active_values), min_event_frames)
+        active_center = float(np.mean(np.asarray(active_values[-lookback_count:], dtype=float)))
+        active_note = int(round(active_center))
+        current_note = int(round(midi_value))
+        should_split = (
+            current_note != active_note
+            and abs(midi_value - active_center) >= NOTE_EVENT_SPLIT_HYSTERESIS_MIDI
+            and len(active_values) >= min_event_frames
+        )
+
+        if should_split:
+            _close_event(idx - 1)
+            start_idx = idx
+            active_values.append(midi_value)
+            active_confidence.append(confidence_value)
+            continue
+
         active_values.append(midi_value)
-        active_confidence.append(_safe_float(frame.get("confidence")) or 0.0)
+        active_confidence.append(confidence_value)
 
     if start_idx is not None:
         _close_event(len(frames) - 1)

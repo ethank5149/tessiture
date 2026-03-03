@@ -426,6 +426,48 @@ def test_build_summary_includes_separate_pitch_and_key_confidence_fields() -> No
     assert summary["tessitura_range_notes"] == ["A3", "C#4"]
 
 
+def test_build_note_events_splits_contiguous_frames_on_note_transitions() -> None:
+    from api.routes import _build_note_events
+
+    frame_step = 0.01
+    midi_values = [60.1, 60.0, 59.9, 62.1, 62.0, 61.9, 64.1, 64.0, 63.9]
+    frames = [
+        {
+            "time": idx * frame_step,
+            "midi": midi,
+            "confidence": 0.9,
+        }
+        for idx, midi in enumerate(midi_values)
+    ]
+
+    events = _build_note_events(frames)
+
+    assert len(events) == 3
+    assert [round(event["midi"]) for event in events] == [60, 62, 64]
+    assert all(event["duration"] > 0.0 for event in events)
+
+
+def test_build_note_events_splits_on_low_confidence_breaks() -> None:
+    from api.routes import _build_note_events
+
+    frame_step = 0.01
+    frames = [
+        {"time": 0 * frame_step, "midi": 60.0, "confidence": 0.95},
+        {"time": 1 * frame_step, "midi": 60.1, "confidence": 0.95},
+        {"time": 2 * frame_step, "midi": 59.9, "confidence": 0.95},
+        {"time": 3 * frame_step, "midi": 60.0, "confidence": 0.01},
+        {"time": 4 * frame_step, "midi": 60.0, "confidence": 0.95},
+        {"time": 5 * frame_step, "midi": 60.2, "confidence": 0.95},
+        {"time": 6 * frame_step, "midi": 59.8, "confidence": 0.95},
+    ]
+
+    events = _build_note_events(frames)
+
+    assert len(events) == 2
+    assert events[0]["end"] <= frames[2]["time"]
+    assert events[1]["start"] >= frames[4]["time"]
+
+
 def test_build_calibration_summary_uses_weighted_uncertainty_aggregates() -> None:
     from api.routes import _build_calibration_summary
 

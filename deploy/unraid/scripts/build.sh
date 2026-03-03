@@ -11,6 +11,8 @@ PUSH=0
 VERSION_BUMP="auto"
 BASE_VERSION="0.0.0"
 ENV_FILE=""
+RELEASE_VERSION_FILE="${REPO_ROOT}/.release-version"
+RELEASE_VERSION=""
 
 usage() {
   cat <<'EOF'
@@ -203,6 +205,21 @@ update_env_image() {
   mv "${tmp_file}" "${env_file}"
 }
 
+write_release_version_file() {
+  local version="$1"
+  printf '%s\n' "${version}" > "${RELEASE_VERSION_FILE}"
+  log "Wrote canonical release version to ${RELEASE_VERSION_FILE}: ${version}"
+}
+
+clear_release_version_file() {
+  if [[ -f "${RELEASE_VERSION_FILE}" ]]; then
+    rm -f "${RELEASE_VERSION_FILE}"
+    log "No semantic release version resolved; removed stale ${RELEASE_VERSION_FILE}"
+  else
+    log "No semantic release version resolved; ${RELEASE_VERSION_FILE} was not written"
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --image)
@@ -285,9 +302,19 @@ if [[ "${VERSION_BUMP}" != "none" ]]; then
   NEXT_VERSION="$(bump_semver "${current_version}" "${EFFECTIVE_BUMP}")" || die "Unable to bump version"
   IMAGE="${IMAGE_REPO}:${NEXT_VERSION}"
   LATEST_IMAGE="${IMAGE_REPO}:latest"
+  RELEASE_VERSION="${NEXT_VERSION}"
 
   log "Version bump strategy: ${VERSION_BUMP} (effective=${EFFECTIVE_BUMP})"
   log "Version: ${current_version} -> ${NEXT_VERSION}"
+else
+  if parse_semver "${IMAGE_TAG}"; then
+    RELEASE_VERSION="${SEMVER_MAJOR}.${SEMVER_MINOR}.${SEMVER_PATCH}"
+    log "Version bump strategy: none (effective=none)"
+    log "Using semantic image tag for release metadata: ${RELEASE_VERSION}"
+  else
+    log "Version bump strategy: none (effective=none)"
+    log "Image tag '${IMAGE_TAG}' is not semantic; canonical release version will not be written"
+  fi
 fi
 
 if [[ "${PUSH}" -eq 1 && "${IMAGE}" != */* ]]; then
@@ -298,6 +325,10 @@ log "Repository root: ${REPO_ROOT}"
 log "Building image: ${IMAGE}"
 
 BUILD_CMD=(docker build -t "${IMAGE}")
+if [[ -n "${RELEASE_VERSION}" ]]; then
+  BUILD_CMD+=(--build-arg "VITE_APP_VERSION=${RELEASE_VERSION}")
+  log "Injecting frontend release metadata: VITE_APP_VERSION=${RELEASE_VERSION}"
+fi
 if [[ -n "${LATEST_IMAGE}" && "${LATEST_IMAGE}" != "${IMAGE}" ]]; then
   BUILD_CMD+=(-t "${LATEST_IMAGE}")
   log "Also tagging: ${LATEST_IMAGE}"
@@ -317,6 +348,12 @@ fi
 if [[ -n "${ENV_FILE}" && "${VERSION_BUMP}" != "none" ]]; then
   update_env_image "${ENV_FILE}" "${IMAGE}"
   log "Updated ${ENV_FILE} with TESSITURE_IMAGE=${IMAGE}"
+fi
+
+if [[ -n "${RELEASE_VERSION}" ]]; then
+  write_release_version_file "${RELEASE_VERSION}"
+else
+  clear_release_version_file
 fi
 
 IMAGE_ID="$(docker image inspect --format '{{.Id}}' "${IMAGE}" 2>/dev/null || true)"

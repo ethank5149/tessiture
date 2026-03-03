@@ -6,6 +6,8 @@ UNRAID_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 REPO_ROOT="$(cd "${UNRAID_DIR}/../.." && pwd)"
 DEFAULT_ENV_FILE="${UNRAID_DIR}/.env.unraid"
 DEFAULT_COMPOSE_FILE="${UNRAID_DIR}/docker-compose.yml"
+RELEASE_VERSION_FILE="${REPO_ROOT}/.release-version"
+RELEASE_VERSION_ENV_KEY="TESSITURE_RELEASE_VERSION"
 
 IMAGE=""
 PUSH=0
@@ -74,6 +76,73 @@ read_env_value() {
   line="${line%\'}"
   line="${line#\'}"
   printf '%s\n' "${line}"
+}
+
+parse_semver() {
+  local raw="${1#v}"
+  if [[ "${raw}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+    SEMVER_MAJOR="${BASH_REMATCH[1]}"
+    SEMVER_MINOR="${BASH_REMATCH[2]}"
+    SEMVER_PATCH="${BASH_REMATCH[3]}"
+    return 0
+  fi
+  return 1
+}
+
+upsert_env_value() {
+  local key="$1"
+  local value="$2"
+  local file="$3"
+  local tmp_file
+
+  tmp_file="$(mktemp)"
+  awk -v key="${key}" -v value="${value}" '
+    BEGIN { updated = 0 }
+    $0 ~ "^[[:space:]]*" key "=" {
+      print key "=" value
+      updated = 1
+      next
+    }
+    { print }
+    END {
+      if (updated == 0) {
+        print key "=" value
+      }
+    }
+  ' "${file}" > "${tmp_file}"
+  mv "${tmp_file}" "${file}"
+}
+
+remove_env_key() {
+  local key="$1"
+  local file="$2"
+  local tmp_file
+
+  tmp_file="$(mktemp)"
+  awk -v key="${key}" '$0 !~ "^[[:space:]]*" key "=" { print }' "${file}" > "${tmp_file}"
+  mv "${tmp_file}" "${file}"
+}
+
+sync_release_metadata() {
+  local env_file="$1"
+  local raw_version
+  local normalized_version
+
+  if [[ ! -f "${RELEASE_VERSION_FILE}" ]]; then
+    remove_env_key "${RELEASE_VERSION_ENV_KEY}" "${env_file}"
+    log "${RELEASE_VERSION_FILE} not found after build; cleared ${RELEASE_VERSION_ENV_KEY} in ${env_file}"
+    return
+  fi
+
+  raw_version="$(tr -d '[:space:]' < "${RELEASE_VERSION_FILE}")"
+  if parse_semver "${raw_version}"; then
+    normalized_version="${SEMVER_MAJOR}.${SEMVER_MINOR}.${SEMVER_PATCH}"
+    upsert_env_value "${RELEASE_VERSION_ENV_KEY}" "${normalized_version}" "${env_file}"
+    log "Using ${RELEASE_VERSION_FILE} as canonical release metadata source: ${RELEASE_VERSION_ENV_KEY}=${normalized_version}"
+  else
+    remove_env_key "${RELEASE_VERSION_ENV_KEY}" "${env_file}"
+    log "Ignoring non-semantic ${RELEASE_VERSION_FILE} value '${raw_version}'; cleared ${RELEASE_VERSION_ENV_KEY} in ${env_file}"
+  fi
 }
 
 is_container_runtime() {
@@ -207,9 +276,16 @@ fi
 log "Step 1/3: build image"
 "${SCRIPT_DIR}/build.sh" "${BUILD_ARGS[@]}"
 
+sync_release_metadata "${ENV_FILE}"
+
 DEPLOY_IMAGE="$(read_env_value TESSITURE_IMAGE "${ENV_FILE}" || true)"
 if [[ -n "${DEPLOY_IMAGE}" ]]; then
   log "Image selected for deploy: ${DEPLOY_IMAGE}"
+fi
+
+DEPLOY_RELEASE_VERSION="$(read_env_value "${RELEASE_VERSION_ENV_KEY}" "${ENV_FILE}" || true)"
+if [[ -n "${DEPLOY_RELEASE_VERSION}" ]]; then
+  log "Release metadata selected for deploy: ${DEPLOY_RELEASE_VERSION}"
 fi
 
 log "Step 2/3: deploy stack"

@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import PitchCurve from "./PitchCurve";
 import PianoRoll from "./PianoRoll";
 import TessituraHeatmap from "./TessituraHeatmap";
@@ -11,6 +11,21 @@ const RESULTS_VIEWS = {
 
 const isPlainObject = (value) =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+const summarizeNumericSeries = (values) => {
+  const numericValues = values.filter((value) => Number.isFinite(value));
+  if (!numericValues.length) {
+    return { count: 0, min: null, max: null, mean: null };
+  }
+
+  const total = numericValues.reduce((sum, value) => sum + value, 0);
+  return {
+    count: numericValues.length,
+    min: Math.min(...numericValues),
+    max: Math.max(...numericValues),
+    mean: total / numericValues.length,
+  };
+};
 
 const formatValue = (value) => {
   if (typeof value === "number") {
@@ -98,6 +113,140 @@ const formatConfidenceIntervalWithNotes = (ci) => {
   return rendered;
 };
 
+const hzToMidi = (hz) => {
+  if (!Number.isFinite(hz) || hz <= 0) {
+    return null;
+  }
+  return 69 + 12 * Math.log2(hz / 440);
+};
+
+const extractPitchFramesForHeatmap = (results) => {
+  const frames = results?.pitch?.frames ?? results?.pitch_frames ?? [];
+  if (!Array.isArray(frames)) {
+    return [];
+  }
+
+  return frames
+    .map((frame, index) => {
+      if (!frame || typeof frame !== "object") {
+        return null;
+      }
+
+      const rawTime = frame.time ?? frame.t ?? index;
+      const rawMidi = frame.midi ?? frame.note_midi ?? frame.pitch_midi ?? null;
+      const rawHz = frame.f0_hz ?? frame.f0 ?? frame.frequency_hz ?? null;
+
+      const time = Number(rawTime);
+      const midi = Number.isFinite(Number(rawMidi)) ? Number(rawMidi) : hzToMidi(Number(rawHz));
+      if (!Number.isFinite(time) || !Number.isFinite(midi)) {
+        return null;
+      }
+
+      const confidence = Number(frame.confidence ?? frame.weight ?? frame.probability);
+      const weight = Number.isFinite(confidence) && confidence > 0 ? confidence : 1;
+
+      return { time, midi, weight };
+    })
+    .filter(Boolean);
+};
+
+function TimePitchHeatmap({ results }) {
+  const heatmapData = useMemo(() => {
+    const frames = extractPitchFramesForHeatmap(results);
+    if (!frames.length) {
+      return null;
+    }
+
+    const minTime = Math.min(...frames.map((frame) => frame.time));
+    const maxTime = Math.max(...frames.map((frame) => frame.time));
+    const minMidi = Math.min(...frames.map((frame) => frame.midi));
+    const maxMidi = Math.max(...frames.map((frame) => frame.midi));
+
+    const timeSpan = Math.max(maxTime - minTime, 1e-6);
+    const pitchSpan = Math.max(maxMidi - minMidi, 1e-6);
+
+    const timeBins = Math.max(24, Math.min(120, Math.round(frames.length / 4)));
+    const pitchBins = Math.max(18, Math.min(72, Math.round(pitchSpan) + 6));
+
+    const matrix = Array.from({ length: pitchBins }, () => Array.from({ length: timeBins }, () => 0));
+
+    frames.forEach((frame) => {
+      const normalizedTime = Math.min(Math.max((frame.time - minTime) / timeSpan, 0), 1);
+      const normalizedPitch = Math.min(Math.max((frame.midi - minMidi) / pitchSpan, 0), 1);
+      const xBin = Math.min(timeBins - 1, Math.floor(normalizedTime * timeBins));
+      const yBinFromBottom = Math.min(pitchBins - 1, Math.floor(normalizedPitch * pitchBins));
+      const yBin = pitchBins - 1 - yBinFromBottom;
+      matrix[yBin][xBin] += frame.weight;
+    });
+
+    const values = matrix.flat();
+    const maxValue = Math.max(...values, 0);
+
+    return {
+      matrix,
+      maxValue,
+      minMidi,
+      maxMidi,
+      timeSpan,
+      timeBins,
+      pitchBins,
+    };
+  }, [results]);
+
+  const width = 600;
+  const height = 240;
+
+  return (
+    <section className="card chart">
+      <header className="card__header">
+        <h3 className="card__title">Time × pitch heatmap (2D)</h3>
+        <p className="card__meta">Where your singing concentrated over time (x-axis) and pitch (y-axis).</p>
+      </header>
+      <div className="chart__body" role="img" aria-label="Time by pitch density heatmap">
+        {heatmapData ? (
+          <svg className="chart__svg" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
+            <rect width={width} height={height} fill="transparent" />
+            {heatmapData.matrix.map((row, yIndex) =>
+              row.map((cellValue, xIndex) => {
+                if (cellValue <= 0 || heatmapData.maxValue <= 0) {
+                  return null;
+                }
+
+                const normalized = Math.min(Math.max(cellValue / heatmapData.maxValue, 0), 1);
+                const opacity = 0.1 + Math.pow(normalized, 0.65) * 0.9;
+                const cellWidth = width / heatmapData.timeBins;
+                const cellHeight = height / heatmapData.pitchBins;
+
+                return (
+                  <rect
+                    key={`${xIndex}-${yIndex}`}
+                    x={xIndex * cellWidth}
+                    y={yIndex * cellHeight}
+                    width={cellWidth}
+                    height={cellHeight}
+                    fill="currentColor"
+                    opacity={opacity}
+                  />
+                );
+              })
+            )}
+          </svg>
+        ) : (
+          <p className="chart__placeholder">No pitch frame data available for the 2D time × pitch heatmap.</p>
+        )}
+      </div>
+      <footer className="chart__footer">
+        <span>
+          Time span: {heatmapData ? `${heatmapData.timeSpan.toFixed(1)}s` : "—"}
+        </span>
+        <span>
+          Pitch span: {heatmapData ? `${heatmapData.minMidi.toFixed(1)}–${heatmapData.maxMidi.toFixed(1)} MIDI` : "—"}
+        </span>
+      </footer>
+    </section>
+  );
+}
+
 function AnalysisResults({
   results = null,
   status = null,
@@ -128,7 +277,9 @@ function AnalysisResults({
     inferentialStatistics?.metrics && typeof inferentialStatistics.metrics === "object"
       ? Object.entries(inferentialStatistics.metrics)
       : [];
-  const hasPitchFrames = Array.isArray(results?.pitch?.frames) && results.pitch.frames.length > 0;
+  const hasPitchFrames =
+    (Array.isArray(results?.pitch?.frames) && results.pitch.frames.length > 0) ||
+    (Array.isArray(results?.pitch_frames) && results.pitch_frames.length > 0);
   const hasNoteEvents =
     (Array.isArray(results?.note_events) && results.note_events.length > 0) ||
     (Array.isArray(results?.notes?.events) && results.notes.events.length > 0);
@@ -248,13 +399,18 @@ function AnalysisResults({
                 <div className="results__section-header">
                   <h3 className="results__section-title">Visualizations</h3>
                   <p className="results__section-meta">
-                    Inspect pitch contour, note activity, and tessitura density in dedicated charts.
+                    Use this coaching trio together: detailed note trace (piano roll), session distribution summary (1D tessitura), and a 2D time × pitch heatmap.
                   </p>
                 </div>
+                <p className="results__section-copy">
+                  Reading tip: start with the piano roll for note-by-note detail, use the 1D tessitura chart for overall balance,
+                  then use the 2D heatmap to see where and when your voice concentrated.
+                </p>
                 <div className="results__visuals">
-                  <PitchCurve results={results} />
                   <PianoRoll results={results} />
                   <TessituraHeatmap results={results} />
+                  <TimePitchHeatmap results={results} />
+                  <PitchCurve results={results} />
                 </div>
               </section>
 

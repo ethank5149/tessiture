@@ -34,6 +34,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe("AudioUploader", () => {
@@ -357,6 +358,81 @@ describe("AnalysisResults", () => {
     expect(screen.getByText("0.008")).toBeInTheDocument();
   });
 
+  it("renders the coaching trio with clear chart purposes and a populated 2D heatmap", () => {
+    const results = {
+      metadata: { duration_seconds: 12.3 },
+      summary: {
+        duration_seconds: 12.3,
+      },
+      pitch: {
+        frames: [
+          { time: 0.0, midi: 60, confidence: 0.6 },
+          { time: 0.5, midi: 62, confidence: 0.9 },
+          { time: 1.0, midi: 64, confidence: 0.8 },
+        ],
+      },
+      tessitura: {
+        histogram: [0.3, 0.7, 0.5],
+      },
+    };
+
+    render(
+      <AnalysisResults
+        results={results}
+        status={{ status: "completed" }}
+        isFetchingResults={false}
+        onDownloadCsv={vi.fn()}
+        onDownloadJson={vi.fn()}
+        onDownloadPdf={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("Piano roll")).toBeInTheDocument();
+    expect(screen.getByText("Session distribution summary (1D tessitura)")).toBeInTheDocument();
+    expect(screen.getByText("Time × pitch heatmap (2D)")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Use this coaching trio together: detailed note trace (piano roll), session distribution summary (1D tessitura), and a 2D time × pitch heatmap."
+      )
+    ).toBeInTheDocument();
+
+    const heatmap = screen.getByLabelText("Time by pitch density heatmap");
+    expect(heatmap).toBeInTheDocument();
+    const heatmapSvg = heatmap.querySelector("svg");
+    expect(heatmapSvg).not.toBeNull();
+    expect(heatmapSvg.querySelectorAll("rect").length).toBeGreaterThan(1);
+
+    expect(screen.getByText("Time span: 1.0s")).toBeInTheDocument();
+    expect(screen.getByText("Pitch span: 60.0–64.0 MIDI")).toBeInTheDocument();
+  });
+
+  it("shows a 2D heatmap placeholder when no pitch-frame data is available", () => {
+    const results = {
+      summary: {
+        duration_seconds: 8.0,
+      },
+      tessitura: {
+        histogram: [0.2, 0.4, 0.6],
+      },
+    };
+
+    render(
+      <AnalysisResults
+        results={results}
+        status={{ status: "completed" }}
+        isFetchingResults={false}
+        onDownloadCsv={vi.fn()}
+        onDownloadJson={vi.fn()}
+        onDownloadPdf={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("Time × pitch heatmap (2D)")).toBeInTheDocument();
+    expect(
+      screen.getByText("No pitch frame data available for the 2D time × pitch heatmap.")
+    ).toBeInTheDocument();
+  });
+
   it("renders a dedicated reference calibration tab and allows selecting it", async () => {
     const user = userEvent.setup();
     const results = {
@@ -643,5 +719,23 @@ describe("App example gallery wiring", () => {
     fireEvent.click(calibrationTab);
 
     expect(screen.getByRole("heading", { name: "Reference calibration summary" })).toBeInTheDocument();
+  });
+
+  it("renders release metadata when VITE_APP_VERSION is semantic", () => {
+    fetchExampleTracks.mockResolvedValue([]);
+    vi.stubEnv("VITE_APP_VERSION", "1.2.3");
+
+    render(<App />);
+
+    expect(screen.getByText("Release 1.2.3")).toBeInTheDocument();
+  });
+
+  it("hides release metadata when VITE_APP_VERSION is missing or non-semantic", () => {
+    fetchExampleTracks.mockResolvedValue([]);
+    vi.stubEnv("VITE_APP_VERSION", "build-main");
+
+    render(<App />);
+
+    expect(screen.queryByText(/^Release\s+/)).not.toBeInTheDocument();
   });
 });

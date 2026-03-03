@@ -21,6 +21,7 @@ env/
 .env.local
 .env.*.local
 .env.unraid
+.release-version
 
 # Frontend
 frontend/node_modules/

@@ -2,6 +2,8 @@
 
 FROM node:20-alpine AS frontend-build
 WORKDIR /app/frontend
+ARG VITE_APP_VERSION
+ENV VITE_APP_VERSION=${VITE_APP_VERSION}
 COPY frontend/package.json ./package.json
 RUN npm install --no-audit --no-fund
 COPY frontend/ ./

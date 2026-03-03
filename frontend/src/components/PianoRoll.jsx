@@ -64,8 +64,8 @@ function PianoRoll({ results }) {
     : hasFrames
       ? frames.map((frame) => frame.pitch)
       : [0, 1];
-  const minPitch = Math.min(...pitchValues, 0);
-  const maxPitch = Math.max(...pitchValues, 1);
+  const minPitch = (hasNotes || hasFrames) ? Math.min(...pitchValues) : 0;
+  const maxPitch = (hasNotes || hasFrames) ? Math.max(...pitchValues) : 1;
   const pitchRange = maxPitch - minPitch || 1;
 
   const timeValues = hasNotes
@@ -73,7 +73,7 @@ function PianoRoll({ results }) {
     : hasFrames
       ? frames.map((frame) => frame.time)
       : [0, 1];
-  const maxTime = Math.max(...timeValues, 1);
+  const maxTime = (hasNotes || hasFrames) ? Math.max(...timeValues, 0.001) : 1;
 
   return (
     <section className="card chart">
