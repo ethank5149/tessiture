@@ -12,6 +12,8 @@ from calibration.models.confidence_models import (
     suggest_detection_thresholds,
 )
 from calibration.monte_carlo.uncertainty_analyzer import summarize_uncertainty
+from calibration.reference_generation.lhs_sampler import lhs_sample
+from calibration.reference_generation.signal_generator import generate_synthetic_signal
 from reporting.csv_generator import generate_csv_report
 from reporting.json_generator import generate_json_report
 from reporting.pdf_composer import _event_confidence, _event_start
@@ -132,6 +134,72 @@ def test_uncertainty_summary_bin_aggregation_is_frequency_aligned() -> None:
     assert counts[11] == 2
     assert np.isclose(bias[0], 1.5)
     assert np.isclose(bias[11], 15.0)
+
+
+def test_uncertainty_summary_generated_reference_data_matches_empirical_mean_with_tolerance() -> None:
+    ranges = {
+        "f0_hz": (110.0, 880.0),
+        "detune_cents": (-12.0, 12.0),
+        "amplitude_dbfs": (-18.0, -6.0),
+        "harmonic_ratio": (0.2, 0.8),
+        "note_count": (1.0, 1.0),
+        "duration_s": (0.1, 0.2),
+        "snr_db": (30.0, 50.0),
+        "vibrato_depth_cents": (0.0, 0.0),
+        "vibrato_rate_hz": (5.0, 5.0),
+    }
+    sampled_params = lhs_sample(24, ranges, seed=20260303)
+
+    results = []
+    empirical_errors = []
+    for params in sampled_params:
+        _, metadata = generate_synthetic_signal(params, sample_rate=8000)
+        detune = float(metadata["detune_cents"])
+        error_cents = 0.9 * detune
+        empirical_errors.append(error_cents)
+        results.append(
+            {
+                "metadata": {"note_frequencies_hz": metadata["note_frequencies_hz"]},
+                "pitch_error_cents": [error_cents],
+            }
+        )
+
+    summary = summarize_uncertainty(results)
+
+    counts = np.asarray(summary["sample_counts"], dtype=float)
+    bias = np.asarray(summary["pitch_bias_cents"], dtype=float)
+    weighted_mean = float(np.sum(counts * bias) / np.sum(counts))
+
+    assert int(np.sum(counts)) == len(empirical_errors)
+    assert np.isclose(weighted_mean, float(np.mean(empirical_errors)), atol=0.75)
+
+
+def test_uncertainty_summary_analytic_canonical_cases_have_expected_bias_and_variance() -> None:
+    results = [
+        {
+            "metadata": {"note_frequencies_hz": [100.0, 100.0, 100.0]},
+            "pitch_error_cents": [-2.0, 0.0, 2.0],
+        },
+        {
+            "metadata": {"note_frequencies_hz": [400.0, 400.0]},
+            "pitch_error_cents": [10.0, 14.0],
+        },
+    ]
+
+    summary = summarize_uncertainty(results)
+
+    counts = np.asarray(summary["sample_counts"], dtype=int)
+    bias = np.asarray(summary["pitch_bias_cents"], dtype=float)
+    variance = np.asarray(summary["pitch_variance_cents2"], dtype=float)
+
+    nonzero_bins = np.flatnonzero(counts)
+    assert nonzero_bins.tolist() == [0, 11]
+    assert counts[0] == 3
+    assert counts[11] == 2
+    assert np.isclose(bias[0], 0.0, atol=1e-9)
+    assert np.isclose(variance[0], 8.0 / 3.0, atol=1e-9)
+    assert np.isclose(bias[11], 12.0, atol=1e-9)
+    assert np.isclose(variance[11], 4.0, atol=1e-9)
 
 
 def test_reporting_generators_emit_expected_fields() -> None:

@@ -515,6 +515,23 @@ a:focus-visible {
   color: var(--danger);
 }
 
+.results__view-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.results__view-tab {
+  font-weight: 600;
+}
+
+.results__view-tab[aria-selected="true"] {
+  background: var(--brand-strong);
+  border-color: var(--brand-strong);
+  color: #ffffff;
+}
+
 .results__section {
   background: var(--surface-2);
   border: 1px solid var(--border-subtle);

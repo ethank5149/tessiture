@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -243,6 +243,29 @@ describe("API status normalization", () => {
     expect(normalized.summary.f0_max_note).toBe("A4");
     expect(normalized.summary.tessitura_range_notes).toEqual(["A3", "A4"]);
   });
+
+  it("preserves nested calibration summary from analysis payload", async () => {
+    const actualApi = await vi.importActual("../api");
+
+    const normalized = actualApi.normalizeAnalysisResult({
+      analysis: {
+        summary: {
+          f0_min: 220.0,
+          f0_max: 440.0,
+        },
+        calibration: {
+          summary: {
+            reference_sample_count: 5,
+            voiced_frame_count: 12,
+          },
+        },
+      },
+    });
+
+    expect(normalized.calibration).toBeDefined();
+    expect(normalized.calibration.summary.reference_sample_count).toBe(5);
+    expect(normalized.calibration.summary.voiced_frame_count).toBe(12);
+  });
 });
 
 describe("AnalysisResults", () => {
@@ -332,6 +355,153 @@ describe("AnalysisResults", () => {
     expect(screen.getByText("57.00 (A3)")).toBeInTheDocument();
     expect(screen.getByText("[56.50, 57.50] (G#3 to A#3)")).toBeInTheDocument();
     expect(screen.getByText("0.008")).toBeInTheDocument();
+  });
+
+  it("renders a dedicated reference calibration tab and allows selecting it", async () => {
+    const user = userEvent.setup();
+    const results = {
+      summary: {
+        duration_seconds: 10.0,
+        f0_min: 220.0,
+        f0_max: 440.0,
+      },
+      pitch: {
+        frames: [{ time: 0.0, f0: 220.0 }],
+      },
+      tessitura: {
+        histogram: [0.2, 0.5, 0.3],
+      },
+      calibration: {
+        summary: {
+          reference_sample_count: 5,
+          reference_frequency_min_hz: 100.0,
+          reference_frequency_max_hz: 300.0,
+          frequency_bin_count: 2,
+          populated_frequency_bin_count: 2,
+          mean_pitch_bias_cents: -0.2,
+          max_abs_pitch_bias_cents: 2.0,
+          mean_pitch_variance_cents2: 6.0,
+          pitch_error_mean_cents: 0.5,
+          pitch_error_std_cents: 0.8165,
+          mean_frame_uncertainty_midi: 0.15,
+          voiced_frame_count: 5,
+        },
+      },
+    };
+
+    render(
+      <AnalysisResults
+        results={results}
+        status={{ status: "completed" }}
+        isFetchingResults={false}
+        onDownloadCsv={vi.fn()}
+        onDownloadJson={vi.fn()}
+        onDownloadPdf={vi.fn()}
+      />
+    );
+
+    const analysisTab = screen.getByRole("tab", { name: "General analysis" });
+    const calibrationTab = screen.getByRole("tab", { name: "Reference calibration" });
+
+    expect(analysisTab).toHaveAttribute("aria-selected", "true");
+    expect(calibrationTab).toHaveAttribute("aria-selected", "false");
+
+    await user.click(calibrationTab);
+
+    const referenceSamplesItem = screen.getByText("Reference samples (N)").closest(".summary-list__item");
+
+    expect(calibrationTab).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("heading", { name: "Reference calibration summary" })).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "These metrics come from reference dataset calibration (ground-truth generated data) and are not derived from uploaded or example track runtime behavior."
+      )
+    ).toBeInTheDocument();
+    expect(screen.getByText("100.00 to 300.00")).toBeInTheDocument();
+    expect(screen.getByText("-0.20")).toBeInTheDocument();
+    expect(referenceSamplesItem).not.toBeNull();
+    expect(within(referenceSamplesItem).getByText("5")).toBeInTheDocument();
+  });
+
+  it("renders reference calibration values from analysis.calibration.summary payload shape", async () => {
+    const user = userEvent.setup();
+    const actualApi = await vi.importActual("../api");
+    const normalized = actualApi.normalizeAnalysisResult({
+      analysis: {
+        summary: {
+          duration_seconds: 8,
+        },
+        calibration: {
+          summary: {
+            reference_sample_count: 7,
+            voiced_frame_count: 9,
+          },
+        },
+      },
+    });
+
+    render(
+      <AnalysisResults
+        results={normalized}
+        status={{ status: "completed" }}
+        isFetchingResults={false}
+        onDownloadCsv={vi.fn()}
+        onDownloadJson={vi.fn()}
+        onDownloadPdf={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Reference calibration" }));
+
+    const sampleCountItem = screen.getByText("Reference samples (N)").closest(".summary-list__item");
+    const voicedFramesItem = screen.getByText("Voiced frame count").closest(".summary-list__item");
+
+    expect(sampleCountItem).not.toBeNull();
+    expect(voicedFramesItem).not.toBeNull();
+    expect(within(sampleCountItem).getByText("7")).toBeInTheDocument();
+    expect(within(voicedFramesItem).getByText("9")).toBeInTheDocument();
+  });
+
+  it("handles partial calibration summary values gracefully", async () => {
+    const user = userEvent.setup();
+    const results = {
+      summary: {
+        duration_seconds: 7.0,
+      },
+      calibration: {
+        summary: {
+          reference_sample_count: 2,
+          voiced_frame_count: null,
+        },
+      },
+    };
+
+    render(
+      <AnalysisResults
+        results={results}
+        status={{ status: "completed" }}
+        isFetchingResults={false}
+        onDownloadCsv={vi.fn()}
+        onDownloadJson={vi.fn()}
+        onDownloadPdf={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Reference calibration" }));
+
+    const sampleCountItem = screen.getByText("Reference samples (N)").closest(".summary-list__item");
+    const frequencyRangeItem = screen
+      .getByText("Reference frequency range (Hz)")
+      .closest(".summary-list__item");
+    const voicedFramesItem = screen.getByText("Voiced frame count").closest(".summary-list__item");
+
+    expect(sampleCountItem).not.toBeNull();
+    expect(frequencyRangeItem).not.toBeNull();
+    expect(voicedFramesItem).not.toBeNull();
+
+    expect(within(sampleCountItem).getByText("2")).toBeInTheDocument();
+    expect(within(frequencyRangeItem).getByText("—")).toBeInTheDocument();
+    expect(within(voicedFramesItem).getByText("—")).toBeInTheDocument();
   });
 });
 
@@ -434,5 +604,44 @@ describe("App example gallery wiring", () => {
     });
 
     expect(fetchJobStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows reference calibration tab in the upload workflow after results are available", async () => {
+    fetchExampleTracks.mockResolvedValue([]);
+    submitAnalysisJob.mockResolvedValue({ job_id: "job-calibration" });
+    fetchJobStatus.mockResolvedValue({ status: "completed" });
+    fetchJobResults.mockResolvedValue({
+      summary: {
+        duration_seconds: 10,
+      },
+      pitch: {
+        frames: [{ time: 0, f0: 220 }],
+      },
+      tessitura: {
+        histogram: [0.5],
+      },
+      calibration: {
+        summary: {
+          reference_sample_count: 3,
+          voiced_frame_count: 4,
+        },
+      },
+    });
+
+    render(<App />);
+
+    const input = screen.getByLabelText("Audio file");
+    const file = new File(["wave"], "sample.wav", { type: "audio/wav" });
+    fireEvent.change(input, { target: { files: [file] } });
+    fireEvent.click(screen.getByRole("button", { name: "Start analysis" }));
+
+    await waitFor(() => {
+      expect(fetchJobResults).toHaveBeenCalledWith("job-calibration", "json");
+    });
+
+    const calibrationTab = await screen.findByRole("tab", { name: "Reference calibration" });
+    fireEvent.click(calibrationTab);
+
+    expect(screen.getByRole("heading", { name: "Reference calibration summary" })).toBeInTheDocument();
   });
 });

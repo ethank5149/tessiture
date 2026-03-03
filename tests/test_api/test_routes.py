@@ -426,6 +426,78 @@ def test_build_summary_includes_separate_pitch_and_key_confidence_fields() -> No
     assert summary["tessitura_range_notes"] == ["A3", "C#4"]
 
 
+def test_build_calibration_summary_uses_weighted_uncertainty_aggregates() -> None:
+    from api.routes import _build_calibration_summary
+
+    summary = _build_calibration_summary(
+        {
+            "frequency_bins_hz": [100.0, 200.0, 300.0],
+            "sample_counts": [3, 2],
+            "pitch_bias_cents": [1.0, -2.0],
+            "pitch_variance_cents2": [4.0, 9.0],
+            "reference_source": "generated_ground_truth_reference",
+            "reference_mean_frame_uncertainty_midi": 0.15,
+            "reference_voiced_frame_count": 11,
+        },
+    )
+
+    assert summary["source"] == "generated_ground_truth_reference"
+    assert summary["reference_sample_count"] == 5
+    assert summary["reference_frequency_min_hz"] == 100.0
+    assert summary["reference_frequency_max_hz"] == 300.0
+    assert summary["frequency_bin_count"] == 2
+    assert summary["populated_frequency_bin_count"] == 2
+    assert summary["mean_pitch_bias_cents"] == pytest.approx(-0.2, abs=1e-9)
+    assert summary["max_abs_pitch_bias_cents"] == pytest.approx(2.0, abs=1e-9)
+    assert summary["mean_pitch_variance_cents2"] == pytest.approx(6.0, abs=1e-9)
+    assert summary["pitch_error_mean_cents"] == pytest.approx(-0.2, abs=1e-9)
+    assert summary["pitch_error_std_cents"] == pytest.approx(2.8565713714, abs=1e-9)
+    assert summary["mean_frame_uncertainty_midi"] == pytest.approx(0.15, abs=1e-9)
+    assert summary["voiced_frame_count"] == 11
+
+
+def test_build_calibration_summary_without_reference_bins_returns_null_bias_metrics() -> None:
+    from api.routes import _build_calibration_summary
+
+    summary = _build_calibration_summary(
+        {},
+    )
+
+    assert summary["source"] == "generated_ground_truth_reference"
+    assert summary["reference_sample_count"] == 0
+    assert summary["reference_frequency_min_hz"] is None
+    assert summary["reference_frequency_max_hz"] is None
+    assert summary["frequency_bin_count"] == 0
+    assert summary["populated_frequency_bin_count"] == 0
+    assert summary["mean_pitch_bias_cents"] is None
+    assert summary["max_abs_pitch_bias_cents"] is None
+    assert summary["mean_pitch_variance_cents2"] is None
+    assert summary["pitch_error_mean_cents"] is None
+    assert summary["pitch_error_std_cents"] is None
+    assert summary["mean_frame_uncertainty_midi"] is None
+    assert summary["voiced_frame_count"] == 0
+
+
+def test_build_calibration_summary_uses_only_reference_scoped_metadata_fields() -> None:
+    from api.routes import _build_calibration_summary
+
+    summary = _build_calibration_summary(
+        {
+            "frequency_bins_hz": [100.0, 200.0],
+            "sample_counts": [4],
+            "pitch_bias_cents": [2.0],
+            "pitch_variance_cents2": [1.0],
+            "reference_mean_frame_uncertainty_midi": 0.25,
+            "mean_frame_uncertainty_midi": 9.99,
+            "reference_voiced_frame_count": 7,
+            "voiced_frame_count": 999,
+        }
+    )
+
+    assert summary["mean_frame_uncertainty_midi"] == pytest.approx(0.25, abs=1e-9)
+    assert summary["voiced_frame_count"] == 7
+
+
 def test_analyze_accepts_opus_upload(tmp_path, monkeypatch) -> None:
     from api import routes
 

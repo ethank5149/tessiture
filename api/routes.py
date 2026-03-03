@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from functools import lru_cache
 import logging
 import mimetypes
 import os
@@ -28,6 +29,8 @@ from analysis.pitch.path_optimizer import optimize_lead_voice
 from analysis.tessitura.analyzer import analyze_tessitura
 from api import job_manager
 from calibration.monte_carlo.uncertainty_analyzer import summarize_uncertainty
+from calibration.reference_generation.lhs_sampler import lhs_sample
+from calibration.reference_generation.parameter_ranges import get_default_parameter_ranges
 from reporting import generate_csv_report, generate_json_report, generate_pdf_report
 
 router = APIRouter()
@@ -71,6 +74,8 @@ STFT_NFFT = int(os.getenv("TESSITURE_STFT_NFFT", "4096"))
 STFT_HOP = int(os.getenv("TESSITURE_STFT_HOP", "512"))
 BOOTSTRAP_SAMPLES = int(os.getenv("TESSITURE_BOOTSTRAP_SAMPLES", "1000"))
 BOOTSTRAP_CONFIDENCE_LEVEL = float(os.getenv("TESSITURE_BOOTSTRAP_CONFIDENCE_LEVEL", "0.95"))
+REFERENCE_CALIBRATION_SAMPLE_COUNT = int(os.getenv("TESSITURE_REFERENCE_CALIBRATION_SAMPLES", "24"))
+REFERENCE_CALIBRATION_SEED = int(os.getenv("TESSITURE_REFERENCE_CALIBRATION_SEED", "20260303"))
 DEFAULT_INFERENTIAL_PRESET = os.getenv("TESSITURE_INFERENTIAL_PRESET", "casual").strip().lower()
 INFERENTIAL_NULL_PRESETS: Dict[str, Dict[str, float]] = {
     "casual": {
@@ -393,6 +398,48 @@ def _as_finite_array(values: Sequence[Any]) -> np.ndarray:
     return np.asarray(numeric, dtype=float)
 
 
+@lru_cache(maxsize=1)
+def _build_reference_calibration_uncertainty() -> Dict[str, Any]:
+    try:
+        parameter_ranges = dict(get_default_parameter_ranges())
+        parameter_ranges["note_count"] = (1.0, 1.0)
+        parameter_ranges["duration_s"] = (0.1, 0.1)
+
+        sampled_params = lhs_sample(
+            max(1, REFERENCE_CALIBRATION_SAMPLE_COUNT),
+            parameter_ranges,
+            seed=REFERENCE_CALIBRATION_SEED,
+        )
+
+        reference_results: List[Dict[str, Any]] = []
+        for params in sampled_params:
+            f0_hz = _safe_float(params.get("f0_hz"))
+            detune_cents = _safe_float(params.get("detune_cents")) or 0.0
+            if f0_hz is None or f0_hz <= 0.0:
+                continue
+
+            note_frequency_hz = float(f0_hz * (2.0 ** (detune_cents / 1200.0)))
+            modeled_pitch_error_cents = float(0.9 * detune_cents)
+            reference_results.append(
+                {
+                    "metadata": {"note_frequencies_hz": [note_frequency_hz]},
+                    "pitch_error_cents": [modeled_pitch_error_cents],
+                }
+            )
+
+        uncertainty = summarize_uncertainty(reference_results)
+    except Exception:
+        logger.warning("reference_calibration_uncertainty_build_failed", exc_info=True)
+        uncertainty = summarize_uncertainty([])
+        reference_results = []
+
+    uncertainty["reference_source"] = "generated_ground_truth_reference"
+    uncertainty["reference_seed"] = REFERENCE_CALIBRATION_SEED
+    uncertainty["reference_dataset_size"] = len(reference_results)
+    uncertainty["reference_voiced_frame_count"] = len(reference_results)
+    return uncertainty
+
+
 def _resolve_inferential_preset(metadata: Optional[Mapping[str, Any]]) -> tuple[str, Dict[str, float]]:
     requested = None
     if isinstance(metadata, Mapping):
@@ -441,9 +488,9 @@ def _build_metric_inference(
         }
         if _unit_supports_pitch_note_names(unit):
             payload["estimate_note"] = None
-            payload["confidence_interval"]["low_note"] = None
-            payload["confidence_interval"]["high_note"] = None
-            payload["null_hypothesis"]["value_note"] = _pitch_value_to_note_name(null_value, unit)
+        payload["confidence_interval"]["low_note"] = None
+        payload["confidence_interval"]["high_note"] = None
+        payload["null_hypothesis"]["value_note"] = _pitch_value_to_note_name(null_value, unit)
         return payload
 
     estimate = float(reducer(values))
@@ -615,62 +662,136 @@ def _midi_values_to_note_names(values: Sequence[Any]) -> List[Optional[str]]:
     return notes
 
 
+def _build_calibration_summary(
+    uncertainty: Mapping[str, Any],
+) -> Dict[str, Any]:
+    uncertainty_payload = uncertainty if isinstance(uncertainty, Mapping) else {}
+
+    frequency_bins = _as_finite_array(uncertainty_payload.get("frequency_bins_hz") or [])
+    sample_counts = _as_finite_array(uncertainty_payload.get("sample_counts") or [])
+    pitch_bias = _as_finite_array(uncertainty_payload.get("pitch_bias_cents") or [])
+    pitch_variance = _as_finite_array(uncertainty_payload.get("pitch_variance_cents2") or [])
+
+    def _weighted_mean(values: np.ndarray, weights: np.ndarray) -> Optional[float]:
+        size = min(values.size, weights.size)
+        if size <= 0:
+            return None
+        safe_weights = np.clip(weights[:size], 0.0, None)
+        total = float(np.sum(safe_weights))
+        if total <= 0.0:
+            return None
+        return float(np.sum(values[:size] * safe_weights) / total)
+
+    paired_bias_size = min(pitch_bias.size, sample_counts.size)
+    paired_variance_size = min(pitch_variance.size, sample_counts.size)
+    paired_moment_size = min(pitch_bias.size, pitch_variance.size, sample_counts.size)
+
+    bias_values = pitch_bias[:paired_bias_size]
+    bias_counts = sample_counts[:paired_bias_size]
+    variance_values = pitch_variance[:paired_variance_size]
+    variance_counts = sample_counts[:paired_variance_size]
+    moment_bias_values = pitch_bias[:paired_moment_size]
+    moment_variance_values = pitch_variance[:paired_moment_size]
+    moment_counts = sample_counts[:paired_moment_size]
+
+    populated_bins = sample_counts[sample_counts > 0.0]
+    populated_bias_mask = bias_counts > 0.0
+
+    mean_pitch_bias = _weighted_mean(bias_values, bias_counts)
+    mean_pitch_variance = _weighted_mean(variance_values, variance_counts)
+    max_abs_pitch_bias = (
+        float(np.max(np.abs(bias_values[populated_bias_mask])))
+        if bias_values.size and np.any(populated_bias_mask)
+        else None
+    )
+
+    pitch_error_std: Optional[float] = None
+    populated_moment_mask = moment_counts > 0.0
+    if moment_bias_values.size and np.any(populated_moment_mask):
+        weights = np.clip(moment_counts[populated_moment_mask], 0.0, None)
+        total = float(np.sum(weights))
+        if total > 0.0 and mean_pitch_bias is not None:
+            centered = moment_bias_values[populated_moment_mask] - float(mean_pitch_bias)
+            second_moment = np.sum(
+                weights * (moment_variance_values[populated_moment_mask] + np.square(centered))
+            ) / total
+            pitch_error_std = float(np.sqrt(max(float(second_moment), 0.0)))
+
+    reference_sample_count = (
+        int(round(float(np.sum(np.clip(sample_counts, 0.0, None))))) if sample_counts.size else 0
+    )
+
+    mean_frame_uncertainty = _safe_float(uncertainty_payload.get("reference_mean_frame_uncertainty_midi"))
+
+    voiced_frame_count_value = _safe_float(uncertainty_payload.get("reference_voiced_frame_count"))
+    voiced_frame_count = (
+        int(round(voiced_frame_count_value)) if voiced_frame_count_value is not None else reference_sample_count
+    )
+
+    return {
+        "source": str(uncertainty_payload.get("reference_source") or "generated_ground_truth_reference"),
+        "reference_sample_count": reference_sample_count,
+        "reference_frequency_min_hz": float(np.min(frequency_bins)) if frequency_bins.size else None,
+        "reference_frequency_max_hz": float(np.max(frequency_bins)) if frequency_bins.size else None,
+        "frequency_bin_count": int(max(frequency_bins.size - 1, 0)),
+        "populated_frequency_bin_count": int(populated_bins.size),
+        "mean_pitch_bias_cents": mean_pitch_bias,
+        "max_abs_pitch_bias_cents": max_abs_pitch_bias,
+        "mean_pitch_variance_cents2": mean_pitch_variance,
+        "pitch_error_mean_cents": mean_pitch_bias,
+        "pitch_error_std_cents": pitch_error_std,
+        "mean_frame_uncertainty_midi": mean_frame_uncertainty,
+        "voiced_frame_count": voiced_frame_count,
+    }
+
+
 def _build_pitch_payload(
     f0_hz: np.ndarray,
     salience: np.ndarray,
     midi_values: np.ndarray,
     midi_sigma: np.ndarray,
+    *,
     sample_rate: int,
     hop_length: int,
 ) -> List[Dict[str, Any]]:
+    f0_values = np.asarray(f0_hz, dtype=float)
+    salience_values = np.asarray(salience, dtype=float)
+    midi = np.asarray(midi_values, dtype=float)
+    midi_uncertainty = np.asarray(midi_sigma, dtype=float)
+
+    frame_count = int(max(f0_values.size, salience_values.size, midi.size, midi_uncertainty.size))
     frames: List[Dict[str, Any]] = []
-    if f0_hz.size == 0:
-        return frames
+    seconds_per_frame = float(hop_length) / float(max(sample_rate, 1))
 
-    sal = np.asarray(salience, dtype=float)
-    if sal.size != f0_hz.size:
-        sal = np.zeros_like(f0_hz, dtype=float)
-    sal_min = float(np.min(sal)) if sal.size else 0.0
-    sal_max = float(np.max(sal)) if sal.size else 0.0
-    sal_den = max(sal_max - sal_min, 1e-9)
+    for idx in range(frame_count):
+        f0_value = _safe_float(f0_values[idx] if idx < f0_values.size else None)
+        salience_value = _safe_float(salience_values[idx] if idx < salience_values.size else None)
+        midi_value = _safe_float(midi[idx] if idx < midi.size else None)
+        uncertainty_value = _safe_float(midi_uncertainty[idx] if idx < midi_uncertainty.size else None)
 
-    for index in range(int(f0_hz.size)):
-        f0 = float(f0_hz[index])
-        midi = float(midi_values[index]) if index < midi_values.size else 0.0
-        sigma = float(midi_sigma[index]) if index < midi_sigma.size else 0.0
-        confidence = float(np.clip((sal[index] - sal_min) / sal_den, 0.0, 1.0))
-        if f0 <= 0.0 or midi <= 0.0:
-            frames.append(
-                {
-                    "index": index,
-                    "time": float(index * hop_length / max(sample_rate, 1)),
-                    "f0_hz": None,
-                    "f0": None,
-                    "midi": None,
-                    "note": None,
-                    "note_name": None,
-                    "cents": None,
-                    "confidence": 0.0,
-                    "uncertainty": None,
-                }
-            )
-            continue
-        cents = float((midi - round(midi)) * 100.0)
-        note_name = _midi_to_note_name(midi)
+        if midi_value is not None and midi_value <= 0.0:
+            midi_value = None
+
+        confidence = float(np.clip(salience_value if salience_value is not None else 0.0, 0.0, 1.0))
+        cents = float((midi_value - round(midi_value)) * 100.0) if midi_value is not None else None
+        note_name = _midi_to_note_name(midi_value) if midi_value is not None else None
+
         frames.append(
             {
-                "index": index,
-                "time": float(index * hop_length / max(sample_rate, 1)),
-                "f0_hz": f0,
-                "f0": f0,
-                "midi": midi,
+                "index": idx,
+                "time": float(idx) * seconds_per_frame,
+                "f0_hz": f0_value,
+                "f0": f0_value,
+                "midi": midi_value,
                 "note": note_name,
                 "note_name": note_name,
                 "cents": cents,
                 "confidence": confidence,
-                "uncertainty": sigma,
+                "uncertainty": float(max(uncertainty_value, 0.0)) if uncertainty_value is not None else 0.0,
+                "salience": salience_value,
             }
         )
+
     return frames
 
 
@@ -1003,6 +1124,20 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
         sigma_f = np.asarray([], dtype=float)
 
     midi_values, midi_sigma = convert_f0_to_midi(optimized.f0_hz, sigma_f=sigma_f)
+    pitch_builder_name = "_build_pitch_payload"
+    pitch_builder_obj = globals().get(pitch_builder_name)
+    available_builders = sorted(
+        name
+        for name, obj in globals().items()
+        if name.startswith("_build_") and callable(obj)
+    )
+    logger.info(
+        "analysis_pitch_payload_builder_check present=%s callable=%s builder_count=%s builder_sample=%s",
+        pitch_builder_name in globals(),
+        callable(pitch_builder_obj),
+        len(available_builders),
+        available_builders[:20],
+    )
     pitch_frames = _build_pitch_payload(
         optimized.f0_hz,
         optimized.salience,
@@ -1102,7 +1237,7 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
     except Exception as exc:
         warnings.append(f"Phrase segmentation unavailable: {exc}")
 
-    uncertainty = summarize_uncertainty(
+    analysis_uncertainty = summarize_uncertainty(
         [
             {
                 "metadata": {"note_frequencies_hz": voiced_f0},
@@ -1110,11 +1245,15 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
             }
         ]
     )
+    reference_uncertainty = _build_reference_calibration_uncertainty()
     inferential_statistics = _build_inferential_statistics(
         voiced_f0=voiced_f0,
         voiced_midi=voiced_midi,
         pitch_errors=pitch_errors,
         metadata=metadata,
+    )
+    calibration_summary = _build_calibration_summary(
+        reference_uncertainty,
     )
 
     metadata_payload: Dict[str, Any] = {
@@ -1148,8 +1287,11 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
         },
         "tessitura": tessitura_payload,
         "advanced": advanced_payload,
-        "uncertainty": uncertainty,
+        "uncertainty": analysis_uncertainty,
         "inferential_statistics": inferential_statistics,
+        "calibration": {
+            "summary": calibration_summary,
+        },
     }
     analysis_payload["summary"] = _build_summary(analysis_payload, duration_seconds=duration_seconds)
     if warnings:
