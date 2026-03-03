@@ -70,12 +70,21 @@ const normalizeSummary = (summary = {}, metadata = {}, pitch = {}, tessitura = {
     tessitura?.metrics?.tessitura_band ??
     null;
   const confidence = summary?.confidence ?? null;
+  const f0MinNote = summary?.f0_min_note ?? null;
+  const f0MaxNote = summary?.f0_max_note ?? null;
+  const tessituraRangeNotes =
+    summary?.tessitura_range_notes ??
+    tessitura?.metrics?.tessitura_band_notes ??
+    null;
 
   return {
     duration_seconds: toNumberOrNull(duration),
     f0_min: toNumberOrNull(f0Min),
     f0_max: toNumberOrNull(f0Max),
+    f0_min_note: f0MinNote,
+    f0_max_note: f0MaxNote,
     tessitura_range: tessituraRange,
+    tessitura_range_notes: tessituraRangeNotes,
     confidence: toNumberOrNull(confidence),
   };
 };

@@ -204,13 +204,28 @@ describe("API status normalization", () => {
     const actualApi = await vi.importActual("../api");
 
     const normalized = actualApi.normalizeAnalysisResult({
+      summary: {
+        f0_min: 220.0,
+        f0_max: 440.0,
+        f0_min_note: "A3",
+        f0_max_note: "A4",
+        tessitura_range: [57.0, 69.0],
+        tessitura_range_notes: ["A3", "A4"],
+      },
       inferential_statistics: {
         preset: "casual",
         confidence_level: 0.95,
         metrics: {
           f0_mean_hz: {
             estimate: 220.1,
-            confidence_interval: { low: 210.2, high: 230.3, level: 0.95 },
+            estimate_note: "A3",
+            confidence_interval: {
+              low: 210.2,
+              high: 230.3,
+              low_note: "G#3",
+              high_note: "A#3",
+              level: 0.95,
+            },
             p_value: 0.012,
             n_samples: 120,
           },
@@ -221,6 +236,12 @@ describe("API status normalization", () => {
     expect(normalized.inferential_statistics).toBeDefined();
     expect(normalized.inferential_statistics.metrics).toBeDefined();
     expect(normalized.inferential_statistics.metrics.f0_mean_hz.estimate).toBe(220.1);
+    expect(normalized.inferential_statistics.metrics.f0_mean_hz.estimate_note).toBe("A3");
+    expect(normalized.inferential_statistics.metrics.f0_mean_hz.confidence_interval.low_note).toBe("G#3");
+    expect(normalized.inferential_statistics.metrics.f0_mean_hz.confidence_interval.high_note).toBe("A#3");
+    expect(normalized.summary.f0_min_note).toBe("A3");
+    expect(normalized.summary.f0_max_note).toBe("A4");
+    expect(normalized.summary.tessitura_range_notes).toEqual(["A3", "A4"]);
   });
 });
 
@@ -232,7 +253,10 @@ describe("AnalysisResults", () => {
         duration_seconds: 10.0,
         f0_min: 220.0,
         f0_max: 440.0,
+        f0_min_note: "A3",
+        f0_max_note: "A4",
         tessitura_range: [57.0, 69.0],
+        tessitura_range_notes: ["A3", "A4"],
         confidence: 0.92,
       },
       inferential_statistics: {
@@ -241,8 +265,28 @@ describe("AnalysisResults", () => {
         metrics: {
           f0_mean_hz: {
             estimate: 221.4,
-            confidence_interval: { low: 215.2, high: 228.7, level: 0.95 },
+            estimate_note: "A3",
+            confidence_interval: {
+              low: 215.2,
+              high: 228.7,
+              low_note: "G#3",
+              high_note: "A#3",
+              level: 0.95,
+            },
             p_value: 0.008,
+            n_samples: 140,
+          },
+          tessitura_center_midi: {
+            estimate: 57.0,
+            estimate_note: "A3",
+            confidence_interval: {
+              low: 56.5,
+              high: 57.5,
+              low_note: "G#3",
+              high_note: "A#3",
+              level: 0.95,
+            },
+            p_value: 0.011,
             n_samples: 140,
           },
         },
@@ -274,11 +318,19 @@ describe("AnalysisResults", () => {
     expect(screen.getByText("Visualizations")).toBeInTheDocument();
     expect(screen.getByText("completed", { selector: ".results__status" })).toBeInTheDocument();
     expect(screen.getByText("10.00")).toBeInTheDocument();
+    expect(screen.getByText("220.00 (A3)")).toBeInTheDocument();
+    expect(screen.getByText("440.00 (A4)")).toBeInTheDocument();
+    expect(screen.getByText("57.00 to 69.00 (A3 to A4)")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Download CSV" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Download JSON" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Download PDF" })).toBeInTheDocument();
     expect(screen.getByText("How consistent each metric is (inferential statistics)")).toBeInTheDocument();
     expect(screen.getByText("F0 Mean Hz")).toBeInTheDocument();
+    expect(screen.getByText("Tessitura Center Midi")).toBeInTheDocument();
+    expect(screen.getByText("221.40 (A3)")).toBeInTheDocument();
+    expect(screen.getByText("[215.20, 228.70] (G#3 to A#3)")).toBeInTheDocument();
+    expect(screen.getByText("57.00 (A3)")).toBeInTheDocument();
+    expect(screen.getByText("[56.50, 57.50] (G#3 to A#3)")).toBeInTheDocument();
     expect(screen.getByText("0.008")).toBeInTheDocument();
   });
 });

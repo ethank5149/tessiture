@@ -37,6 +37,35 @@ const formatRangeValue = (value) => {
   return formatValue(value);
 };
 
+const formatPitchWithNote = (value, note) => {
+  const renderedValue = formatValue(value);
+  if (typeof note === "string" && note.trim()) {
+    return renderedValue === "—" ? note : `${renderedValue} (${note})`;
+  }
+  return renderedValue;
+};
+
+const formatRangeWithNotes = (range, notes) => {
+  const renderedRange = formatRangeValue(range);
+  if (Array.isArray(notes) && notes.length >= 2 && notes[0] && notes[1]) {
+    return `${renderedRange} (${notes[0]} to ${notes[1]})`;
+  }
+  return renderedRange;
+};
+
+const formatConfidenceIntervalWithNotes = (ci) => {
+  const rendered = `[${formatValue(ci?.low)}, ${formatValue(ci?.high)}]`;
+  if (
+    typeof ci?.low_note === "string" &&
+    ci.low_note.trim() &&
+    typeof ci?.high_note === "string" &&
+    ci.high_note.trim()
+  ) {
+    return `${rendered} (${ci.low_note} to ${ci.high_note})`;
+  }
+  return rendered;
+};
+
 function AnalysisResults({
   results = null,
   status = null,
@@ -54,6 +83,10 @@ function AnalysisResults({
   const f0Min = results?.pitch?.f0_min ?? summary?.f0_min ?? summary?.min_f0;
   const f0Max = results?.pitch?.f0_max ?? summary?.f0_max ?? summary?.max_f0;
   const tessitura = summary?.tessitura_range ?? summary?.range;
+  const f0MinNote = summary?.f0_min_note ?? results?.pitch?.f0_min_note ?? null;
+  const f0MaxNote = summary?.f0_max_note ?? results?.pitch?.f0_max_note ?? null;
+  const tessituraNotes =
+    summary?.tessitura_range_notes ?? results?.tessitura?.metrics?.tessitura_band_notes ?? null;
   const inferentialStatistics =
     results?.inferential_statistics && typeof results.inferential_statistics === "object"
       ? results.inferential_statistics
@@ -113,15 +146,15 @@ function AnalysisResults({
               </div>
               <div className="summary-list__item">
                 <dt>Lowest detected pitch (F0, Hz)</dt>
-                <dd>{formatValue(f0Min)}</dd>
+                <dd>{formatPitchWithNote(f0Min, f0MinNote)}</dd>
               </div>
               <div className="summary-list__item">
                 <dt>Highest detected pitch (F0, Hz)</dt>
-                <dd>{formatValue(f0Max)}</dd>
+                <dd>{formatPitchWithNote(f0Max, f0MaxNote)}</dd>
               </div>
               <div className="summary-list__item">
                 <dt>Comfortable singing range (tessitura)</dt>
-                <dd>{formatRangeValue(tessitura)}</dd>
+                <dd>{formatRangeWithNotes(tessitura, tessituraNotes)}</dd>
               </div>
             </dl>
           </section>
@@ -169,8 +202,8 @@ function AnalysisResults({
                       return (
                         <tr key={metricName}>
                           <th scope="row">{prettifyMetricName(metricName)}</th>
-                          <td>{formatValue(metricPayload?.estimate)}</td>
-                          <td>{`[${formatValue(ci?.low)}, ${formatValue(ci?.high)}]`}</td>
+                          <td>{formatPitchWithNote(metricPayload?.estimate, metricPayload?.estimate_note)}</td>
+                          <td>{formatConfidenceIntervalWithNotes(ci)}</td>
                           <td>{formatPValue(metricPayload?.p_value)}</td>
                           <td>{formatValue(metricPayload?.n_samples)}</td>
                         </tr>

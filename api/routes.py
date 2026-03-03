@@ -423,7 +423,7 @@ def _build_metric_inference(
     rng: np.random.Generator,
 ) -> Dict[str, Any]:
     if values.size == 0:
-        return {
+        payload: Dict[str, Any] = {
             "estimate": None,
             "confidence_interval": {
                 "level": confidence_level,
@@ -439,6 +439,12 @@ def _build_metric_inference(
             "unit": unit,
             "method": "bootstrap_percentile",
         }
+        if _unit_supports_pitch_note_names(unit):
+            payload["estimate_note"] = None
+            payload["confidence_interval"]["low_note"] = None
+            payload["confidence_interval"]["high_note"] = None
+            payload["null_hypothesis"]["value_note"] = _pitch_value_to_note_name(null_value, unit)
+        return payload
 
     estimate = float(reducer(values))
 
@@ -451,13 +457,13 @@ def _build_metric_inference(
         for idx in range(int(bootstrap_samples)):
             draw = values[rng.integers(0, values.size, size=values.size)]
             replicates[idx] = float(reducer(draw))
-        alpha = (1.0 - confidence_level) / 2.0
+        alpha = (1.0 - float(confidence_level)) / 2.0
         low = float(np.quantile(replicates, alpha))
         high = float(np.quantile(replicates, 1.0 - alpha))
 
     p_value = _bootstrap_two_sided_p_value(replicates, null_value)
 
-    return {
+    payload = {
         "estimate": estimate,
         "confidence_interval": {
             "level": confidence_level,
@@ -473,6 +479,14 @@ def _build_metric_inference(
         "unit": unit,
         "method": "bootstrap_percentile",
     }
+    if _unit_supports_pitch_note_names(unit):
+        payload["estimate_note"] = _pitch_value_to_note_name(estimate, unit)
+        low_value = _safe_float(payload["confidence_interval"]["low"])
+        high_value = _safe_float(payload["confidence_interval"]["high"])
+        payload["confidence_interval"]["low_note"] = _pitch_value_to_note_name(low_value, unit)
+        payload["confidence_interval"]["high_note"] = _pitch_value_to_note_name(high_value, unit)
+        payload["null_hypothesis"]["value_note"] = _pitch_value_to_note_name(null_value, unit)
+    return payload
 
 
 def _build_inferential_statistics(
@@ -571,6 +585,36 @@ def _midi_to_note_name(midi_value: float) -> str:
     return f"{NOTE_NAMES[note_index]}{octave}"
 
 
+def _hz_to_note_name(frequency_hz: Any) -> Optional[str]:
+    frequency = _safe_float(frequency_hz)
+    if frequency is None or frequency <= 0.0:
+        return None
+    midi_value = 69.0 + 12.0 * float(np.log2(frequency / 440.0))
+    return _midi_to_note_name(midi_value)
+
+
+def _unit_supports_pitch_note_names(unit: Any) -> bool:
+    return str(unit or "").strip().upper() in {"HZ", "MIDI"}
+
+
+def _pitch_value_to_note_name(value: Any, unit: Any) -> Optional[str]:
+    unit_upper = str(unit or "").strip().upper()
+    if unit_upper == "MIDI":
+        midi_value = _safe_float(value)
+        return _midi_to_note_name(midi_value) if midi_value is not None else None
+    if unit_upper == "HZ":
+        return _hz_to_note_name(value)
+    return None
+
+
+def _midi_values_to_note_names(values: Sequence[Any]) -> List[Optional[str]]:
+    notes: List[Optional[str]] = []
+    for value in values:
+        midi_value = _safe_float(value)
+        notes.append(_midi_to_note_name(midi_value) if midi_value is not None else None)
+    return notes
+
+
 def _build_pitch_payload(
     f0_hz: np.ndarray,
     salience: np.ndarray,
@@ -604,6 +648,7 @@ def _build_pitch_payload(
                     "f0": None,
                     "midi": None,
                     "note": None,
+                    "note_name": None,
                     "cents": None,
                     "confidence": 0.0,
                     "uncertainty": None,
@@ -611,6 +656,7 @@ def _build_pitch_payload(
             )
             continue
         cents = float((midi - round(midi)) * 100.0)
+        note_name = _midi_to_note_name(midi)
         frames.append(
             {
                 "index": index,
@@ -618,7 +664,8 @@ def _build_pitch_payload(
                 "f0_hz": f0,
                 "f0": f0,
                 "midi": midi,
-                "note": _midi_to_note_name(midi),
+                "note": note_name,
+                "note_name": note_name,
                 "cents": cents,
                 "confidence": confidence,
                 "uncertainty": sigma,
@@ -654,6 +701,7 @@ def _build_note_events(frames: Sequence[Mapping[str, Any]]) -> List[Dict[str, An
                 "pitch": midi_mean,
                 "midi": midi_mean,
                 "note": _midi_to_note_name(midi_mean),
+                "note_name": _midi_to_note_name(midi_mean),
                 "confidence": confidence,
             }
         )
@@ -717,15 +765,26 @@ def _serialize_tessitura_payload(payload: Any) -> Dict[str, Any]:
             }
         )
 
+    range_min = _safe_float(getattr(metrics, "range_min", None))
+    range_max = _safe_float(getattr(metrics, "range_max", None))
+    tessitura_band = list(getattr(metrics, "tessitura_band", ()))
+    comfort_band = list(getattr(metrics, "comfort_band", ()))
+    comfort_center = _safe_float(getattr(metrics, "comfort_center", None))
+
     serialized: Dict[str, Any] = {
         "metrics": {
             "count": int(getattr(metrics, "count", 0)),
             "weight_sum": _safe_float(getattr(metrics, "weight_sum", None)),
-            "range_min": _safe_float(getattr(metrics, "range_min", None)),
-            "range_max": _safe_float(getattr(metrics, "range_max", None)),
-            "tessitura_band": list(getattr(metrics, "tessitura_band", ())),
-            "comfort_band": list(getattr(metrics, "comfort_band", ())),
-            "comfort_center": _safe_float(getattr(metrics, "comfort_center", None)),
+            "range_min": range_min,
+            "range_max": range_max,
+            "range_min_note": _midi_to_note_name(range_min) if range_min is not None else None,
+            "range_max_note": _midi_to_note_name(range_max) if range_max is not None else None,
+            "tessitura_band": tessitura_band,
+            "tessitura_band_notes": _midi_values_to_note_names(tessitura_band),
+            "comfort_band": comfort_band,
+            "comfort_band_notes": _midi_values_to_note_names(comfort_band),
+            "comfort_center": comfort_center,
+            "comfort_center_note": _midi_to_note_name(comfort_center) if comfort_center is not None else None,
             "variance": _safe_float(getattr(metrics, "variance", None)),
             "std_dev": _safe_float(getattr(metrics, "std_dev", None)),
             "mean_variance": _safe_float(getattr(metrics, "mean_variance", None)),
@@ -792,6 +851,11 @@ def _build_summary(result: Mapping[str, Any], duration_seconds: float) -> Dict[s
 
     tessitura_metrics = result.get("tessitura", {}).get("metrics", {}) if isinstance(result, Mapping) else {}
     tessitura_band = tessitura_metrics.get("tessitura_band") if isinstance(tessitura_metrics, Mapping) else None
+    tessitura_range_notes: Optional[List[str]] = None
+    if isinstance(tessitura_band, Sequence) and not isinstance(tessitura_band, (str, bytes)):
+        candidate_notes = [note for note in _midi_values_to_note_names(list(tessitura_band)[:2]) if note is not None]
+        if len(candidate_notes) == 2:
+            tessitura_range_notes = candidate_notes
     key_trajectory = result.get("keys", {}).get("trajectory", []) if isinstance(result, Mapping) else []
     key_confidence = 0.0
     if isinstance(key_trajectory, Sequence) and key_trajectory:
@@ -812,7 +876,10 @@ def _build_summary(result: Mapping[str, Any], duration_seconds: float) -> Dict[s
         "duration_seconds": float(duration_seconds),
         "f0_min": float(np.min(voiced_f0)) if voiced_f0 else None,
         "f0_max": float(np.max(voiced_f0)) if voiced_f0 else None,
+        "f0_min_note": _hz_to_note_name(np.min(voiced_f0)) if voiced_f0 else None,
+        "f0_max_note": _hz_to_note_name(np.max(voiced_f0)) if voiced_f0 else None,
         "tessitura_range": tessitura_band,
+        "tessitura_range_notes": tessitura_range_notes,
         "confidence": mean_confidence,
         "pitch_confidence": mean_confidence,
         "key_confidence": key_confidence,
@@ -1062,29 +1129,34 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
                 continue
             metadata_payload[str(key)] = value
 
+    analysis_payload: Dict[str, Any] = {
+        "metadata": metadata_payload,
+        "summary": {},
+        "pitch": {
+            "frames": pitch_frames,
+            "f0_min": float(np.min(voiced_f0)) if voiced_f0 else None,
+            "f0_max": float(np.max(voiced_f0)) if voiced_f0 else None,
+        },
+        "pitch_frames": pitch_frames,
+        "note_events": note_events,
+        "notes": {"events": note_events},
+        "chords": {"timeline": chord_timeline},
+        "keys": {
+            "trajectory": key_trajectory,
+            "probabilities": key_probabilities,
+            "best_key": key_detection_result.best_key if key_detection_result else None,
+        },
+        "tessitura": tessitura_payload,
+        "advanced": advanced_payload,
+        "uncertainty": uncertainty,
+        "inferential_statistics": inferential_statistics,
+    }
+    analysis_payload["summary"] = _build_summary(analysis_payload, duration_seconds=duration_seconds)
+    if warnings:
+        analysis_payload["warnings"] = warnings
+
     return {
-        "analysis": {
-            "metadata": metadata_payload,
-            "summary": {},
-            "pitch": {
-                "frames": pitch_frames,
-                "f0_min": float(np.min(voiced_f0)) if voiced_f0 else None,
-                "f0_max": float(np.max(voiced_f0)) if voiced_f0 else None,
-            },
-            "pitch_frames": pitch_frames,
-            "note_events": note_events,
-            "notes": {"events": note_events},
-            "chords": {"timeline": chord_timeline},
-            "keys": {
-                "trajectory": key_trajectory,
-                "probabilities": key_probabilities,
-                "best_key": key_detection_result.best_key if key_detection_result else None,
-            },
-            "tessitura": tessitura_payload,
-            "advanced": advanced_payload,
-            "uncertainty": uncertainty,
-            "inferential_statistics": inferential_statistics,
-        }
+        "analysis": analysis_payload,
     }
 
 

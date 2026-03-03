@@ -361,6 +361,37 @@ def test_build_inferential_statistics_emits_per_metric_ci_and_p_values() -> None
         if metric["p_value"] is not None:
             assert 0.0 <= metric["p_value"] <= 1.0
 
+    midi_metric = metrics["tessitura_center_midi"]
+    assert midi_metric["estimate_note"] is not None
+    assert midi_metric["confidence_interval"]["low_note"] is not None
+    assert midi_metric["confidence_interval"]["high_note"] is not None
+    assert midi_metric["null_hypothesis"]["value_note"] is not None
+
+    mean_hz_metric = metrics["f0_mean_hz"]
+    min_hz_metric = metrics["f0_min_hz"]
+    max_hz_metric = metrics["f0_max_hz"]
+
+    assert mean_hz_metric["estimate_note"] is not None
+    assert mean_hz_metric["confidence_interval"]["low_note"] is not None
+    assert mean_hz_metric["confidence_interval"]["high_note"] is not None
+    assert mean_hz_metric["null_hypothesis"]["value_note"] is not None
+
+    assert min_hz_metric["estimate_note"] is not None
+    assert min_hz_metric["confidence_interval"]["low_note"] is not None
+    assert min_hz_metric["confidence_interval"]["high_note"] is not None
+    assert min_hz_metric["null_hypothesis"]["value_note"] is not None
+
+    assert max_hz_metric["estimate_note"] is not None
+    assert max_hz_metric["confidence_interval"]["low_note"] is not None
+    assert max_hz_metric["confidence_interval"]["high_note"] is not None
+    assert max_hz_metric["null_hypothesis"]["value_note"] is not None
+
+    pitch_error_metric = metrics["pitch_error_mean_cents"]
+    assert "estimate_note" not in pitch_error_metric
+    assert "low_note" not in pitch_error_metric["confidence_interval"]
+    assert "high_note" not in pitch_error_metric["confidence_interval"]
+    assert "value_note" not in pitch_error_metric["null_hypothesis"]
+
 
 def test_build_summary_includes_separate_pitch_and_key_confidence_fields() -> None:
     from api.routes import _build_summary
@@ -371,6 +402,11 @@ def test_build_summary_includes_separate_pitch_and_key_confidence_fields() -> No
                 {"f0_hz": 220.0, "confidence": 0.8},
                 {"f0_hz": 230.0, "confidence": 0.6},
             ]
+        },
+        "tessitura": {
+            "metrics": {
+                "tessitura_band": [57.0, 61.0],
+            }
         },
         "keys": {
             "trajectory": [
@@ -385,6 +421,9 @@ def test_build_summary_includes_separate_pitch_and_key_confidence_fields() -> No
     assert "key_confidence" in summary
     assert summary["pitch_confidence"] == summary["confidence"]
     assert summary["key_confidence"] == 0.4
+    assert summary["f0_min_note"] == "A3"
+    assert summary["f0_max_note"] == "A#3"
+    assert summary["tessitura_range_notes"] == ["A3", "C#4"]
 
 
 def test_analyze_accepts_opus_upload(tmp_path, monkeypatch) -> None:
