@@ -138,37 +138,42 @@ export const normalizeAnalysisResult = (payload = {}) => {
     };
   }
 
+  const root =
+    payload.analysis && typeof payload.analysis === "object"
+      ? payload.analysis
+      : payload;
+
   const metadata =
-    payload.metadata && typeof payload.metadata === "object"
-      ? payload.metadata
+    root.metadata && typeof root.metadata === "object"
+      ? root.metadata
       : {};
   const pitch =
-    payload.pitch && typeof payload.pitch === "object"
-      ? payload.pitch
+    root.pitch && typeof root.pitch === "object"
+      ? root.pitch
       : {};
   const tessitura =
-    payload.tessitura && typeof payload.tessitura === "object"
-      ? payload.tessitura
+    root.tessitura && typeof root.tessitura === "object"
+      ? root.tessitura
       : {};
 
   let normalizedInferential;
-  if (payload.inferential_statistics && typeof payload.inferential_statistics === "object") {
+  if (root.inferential_statistics && typeof root.inferential_statistics === "object") {
     normalizedInferential = {
-      ...payload.inferential_statistics,
+      ...root.inferential_statistics,
       metrics:
-        payload.inferential_statistics.metrics &&
-        typeof payload.inferential_statistics.metrics === "object"
-          ? payload.inferential_statistics.metrics
+        root.inferential_statistics.metrics &&
+        typeof root.inferential_statistics.metrics === "object"
+          ? root.inferential_statistics.metrics
           : {},
     };
   } else {
     normalizedInferential = { metrics: {} };
-    if (payload.metrics && typeof payload.metrics === "object") {
+    if (root.metrics && typeof root.metrics === "object") {
       console.warn(
         "[diagnostic] normalizeAnalysisResult schema mismatch: inferential payload is at top-level",
         {
-          topLevelKeys: Object.keys(payload),
-          metricCount: Object.keys(payload.metrics).length,
+          topLevelKeys: Object.keys(root),
+          metricCount: Object.keys(root.metrics).length,
         }
       );
     }
@@ -176,55 +181,55 @@ export const normalizeAnalysisResult = (payload = {}) => {
 
   const frames = Array.isArray(pitch.frames)
     ? pitch.frames
-    : Array.isArray(payload.pitch_frames)
-      ? payload.pitch_frames
+    : Array.isArray(root.pitch_frames)
+      ? root.pitch_frames
       : [];
 
-  const noteEvents = Array.isArray(payload.note_events)
-    ? payload.note_events
-    : Array.isArray(payload?.notes?.events)
-      ? payload.notes.events
+  const noteEvents = Array.isArray(root.note_events)
+    ? root.note_events
+    : Array.isArray(root?.notes?.events)
+      ? root.notes.events
       : [];
 
   return {
-    ...payload,
+    ...root,
     metadata,
-    summary: normalizeSummary(payload.summary, metadata, pitch, tessitura),
+    summary: normalizeSummary(root.summary, metadata, pitch, tessitura),
     pitch: {
       ...pitch,
       frames,
-      f0_min: toNumberOrNull(pitch.f0_min ?? payload.summary?.f0_min),
-      f0_max: toNumberOrNull(pitch.f0_max ?? payload.summary?.f0_max),
+      f0_min: toNumberOrNull(pitch.f0_min ?? root.summary?.f0_min),
+      f0_max: toNumberOrNull(pitch.f0_max ?? root.summary?.f0_max),
     },
     pitch_frames: frames,
     note_events: noteEvents,
     chords:
-      payload.chords && typeof payload.chords === "object"
-        ? { timeline: Array.isArray(payload.chords.timeline) ? payload.chords.timeline : [] }
+      root.chords && typeof root.chords === "object"
+        ? { timeline: Array.isArray(root.chords.timeline) ? root.chords.timeline : [] }
         : { timeline: [] },
     keys:
-      payload.keys && typeof payload.keys === "object"
+      root.keys && typeof root.keys === "object"
         ? {
-            trajectory: Array.isArray(payload.keys.trajectory) ? payload.keys.trajectory : [],
+            trajectory: Array.isArray(root.keys.trajectory) ? root.keys.trajectory : [],
             probabilities:
-              payload.keys.probabilities && typeof payload.keys.probabilities === "object"
-                ? payload.keys.probabilities
+              root.keys.probabilities && typeof root.keys.probabilities === "object"
+                ? root.keys.probabilities
                 : {},
           }
         : { trajectory: [], probabilities: {} },
     tessitura,
     advanced:
-      payload.advanced && typeof payload.advanced === "object"
-        ? payload.advanced
+      root.advanced && typeof root.advanced === "object"
+        ? root.advanced
         : {},
     uncertainty:
-      payload.uncertainty && typeof payload.uncertainty === "object"
-        ? payload.uncertainty
+      root.uncertainty && typeof root.uncertainty === "object"
+        ? root.uncertainty
         : {},
     inferential_statistics: normalizedInferential,
     files:
-      payload.files && typeof payload.files === "object"
-        ? payload.files
+      root.files && typeof root.files === "object"
+        ? root.files
         : {},
   };
 };
