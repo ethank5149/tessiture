@@ -796,3 +796,79 @@ def test_build_example_payload_includes_metadata_keys(tmp_path):
     assert payload["display_name"] == "Sample Track"
     assert payload["filename"] == "sample.opus"
     assert payload["size_bytes"] == len(b"OPUSDATA")
+
+
+# ---------------------------------------------------------------------------
+# _run_analysis_pipeline — audio_type separation gating
+# ---------------------------------------------------------------------------
+
+def test_run_analysis_pipeline_skips_separation_for_isolated(tmp_path, monkeypatch):
+    """When audio_type='isolated', separation must NOT be called even if Demucs is available."""
+    import numpy as np
+    import tempfile
+    from unittest.mock import patch as _patch, MagicMock
+    import soundfile as sf
+
+    from api import routes
+
+    # Write a minimal wav file so _decode_audio_file can load it
+    audio_data = np.zeros(4096, dtype=np.float32)
+    wav_path = tmp_path / "test_isolated.wav"
+    sf.write(str(wav_path), audio_data, 16000)
+
+    routes.UPLOAD_DIR = tmp_path / "uploads"
+    routes.OUTPUT_DIR = tmp_path / "outputs"
+    routes.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    separate_vocals_called = []
+
+    def fake_separate_vocals(*args, **kwargs):
+        separate_vocals_called.append(True)
+        raise RuntimeError("should not be called")
+
+    with (
+        _patch("analysis.dsp.vocal_separation.is_available", return_value=True),
+        _patch("analysis.dsp.vocal_separation.separate_vocals", side_effect=fake_separate_vocals),
+        _patch.object(routes, "_VOCAL_SEPARATION_MODE", "auto"),
+    ):
+        result = routes._run_analysis_pipeline(
+            file_path=str(wav_path),
+            metadata={"filename": "test.wav", "source": "upload", "audio_type": "isolated"},
+        )
+
+    assert not separate_vocals_called, "separate_vocals should NOT be called for isolated audio"
+    sep_info = result.get("analysis", {}).get("metadata", {}).get("vocal_separation", {})
+    assert sep_info.get("audio_type_requested") == "isolated"
+    assert sep_info.get("applied") is False
+
+
+def test_run_analysis_pipeline_attempts_separation_for_mixed(tmp_path, monkeypatch):
+    """When audio_type='mixed' and Demucs unavailable, separation is skipped gracefully."""
+    import numpy as np
+    import soundfile as sf
+
+    from api import routes
+
+    audio_data = np.zeros(4096, dtype=np.float32)
+    wav_path = tmp_path / "test_mixed.wav"
+    sf.write(str(wav_path), audio_data, 16000)
+
+    routes.UPLOAD_DIR = tmp_path / "uploads"
+    routes.OUTPUT_DIR = tmp_path / "outputs"
+    routes.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    from unittest.mock import patch as _patch
+
+    # Demucs not available → separation skipped, but audio_type_requested is "mixed"
+    with (
+        _patch("analysis.dsp.vocal_separation.is_available", return_value=False),
+        _patch.object(routes, "_VOCAL_SEPARATION_MODE", "auto"),
+    ):
+        result = routes._run_analysis_pipeline(
+            file_path=str(wav_path),
+            metadata={"filename": "test.wav", "source": "upload", "audio_type": "mixed"},
+        )
+
+    sep_info = result.get("analysis", {}).get("metadata", {}).get("vocal_separation", {})
+    assert sep_info.get("audio_type_requested") == "mixed"
+    assert sep_info.get("applied") is False

@@ -243,12 +243,13 @@ export const normalizeAnalysisResult = (payload = {}) => {
   };
 };
 
-export const submitAnalysisJob = async (file) => {
+export const submitAnalysisJob = async (file, audioType = "isolated") => {
   if (!file) {
     throw new Error("Audio file is required.");
   }
   const formData = new FormData();
   formData.append("audio", file);
+  formData.append("audio_type", audioType);
   const response = await ensureOk(
     await fetch(buildUrl("/analyze"), {
       method: "POST",

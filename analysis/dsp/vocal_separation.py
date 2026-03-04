@@ -199,3 +199,74 @@ def separate_vocals(
         separation_time_s=separation_time,
         cache_hit=False,
     )
+
+
+def detect_audio_type(
+    audio: np.ndarray,
+    sample_rate: int,
+    *,
+    analysis_duration_s: float = 10.0,
+    sub_bass_threshold: float = 0.08,
+    spectral_spread_threshold: float = 0.35,
+) -> str:
+    """Heuristic classification of audio as 'isolated' vocals or 'mixed' track.
+
+    Uses two spectral features computed from the first `analysis_duration_s` seconds:
+    1. Sub-bass energy ratio — energy below 80 Hz relative to total. Full mixes with
+       bass guitar or kick drum have significant sub-bass (~10%+). Isolated vocals
+       have near-zero sub-bass.
+    2. Spectral spread — normalized standard deviation of the spectral centroid over
+       time. Full mixes have broader, more variable spectral distribution.
+
+    Args:
+        audio: Float32 mono audio array.
+        sample_rate: Sample rate in Hz.
+        analysis_duration_s: Seconds of audio to analyze (from start).
+        sub_bass_threshold: Sub-bass energy fraction above which audio is classified
+            as mixed. Default 0.08 (8%).
+        spectral_spread_threshold: Normalized spectral spread above which audio is
+            classified as mixed. Default 0.35.
+
+    Returns:
+        "isolated" if the audio appears to be a solo vocal recording, else "mixed".
+    """
+    segment_samples = int(analysis_duration_s * sample_rate)
+    segment = np.asarray(audio, dtype=np.float32)[:segment_samples]
+    if segment.size == 0:
+        return "isolated"
+
+    # Use a simple periodogram-style power spectrum
+    n_fft = 2048
+    hop = n_fft // 4
+    n_frames = max(1, (segment.size - n_fft) // hop)
+    power_frames = []
+    for i in range(n_frames):
+        frame = segment[i * hop: i * hop + n_fft]
+        if frame.size < n_fft:
+            frame = np.pad(frame, (0, n_fft - frame.size))
+        windowed = frame * np.hanning(n_fft)
+        spectrum = np.abs(np.fft.rfft(windowed)) ** 2
+        power_frames.append(spectrum)
+    power = np.mean(power_frames, axis=0)
+
+    freqs = np.fft.rfftfreq(n_fft, d=1.0 / sample_rate)
+    total_power = float(np.sum(power)) + 1e-12
+
+    # Feature 1: sub-bass energy ratio (< 80 Hz)
+    sub_bass_mask = freqs < 80.0
+    sub_bass_ratio = float(np.sum(power[sub_bass_mask])) / total_power
+
+    # Feature 2: spectral spread — fraction of energy outside the core vocal band
+    vocal_band_mask = (freqs >= 80.0) & (freqs <= 3000.0)
+    vocal_band_ratio = float(np.sum(power[vocal_band_mask])) / total_power
+    non_vocal_ratio = 1.0 - vocal_band_ratio
+
+    is_mixed = sub_bass_ratio >= sub_bass_threshold or non_vocal_ratio >= spectral_spread_threshold
+
+    logger.debug(
+        "detect_audio_type sub_bass_ratio=%.4f non_vocal_ratio=%.4f result=%s",
+        sub_bass_ratio,
+        non_vocal_ratio,
+        "mixed" if is_mixed else "isolated",
+    )
+    return "mixed" if is_mixed else "isolated"

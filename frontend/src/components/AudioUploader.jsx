@@ -1,9 +1,24 @@
 import { useId, useState } from "react";
 
-function AudioUploader({ onSubmit, isSubmitting = false, jobId = null, status = null, error = null }) {
+const AUDIO_TYPE_OPTIONS = [
+  { value: "isolated", label: "Isolated Vocals" },
+  { value: "mixed",    label: "Mixed Track" },
+  { value: "auto",     label: "Auto-detect" },
+];
+
+function AudioUploader({
+  onSubmit,
+  isSubmitting = false,
+  jobId = null,
+  status = null,
+  error = null,
+  audioType = "isolated",
+  onAudioTypeChange = null,
+}) {
   const inputId = useId();
   const helperId = useId();
   const statusId = useId();
+  const audioTypeGroupId = useId();
   const [file, setFile] = useState(null);
   const [localError, setLocalError] = useState(null);
 
@@ -28,6 +43,10 @@ function AudioUploader({ onSubmit, isSubmitting = false, jobId = null, status = 
     } catch {
       // Errors are surfaced by parent state.
     }
+  };
+
+  const handleAudioTypeChange = (event) => {
+    onAudioTypeChange?.(event.target.value);
   };
 
   const isBusy = Boolean(isSubmitting);
@@ -57,6 +76,34 @@ function AudioUploader({ onSubmit, isSubmitting = false, jobId = null, status = 
           />
           <p id={helperId} className="uploader__helper">
             Supported formats: WAV, MP3, FLAC, M4A, Opus. Max size depends on server settings.
+          </p>
+        </div>
+
+        <div className="uploader__field">
+          <fieldset className="uploader__audio-type-group" id={audioTypeGroupId}>
+            <legend className="uploader__label">Audio type</legend>
+            <div className="uploader__audio-type-options" role="group">
+              {AUDIO_TYPE_OPTIONS.map(({ value, label }) => (
+                <label
+                  key={value}
+                  className={`uploader__audio-type-option${audioType === value ? " uploader__audio-type-option--selected" : ""}`}
+                >
+                  <input
+                    type="radio"
+                    name={`${audioTypeGroupId}-audio-type`}
+                    value={value}
+                    checked={audioType === value}
+                    onChange={handleAudioTypeChange}
+                    disabled={isBusy}
+                    className="uploader__audio-type-radio"
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+          </fieldset>
+          <p className="uploader__helper">
+            Best results with isolated vocal recordings (no backing track). If your file contains instruments, select Mixed Track.
           </p>
         </div>
 

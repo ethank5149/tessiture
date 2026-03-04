@@ -11,6 +11,7 @@ import pytest
 
 from analysis.dsp.vocal_separation import (
     cache_key,
+    detect_audio_type,
     is_available,
     load_cached_stem,
     save_stem_to_cache,
@@ -221,3 +222,43 @@ def test_separate_vocals_cache_path_integration(tmp_path):
         assert result2.cache_hit is True
     finally:
         os.unlink(fpath)
+
+
+# ---------------------------------------------------------------------------
+# detect_audio_type() — spectral heuristic
+# ---------------------------------------------------------------------------
+
+def test_detect_audio_type_returns_isolated_for_sine_wave():
+    """A pure 440 Hz sine wave (vocal-range, no sub-bass) should be 'isolated'."""
+    sr = 22050
+    duration_s = 3.0
+    t = np.linspace(0, duration_s, int(sr * duration_s), endpoint=False)
+    audio = np.sin(2 * np.pi * 440.0 * t).astype(np.float32)
+    result = detect_audio_type(audio, sr)
+    assert result == "isolated"
+
+
+def test_detect_audio_type_returns_mixed_for_low_frequency_signal():
+    """A 50 Hz sub-bass sine wave should trigger the sub-bass threshold → 'mixed'."""
+    sr = 22050
+    duration_s = 3.0
+    t = np.linspace(0, duration_s, int(sr * duration_s), endpoint=False)
+    audio = np.sin(2 * np.pi * 50.0 * t).astype(np.float32)
+    result = detect_audio_type(audio, sr)
+    assert result == "mixed"
+
+
+def test_detect_audio_type_returns_mixed_for_broadband_noise():
+    """White noise has broad spectral spread and should classify as 'mixed'."""
+    rng = np.random.default_rng(42)
+    sr = 22050
+    audio = rng.standard_normal(sr * 5).astype(np.float32)
+    result = detect_audio_type(audio, sr)
+    assert result == "mixed"
+
+
+def test_detect_audio_type_empty_audio_returns_isolated():
+    """Edge case: empty array should safely return 'isolated'."""
+    audio = np.array([], dtype=np.float32)
+    result = detect_audio_type(audio, 22050)
+    assert result == "isolated"

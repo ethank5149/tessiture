@@ -108,6 +108,7 @@ function App() {
   // Per-source transient state
   const [selectedExampleId, setSelectedExampleId] = useState(null);
   const [acceptedFile, setAcceptedFile] = useState(null); // file accepted by uploader before intent
+  const [audioType, setAudioType] = useState("isolated");
 
   // Comparison state
   const [referenceId, setReferenceId] = useState(null);
@@ -195,9 +196,9 @@ function App() {
   const submitUploadJob = useCallback(
     async (file) => {
       setSelectedExampleId(null);
-      return submitJob(() => submitAnalysisJob(file));
+      return submitJob(() => submitAnalysisJob(file, audioType));
     },
-    [submitJob]
+    [submitJob, audioType]
   );
 
   const submitExampleJob = useCallback(
@@ -453,6 +454,8 @@ function App() {
               jobId={jobId}
               status={status}
               error={acceptedFile ? null : error}
+              audioType={audioType}
+              onAudioTypeChange={(t) => setAudioType(t)}
             />
 
             {acceptedFile && analysisMode === null ? (

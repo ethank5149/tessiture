@@ -1140,12 +1140,34 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
     report_progress(15, "preprocessing", "Decoding and preprocessing audio.")
     audio, sample_rate = _decode_audio_file(file_path)
 
-    # Optional vocal source separation
-    separation_info: dict = {}
-    _do_separate = (
-        _VOCAL_SEPARATION_MODE == "on"
-        or (_VOCAL_SEPARATION_MODE == "auto" and _vocal_separation_available())
-    )
+    # Optional vocal source separation — gated by audio_type
+    # Determine audio_type from metadata
+    _audio_type_requested = "isolated"
+    if isinstance(metadata, Mapping):
+        _audio_type_requested = str(metadata.get("audio_type") or "isolated").lower().strip()
+        # Example gallery tracks and reference uploads default to "mixed"
+        _source = str(metadata.get("source") or "").lower()
+        if _audio_type_requested == "isolated" and _source in ("example", "reference"):
+            _audio_type_requested = "mixed"
+
+    # Resolve effective audio type
+    if _audio_type_requested == "auto" and _vocal_separation_available():
+        from analysis.dsp.vocal_separation import detect_audio_type as _detect_audio_type
+        _detected_audio_type = _detect_audio_type(audio, sample_rate)
+    elif _audio_type_requested == "auto":
+        _detected_audio_type = "isolated"  # can't detect without library
+    else:
+        _detected_audio_type = _audio_type_requested
+
+    # Only apply separation when audio is identified as mixed and Demucs is available
+    _separation_enabled = _VOCAL_SEPARATION_MODE != "off"
+    _do_separate = _detected_audio_type == "mixed" and _separation_enabled and _vocal_separation_available()
+
+    separation_info: dict = {
+        "audio_type_requested": _audio_type_requested,
+        "audio_type_detected": _detected_audio_type,
+        "applied": False,
+    }
     if _do_separate:
         try:
             from analysis.dsp.vocal_separation import separate_vocals as _separate_vocals
@@ -1158,11 +1180,10 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
             )
             audio = sep_result.vocals
             sample_rate = sep_result.sample_rate
-            separation_info = {
-                "model": sep_result.model_name,
-                "separation_time_s": sep_result.separation_time_s,
-                "cache_hit": sep_result.cache_hit,
-            }
+            separation_info["model"] = sep_result.model_name
+            separation_info["separation_time_s"] = sep_result.separation_time_s
+            separation_info["cache_hit"] = sep_result.cache_hit
+            separation_info["applied"] = True
             logger.info(
                 "vocal_separation_applied model=%s separation_time_s=%.2f cache_hit=%s",
                 sep_result.model_name, sep_result.separation_time_s, sep_result.cache_hit,
@@ -1559,6 +1580,8 @@ async def analyze_example_audio(
             "source": "example",
             "example_id": example["id"],
             "original_filename": example["filename"],
+            "audio_type_requested": "analytical",
+            "audio_type_detected": "analytical",
         },
     )
     return {
