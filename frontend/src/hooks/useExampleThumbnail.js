@@ -178,3 +178,38 @@ export function useExampleThumbnails(examples) {
 
   return resolvedThumbnails;
 }
+
+/**
+ * Extracts a desaturated average color from an image URL using an off-screen
+ * Canvas. Returns a Promise that resolves to { r, g, b } or null on failure.
+ */
+export function extractDominantColor(imageUrl) {
+  return new Promise((resolve) => {
+    try {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => {
+        try {
+          const canvas = document.createElement("canvas");
+          canvas.width = 1;
+          canvas.height = 1;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0, 1, 1);
+          const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
+          // Blend toward neutral (128) to avoid garish tints
+          resolve({
+            r: Math.round(r * 0.6 + 128 * 0.4),
+            g: Math.round(g * 0.6 + 128 * 0.4),
+            b: Math.round(b * 0.6 + 128 * 0.4),
+          });
+        } catch {
+          resolve(null);
+        }
+      };
+      img.onerror = () => resolve(null);
+      img.src = imageUrl;
+    } catch {
+      resolve(null);
+    }
+  });
+}

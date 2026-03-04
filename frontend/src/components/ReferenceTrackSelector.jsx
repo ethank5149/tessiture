@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import { prepareReferenceFromExample, prepareReferenceFromUpload } from "../api";
-import { useExampleThumbnails } from "../hooks/useExampleThumbnail";
+import { useExampleThumbnails, extractDominantColor } from "../hooks/useExampleThumbnail";
 
 const TABS = { library: "library", upload: "upload" };
 
@@ -46,6 +46,8 @@ const ReferenceTrackSelector = ({ exampleTracks = [], onReferenceReady, isLoadin
   const [localError, setLocalError] = useState(null);
   const [selectedExampleId, setSelectedExampleId] = useState(null);
   const [openGroups, setOpenGroups] = useState(new Set());
+  const [groupColors, setGroupColors] = useState({});
+  const colorExtractionRef = useRef({});
 
   const resolvedThumbnails = useExampleThumbnails(exampleTracks);
 
@@ -53,6 +55,26 @@ const ReferenceTrackSelector = ({ exampleTracks = [], onReferenceReady, isLoadin
   const displayError = localError || error;
 
   const groups = useMemo(() => groupTracks(exampleTracks), [exampleTracks]);
+
+  // Extract dominant colors from group thumbnails when groups or resolved thumbnails change
+  useEffect(() => {
+    if (!groups) return;
+    for (const group of groups) {
+      const firstTrack = group.tracks[0];
+      if (!firstTrack) continue;
+      const groupThumbUrl = resolveGroupThumbUrl(firstTrack);
+      if (!groupThumbUrl) continue;
+      const cacheKey = `${group.key}::${groupThumbUrl}`;
+      if (colorExtractionRef.current[cacheKey]) continue;
+      colorExtractionRef.current[cacheKey] = true;
+      extractDominantColor(groupThumbUrl).then((color) => {
+        if (color) {
+          setGroupColors((prev) => ({ ...prev, [group.key]: color }));
+        }
+      });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groups, resolvedThumbnails]);
 
   const toggleGroup = (key) => {
     setOpenGroups((prev) => {
@@ -151,15 +173,20 @@ const ReferenceTrackSelector = ({ exampleTracks = [], onReferenceReady, isLoadin
           const firstTrack = group.tracks[0];
           const groupThumbUrl = resolveGroupThumbUrl(firstTrack);
           const fallbackLetter = group.label.charAt(0).toUpperCase();
+          const extractedColor = groupColors[group.key];
+          const groupStyle = extractedColor
+            ? { background: `rgba(${extractedColor.r}, ${extractedColor.g}, ${extractedColor.b}, 0.15)` }
+            : undefined;
 
           return (
             <div
               key={group.key}
               className={`reference-selector__group${isOpen ? " reference-selector__group--open" : ""}`}
+              style={groupStyle}
             >
               <button
                 type="button"
-                className="reference-selector__group-header"
+                className={`reference-selector__group-header${!groupThumbUrl ? " reference-selector__group-header--no-thumb" : ""}`}
                 onClick={() => toggleGroup(group.key)}
                 aria-expanded={isOpen}
                 aria-controls={`ref-group-tracks-${group.key}`}
@@ -172,18 +199,20 @@ const ReferenceTrackSelector = ({ exampleTracks = [], onReferenceReady, isLoadin
                     <span className="examples__thumb-fallback">{fallbackLetter}</span>
                   )}
                 </div>
-                <div className="reference-selector__group-info">
-                  <span className="reference-selector__group-label">
-                    {group.label}
-                    <span className="reference-selector__group-count">
-                      · {group.tracks.length} {group.tracks.length === 1 ? "track" : "tracks"}
+                <div className="reference-selector__group-header-overlay">
+                  <div className="reference-selector__group-info">
+                    <span className="reference-selector__group-label">
+                      {group.artist ?? group.label}
                     </span>
-                  </span>
-                  {group.artist ? (
-                    <span className="reference-selector__group-artist">{group.artist}</span>
-                  ) : null}
+                    <span className="reference-selector__group-artist">
+                      {group.artist ? group.label : null}
+                      <span className="reference-selector__group-count">
+                        {group.artist && group.label ? " · " : ""}{group.tracks.length} {group.tracks.length === 1 ? "track" : "tracks"}
+                      </span>
+                    </span>
+                  </div>
+                  <span className="reference-selector__group-chevron" aria-hidden="true">▶</span>
                 </div>
-                <span className="reference-selector__group-chevron" aria-hidden="true">▶</span>
               </button>
 
               <ul
