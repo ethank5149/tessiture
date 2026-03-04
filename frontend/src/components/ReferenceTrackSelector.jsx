@@ -1,7 +1,35 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { prepareReferenceFromExample, prepareReferenceFromUpload } from "../api";
+import { useExampleThumbnails } from "../hooks/useExampleThumbnail";
 
 const TABS = { library: "library", upload: "upload" };
+
+/**
+ * Groups tracks by album, falling back to artist, then "Other".
+ * Returns null if every track lacks both album and artist.
+ */
+function groupTracks(tracks) {
+  const getAlbum = (t) => {
+    const album = t?.album;
+    return typeof album === "string" && album.trim() ? album : null;
+  };
+  const getArtist = (t) => String(t?.artist || t?.creator || "Unknown artist");
+
+  const hasGrouping = tracks.some((t) => getAlbum(t) || getArtist(t) !== "Unknown artist");
+  if (!hasGrouping) return null;
+
+  const map = new Map();
+  for (const track of tracks) {
+    const album = getAlbum(track);
+    const artist = getArtist(track);
+    const key = album || artist || "Other";
+    if (!map.has(key)) {
+      map.set(key, { key, label: key, artist: album ? artist : null, tracks: [] });
+    }
+    map.get(key).tracks.push(track);
+  }
+  return Array.from(map.values());
+}
 
 /**
  * Component for selecting a reference track for live comparison.
@@ -17,17 +45,31 @@ const ReferenceTrackSelector = ({ exampleTracks = [], onReferenceReady, isLoadin
   const [localLoading, setLocalLoading] = useState(false);
   const [localError, setLocalError] = useState(null);
   const [selectedExampleId, setSelectedExampleId] = useState(null);
+  const [openGroups, setOpenGroups] = useState(new Set());
+
+  const resolvedThumbnails = useExampleThumbnails(exampleTracks);
 
   const busy = isLoading || localLoading;
   const displayError = localError || error;
 
+  const groups = useMemo(() => groupTracks(exampleTracks), [exampleTracks]);
+
+  const toggleGroup = (key) => {
+    setOpenGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) { next.delete(key); } else { next.add(key); }
+      return next;
+    });
+  };
+
   const handleExampleSelect = async (example) => {
     if (busy) return;
-    setSelectedExampleId(example.id);
+    const trackId = example?.id ?? example?.example_id ?? example?.filename;
+    setSelectedExampleId(trackId);
     setLocalLoading(true);
     setLocalError(null);
     try {
-      const info = await prepareReferenceFromExample(example.id);
+      const info = await prepareReferenceFromExample(trackId);
       if (typeof onReferenceReady === "function") {
         onReferenceReady(info.reference_id, info);
       }
@@ -53,7 +95,6 @@ const ReferenceTrackSelector = ({ exampleTracks = [], onReferenceReady, isLoadin
       setLocalError(err?.message ?? "Failed to upload reference audio.");
     } finally {
       setLocalLoading(false);
-      // Reset file input so the same file can be re-selected
       event.target.value = "";
     }
   };
@@ -63,6 +104,117 @@ const ReferenceTrackSelector = ({ exampleTracks = [], onReferenceReady, isLoadin
 
   const getTrackArtist = (track) =>
     track?.artist || track?.creator || "Unknown artist";
+
+  const resolveGroupThumbUrl = (firstTrack) => {
+    if (!firstTrack) return null;
+    const direct = firstTrack?.thumbnail || firstTrack?.thumbnail_url || firstTrack?.artwork_url;
+    if (typeof direct === "string" && direct.trim()) return direct;
+    return resolvedThumbnails[firstTrack?.id]?.url || null;
+  };
+
+  const renderLibraryPanel = () => {
+    if (exampleTracks.length === 0) {
+      return <p className="reference-selector__empty">No example tracks available.</p>;
+    }
+
+    if (groups === null) {
+      // Flat list fallback
+      return (
+        <ul className="reference-selector__track-list" aria-label="Example tracks">
+          {exampleTracks.map((track) => {
+            const trackId = track?.id ?? track?.example_id ?? track?.filename;
+            const isSelected = selectedExampleId === trackId;
+            return (
+              <li key={trackId} className="reference-selector__track-item">
+                <button
+                  type="button"
+                  className={`reference-selector__track-btn${isSelected ? " reference-selector__track-btn--selected" : ""}`}
+                  onClick={() => handleExampleSelect({ ...track, id: trackId })}
+                  disabled={busy}
+                  aria-pressed={isSelected}
+                >
+                  <span className="reference-selector__track-title">{getTrackTitle(track)}</span>
+                  <span className="reference-selector__track-artist">{getTrackArtist(track)}</span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      );
+    }
+
+    // Grouped layout
+    return (
+      <div className="reference-selector__groups">
+        {groups.map((group) => {
+          const isOpen = openGroups.has(group.key);
+          const firstTrack = group.tracks[0];
+          const groupThumbUrl = resolveGroupThumbUrl(firstTrack);
+          const fallbackLetter = group.label.charAt(0).toUpperCase();
+
+          return (
+            <div
+              key={group.key}
+              className={`reference-selector__group${isOpen ? " reference-selector__group--open" : ""}`}
+            >
+              <button
+                type="button"
+                className="reference-selector__group-header"
+                onClick={() => toggleGroup(group.key)}
+                aria-expanded={isOpen}
+                aria-controls={`ref-group-tracks-${group.key}`}
+                disabled={busy}
+              >
+                <div className="reference-selector__group-thumb" aria-hidden="true">
+                  {groupThumbUrl ? (
+                    <img className="examples__thumb-image" src={groupThumbUrl} alt="" loading="lazy" />
+                  ) : (
+                    <span className="examples__thumb-fallback">{fallbackLetter}</span>
+                  )}
+                </div>
+                <div className="reference-selector__group-info">
+                  <span className="reference-selector__group-label">
+                    {group.label}
+                    <span className="reference-selector__group-count">
+                      · {group.tracks.length} {group.tracks.length === 1 ? "track" : "tracks"}
+                    </span>
+                  </span>
+                  {group.artist ? (
+                    <span className="reference-selector__group-artist">{group.artist}</span>
+                  ) : null}
+                </div>
+                <span className="reference-selector__group-chevron" aria-hidden="true">▶</span>
+              </button>
+
+              <ul
+                id={`ref-group-tracks-${group.key}`}
+                className="reference-selector__group-tracks"
+                aria-label={`Tracks in ${group.label}`}
+              >
+                {group.tracks.map((track) => {
+                  const trackId = track?.id ?? track?.example_id ?? track?.filename;
+                  const isSelected = selectedExampleId === trackId;
+                  return (
+                    <li key={trackId} className="reference-selector__track-item">
+                      <button
+                        type="button"
+                        className={`reference-selector__track-btn${isSelected ? " reference-selector__track-btn--selected" : ""}`}
+                        onClick={() => handleExampleSelect({ ...track, id: trackId })}
+                        disabled={busy}
+                        aria-pressed={isSelected}
+                      >
+                        <span className="reference-selector__track-title">{getTrackTitle(track)}</span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
 
   return (
     <section className="reference-selector" aria-label="Select reference track">
@@ -107,30 +259,7 @@ const ReferenceTrackSelector = ({ exampleTracks = [], onReferenceReady, isLoadin
           aria-labelledby="ref-tab-library"
           className="reference-selector__panel"
         >
-          {exampleTracks.length === 0 ? (
-            <p className="reference-selector__empty">No example tracks available.</p>
-          ) : (
-            <ul className="reference-selector__track-list" aria-label="Example tracks">
-              {exampleTracks.map((track) => {
-                const trackId = track?.id ?? track?.example_id ?? track?.filename;
-                const isSelected = selectedExampleId === trackId;
-                return (
-                  <li key={trackId} className="reference-selector__track-item">
-                    <button
-                      type="button"
-                      className={`reference-selector__track-btn${isSelected ? " reference-selector__track-btn--selected" : ""}`}
-                      onClick={() => handleExampleSelect({ ...track, id: trackId })}
-                      disabled={busy}
-                      aria-pressed={isSelected}
-                    >
-                      <span className="reference-selector__track-title">{getTrackTitle(track)}</span>
-                      <span className="reference-selector__track-artist">{getTrackArtist(track)}</span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
+          {renderLibraryPanel()}
         </div>
       ) : null}
 

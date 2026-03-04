@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import jsmediatags from "jsmediatags/dist/jsmediatags.min.js";
+import { useMemo, useState } from "react";
+import { useExampleThumbnails } from "../hooks/useExampleThumbnail";
 
 const getTitle = (example) =>
   String(example?.title || example?.display_name || example?.filename || "Untitled track");
@@ -17,144 +17,39 @@ const getThumbnailUrl = (example) => {
   return typeof thumbnail === "string" && thumbnail.trim() ? thumbnail : null;
 };
 
-const IMAGE_EXTENSIONS = ["jpg", "jpeg", "png", "webp"];
+/**
+ * Groups examples by album, falling back to artist, then "Other".
+ * Returns an array of { key, label, artist, tracks[] } group objects.
+ * If every track lacks both album and artist, returns null (render flat).
+ */
+function groupExamples(examples) {
+  const hasGrouping = examples.some((e) => getAlbum(e) || getArtist(e) !== "Unknown artist");
+  if (!hasGrouping) return null;
 
-const buildExampleMediaUrl = (filename) => {
-  if (!filename) {
-    return null;
+  const map = new Map();
+  for (const example of examples) {
+    const album = getAlbum(example);
+    const artist = getArtist(example);
+    const key = album || artist || "Other";
+    if (!map.has(key)) {
+      map.set(key, { key, label: key, artist: album ? artist : null, tracks: [] });
+    }
+    map.get(key).tracks.push(example);
   }
-  return `/examples/${encodeURIComponent(filename)}`;
-};
+  return Array.from(map.values());
+}
 
-const getBaseFilename = (filename) => {
-  if (!filename) {
-    return "";
-  }
-  const normalized = filename.split("/").pop() || filename;
-  return normalized.replace(/\.[^/.]+$/, "");
-};
-
-const loadImageUrl = (url, signal) =>
-  new Promise((resolve) => {
-    if (!url || signal?.aborted) {
-      resolve(null);
-      return;
-    }
-
-    const img = new Image();
-    const cleanup = () => {
-      img.onload = null;
-      img.onerror = null;
-      if (signal) {
-        signal.removeEventListener("abort", handleAbort);
-      }
-    };
-    const handleAbort = () => {
-      cleanup();
-      resolve(null);
-    };
-
-    if (signal) {
-      signal.addEventListener("abort", handleAbort, { once: true });
-    }
-
-    img.onload = () => {
-      cleanup();
-      resolve(url);
-    };
-    img.onerror = () => {
-      cleanup();
-      resolve(null);
-    };
-    img.src = url;
-  });
-
-const readArtworkFromBlob = (blob, signal) =>
-  new Promise((resolve) => {
-    if (!blob || signal?.aborted) {
-      resolve(null);
-      return;
-    }
-
-    try {
-      jsmediatags.read(blob, {
-        onSuccess: (tag) => {
-          if (signal?.aborted) {
-            resolve(null);
-            return;
-          }
-          const picture = tag?.tags?.picture;
-          if (!picture?.data?.length) {
-            resolve(null);
-            return;
-          }
-          const byteArray = new Uint8Array(picture.data);
-          const coverBlob = new Blob([byteArray], {
-            type: picture.format || "image/jpeg",
-          });
-          resolve({ url: URL.createObjectURL(coverBlob), revoke: true });
-        },
-        onError: () => resolve(null),
-      });
-    } catch {
-      resolve(null);
-    }
-  });
-
-const resolveFallbackImage = async (filename, signal) => {
-  const baseName = getBaseFilename(filename);
-  if (!baseName) {
-    return null;
-  }
-
-  for (const extension of IMAGE_EXTENSIONS) {
-    const candidate = buildExampleMediaUrl(`${baseName}.${extension}`);
-    const matched = await loadImageUrl(candidate, signal);
-    if (matched) {
-      return { url: matched, revoke: false };
-    }
-  }
-  return null;
-};
-
-const resolveExampleThumbnail = async (example, signal) => {
-  const filename = typeof example?.filename === "string" ? example.filename : "";
-
-  // 1. Try server-side thumbnail extraction (supports FLAC, Opus, MP3, M4A).
-  if (filename) {
-    const thumbnailUrl = `/examples/${encodeURIComponent(filename)}/thumbnail`;
-    try {
-      const thumbResponse = await fetch(thumbnailUrl, { signal });
-      if (thumbResponse.ok) {
-        const blob = await thumbResponse.blob();
-        return { url: URL.createObjectURL(blob), revoke: true };
-      }
-    } catch {
-      // Ignore and fall through.
-    }
-  }
-
-  // 2. Try client-side jsmediatags extraction from the raw audio file.
-  const audioUrl = buildExampleMediaUrl(filename);
-  if (audioUrl) {
-    try {
-      const response = await fetch(audioUrl, { signal });
-      if (response.ok) {
-        const blob = await response.blob();
-        const artwork = await readArtworkFromBlob(blob, signal);
-        if (artwork?.url) {
-          return artwork;
-        }
-      }
-    } catch {
-      // Ignore example artwork fetch failures and fall back to images.
-    }
-  }
-
-  // 3. Fall back to a same-name image sidecar file.
-  const fallback = filename ? await resolveFallbackImage(filename, signal) : null;
-  return fallback ?? { url: null, revoke: false };
-};
+function GroupThumbnail({ thumbnailUrl, fallbackLetter }) {
+  return (
+    <div className="examples__group-header-thumb" aria-hidden="true">
+      {thumbnailUrl ? (
+        <img className="examples__thumb-image" src={thumbnailUrl} alt="" loading="lazy" />
+      ) : (
+        <span className="examples__thumb-fallback">{fallbackLetter}</span>
+      )}
+    </div>
+  );
+}
 
 function ExampleGallery({
   examples = [],
@@ -165,94 +60,40 @@ function ExampleGallery({
   error = null,
 }) {
   const [localError, setLocalError] = useState(null);
-  const [resolvedThumbnails, setResolvedThumbnails] = useState({});
-  const resolvedThumbnailsRef = useRef(resolvedThumbnails);
-  const objectUrlsRef = useRef(new Set());
+  const [openGroups, setOpenGroups] = useState(new Set());
 
-  useEffect(() => {
-    resolvedThumbnailsRef.current = resolvedThumbnails;
-  }, [resolvedThumbnails]);
+  const resolvedThumbnails = useExampleThumbnails(examples);
 
-  const revokeThumbnail = (entry) => {
-    if (entry?.revoke && entry?.url) {
-      URL.revokeObjectURL(entry.url);
-      objectUrlsRef.current.delete(entry.url);
-    }
-  };
+  const groups = useMemo(() => groupExamples(examples), [examples]);
 
-  useEffect(() => {
-    const exampleIds = new Set(examples.map((example) => example?.id).filter(Boolean));
-    setResolvedThumbnails((prev) => {
-      const next = { ...prev };
-      Object.entries(next).forEach(([id, entry]) => {
-        if (!exampleIds.has(id)) {
-          revokeThumbnail(entry);
-          delete next[id];
-        }
-      });
+  const toggleGroup = (key) => {
+    setOpenGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
       return next;
     });
-
-    const controller = new AbortController();
-    let isActive = true;
-
-    const resolveAll = async () => {
-      for (const example of examples) {
-        if (!example?.id) {
-          continue;
-        }
-        if (getThumbnailUrl(example)) {
-          continue;
-        }
-        if (resolvedThumbnailsRef.current[example.id]) {
-          continue;
-        }
-
-        const resolved = await resolveExampleThumbnail(example, controller.signal);
-        if (!isActive || controller.signal.aborted) {
-          return;
-        }
-
-        setResolvedThumbnails((prev) => {
-          if (prev[example.id]) {
-            return prev;
-          }
-          if (resolved?.revoke && resolved?.url) {
-            objectUrlsRef.current.add(resolved.url);
-          }
-          return { ...prev, [example.id]: { ...resolved, resolved: true } };
-        });
-      }
-    };
-
-    resolveAll();
-
-    return () => {
-      isActive = false;
-      controller.abort();
-    };
-  }, [examples]);
-
-  useEffect(
-    () => () => {
-      objectUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
-      objectUrlsRef.current.clear();
-    },
-    []
-  );
+  };
 
   const handleSelect = async (example) => {
     if (!example?.id) {
       setLocalError("Example selection is invalid.");
       return;
     }
-
     setLocalError(null);
     try {
       await onSelectExample?.(example);
     } catch {
       // Parent component handles surfaced processing errors.
     }
+  };
+
+  const resolveThumbUrl = (example) => {
+    const direct = getThumbnailUrl(example);
+    return direct || resolvedThumbnails[example?.id]?.url || null;
   };
 
   return (
@@ -266,16 +107,13 @@ function ExampleGallery({
         <p className="examples__helper">Loading examples…</p>
       ) : examples.length === 0 ? (
         <p className="examples__helper">No examples are currently available.</p>
-      ) : (
+      ) : groups === null ? (
+        // Flat grid fallback when no album/artist metadata exists
         <ul className="examples__grid" role="list">
           {examples.map((example) => {
             const title = getTitle(example);
-            const artist = getArtist(example);
-            const album = getAlbum(example);
-            const resolvedThumbnailUrl = resolvedThumbnails[example.id]?.url;
-            const thumbnailUrl = getThumbnailUrl(example) || resolvedThumbnailUrl;
             const isSelected = selectedExampleId === example.id;
-
+            const thumbUrl = resolveThumbUrl(example);
             return (
               <li key={example.id} className="examples__grid-item">
                 <button
@@ -283,27 +121,90 @@ function ExampleGallery({
                   type="button"
                   onClick={() => handleSelect(example)}
                   aria-pressed={isSelected}
-                  aria-label={`Select example track: ${title} by ${artist}`}
+                  aria-label={`Select example track: ${title}`}
                   disabled={isSelecting}
                 >
                   <div className="examples__thumb" aria-hidden="true">
-                    {thumbnailUrl ? (
-                      <img className="examples__thumb-image" src={thumbnailUrl} alt="" loading="lazy" />
+                    {thumbUrl ? (
+                      <img className="examples__thumb-image" src={thumbUrl} alt="" loading="lazy" />
                     ) : (
                       <span className="examples__thumb-fallback">{title.charAt(0).toUpperCase()}</span>
                     )}
                   </div>
-
                   <div className="examples__info">
                     <p className="examples__name">{title}</p>
-                    <p className="examples__artist">{artist}</p>
-                    {album ? <p className="examples__album">{album}</p> : null}
                   </div>
                 </button>
               </li>
             );
           })}
         </ul>
+      ) : (
+        // Grouped layout
+        <div className="examples__groups">
+          {groups.map((group) => {
+            const isOpen = openGroups.has(group.key);
+            const firstTrack = group.tracks[0];
+            const groupThumbUrl = firstTrack ? resolveThumbUrl(firstTrack) : null;
+            const fallbackLetter = group.label.charAt(0).toUpperCase();
+
+            return (
+              <div
+                key={group.key}
+                className={`examples__group${isOpen ? " examples__group--open" : ""}`}
+              >
+                <button
+                  type="button"
+                  className="examples__group-header"
+                  onClick={() => toggleGroup(group.key)}
+                  aria-expanded={isOpen}
+                  aria-controls={`examples-group-tracks-${group.key}`}
+                >
+                  <GroupThumbnail thumbnailUrl={groupThumbUrl} fallbackLetter={fallbackLetter} />
+                  <div className="examples__group-info">
+                    <span className="examples__group-label">
+                      {group.label}
+                      <span className="examples__group-count">
+                        · {group.tracks.length} {group.tracks.length === 1 ? "track" : "tracks"}
+                      </span>
+                    </span>
+                    {group.artist ? (
+                      <span className="examples__group-artist">{group.artist}</span>
+                    ) : null}
+                  </div>
+                  <span className="examples__group-chevron" aria-hidden="true">▶</span>
+                </button>
+
+                <ul
+                  id={`examples-group-tracks-${group.key}`}
+                  className="examples__group-tracks examples__grid"
+                  role="list"
+                >
+                  {group.tracks.map((example) => {
+                    const title = getTitle(example);
+                    const isSelected = selectedExampleId === example.id;
+                    return (
+                      <li key={example.id} className="examples__grid-item">
+                        <button
+                          className={`examples__card examples__card--compact${isSelected ? " examples__card--selected" : ""}`}
+                          type="button"
+                          onClick={() => handleSelect(example)}
+                          aria-pressed={isSelected}
+                          aria-label={`Select example track: ${title}`}
+                          disabled={isSelecting}
+                        >
+                          <div className="examples__info">
+                            <p className="examples__name">{title}</p>
+                          </div>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            );
+          })}
+        </div>
       )}
 
       {(localError || error) ? (

@@ -1497,3 +1497,225 @@ a:focus-visible {
     grid-template-columns: repeat(2, 1fr);
   }
 }
+
+/* ── Example gallery: album-grouped collapsible layout ─────────────────── */
+
+.examples__groups {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.examples__group {
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--surface-2);
+}
+
+.examples__group-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  background: none;
+  border: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.examples__group-header:hover {
+  background: color-mix(in oklab, var(--surface-2) 78%, #273f69);
+}
+
+.examples__group-header:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.examples__group-header-thumb {
+  flex-shrink: 0;
+  inline-size: 3rem;
+  block-size: 3rem;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--surface-3);
+  border: 1px solid var(--border-subtle);
+  display: grid;
+  place-items: center;
+}
+
+.examples__group-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.examples__group-label {
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.3;
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.examples__group-count {
+  font-weight: 400;
+  font-size: 0.8rem;
+  color: var(--text-soft);
+}
+
+.examples__group-artist {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.examples__group-chevron {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  transition: transform 180ms ease;
+  display: grid;
+  place-items: center;
+  padding: 0 0.25rem;
+}
+
+.examples__group--open .examples__group-chevron {
+  transform: rotate(90deg);
+}
+
+.examples__group-tracks {
+  display: none;
+  padding: 0 0.75rem 0.75rem;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.examples__group--open .examples__group-tracks {
+  display: grid;
+}
+
+/* Compact track cards (within a group - title only, no thumbnail) */
+.examples__card--compact {
+  grid-template-columns: 1fr;
+  padding: 0.45rem 0.6rem;
+}
+
+/* ── Reference selector: album-grouped collapsible layout ──────────────── */
+
+.reference-selector__groups {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.reference-selector__group {
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.reference-selector__group-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.65rem;
+  background: none;
+  border: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.reference-selector__group-header:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--surface-2) 78%, #273f69);
+  border-color: var(--brand);
+}
+
+.reference-selector__group-header:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.reference-selector__group-thumb {
+  flex-shrink: 0;
+  inline-size: 2.5rem;
+  block-size: 2.5rem;
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--surface-3);
+  border: 1px solid var(--border-subtle);
+  display: grid;
+  place-items: center;
+}
+
+.reference-selector__group-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.reference-selector__group-label {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--text-primary);
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.reference-selector__group-count {
+  font-weight: 400;
+  font-size: 0.78rem;
+  color: var(--text-soft);
+}
+
+.reference-selector__group-artist {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.reference-selector__group-chevron {
+  flex-shrink: 0;
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  transition: transform 180ms ease;
+  display: grid;
+  place-items: center;
+  padding: 0 0.2rem;
+}
+
+.reference-selector__group--open .reference-selector__group-chevron {
+  transform: rotate(90deg);
+}
+
+.reference-selector__group-tracks {
+  display: none;
+  list-style: none;
+  margin: 0;
+  padding: 0 0.5rem 0.5rem;
+  flex-direction: column;
+  gap: 0.2rem;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.reference-selector__group--open .reference-selector__group-tracks {
+  display: flex;
+}

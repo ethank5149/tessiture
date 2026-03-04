@@ -84,17 +84,22 @@ describe("ExampleGallery", () => {
       />
     );
 
-    expect(screen.getByText("Demo Example")).toBeInTheDocument();
-    expect(screen.getByText("Demo Artist")).toBeInTheDocument();
+    // Group header should show album name and artist
     expect(screen.getByText("Demo Album")).toBeInTheDocument();
+    expect(screen.getByText("Demo Artist")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Select example track: Demo Example by Demo Artist" }));
+    // Expand the group by clicking the header
+    await user.click(screen.getByRole("button", { name: /Demo Album/i }));
+
+    // Track card should now be visible; aria-label no longer includes artist
+    await user.click(screen.getByRole("button", { name: "Select example track: Demo Example" }));
 
     expect(onSelectExample).toHaveBeenCalledTimes(1);
     expect(onSelectExample).toHaveBeenCalledWith(demoExample);
   });
 
-  it("marks selected example card with pressed state", () => {
+  it("marks selected example card with pressed state", async () => {
+    const user = userEvent.setup();
     render(
       <ExampleGallery
         examples={[
@@ -111,8 +116,11 @@ describe("ExampleGallery", () => {
       />
     );
 
+    // Expand the group (grouped by artist when no album)
+    await user.click(screen.getByRole("button", { name: /Demo Artist/i }));
+
     expect(
-      screen.getByRole("button", { name: "Select example track: Demo Example by Demo Artist" })
+      screen.getByRole("button", { name: "Select example track: Demo Example" })
     ).toHaveAttribute("aria-pressed", "true");
   });
 
@@ -641,8 +649,12 @@ describe("App example gallery wiring", () => {
     expect(screen.queryByRole("heading", { name: "Analysis status" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Analysis results" })).not.toBeInTheDocument();
 
+    // Expand the "Demo Artist" group first, then click the track
+    const groupHeader = await screen.findByRole("button", { name: /Demo Artist/i });
+    await user.click(groupHeader);
+
     const selectButton = await screen.findByRole("button", {
-      name: "Select example track: Demo Example by Demo Artist",
+      name: "Select example track: Demo Example",
     });
     await user.click(selectButton);
 
