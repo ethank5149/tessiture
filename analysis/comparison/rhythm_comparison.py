@@ -98,6 +98,7 @@ def compare_note_timing(
     onset_deviations_ms: List[float] = []
     duration_ratios: List[float] = []
     matched = 0
+    matched_user_indices: set = set()
 
     for ref_event in reference_note_events:
         ref_start = float(ref_event.get("start_s") or ref_event.get("start") or 0.0)
@@ -119,8 +120,11 @@ def compare_note_timing(
         # Expand search around candidate to find the best match within tolerances.
         best_user: Optional[Dict] = None
         best_delta_s: float = float("inf")
+        best_user_idx: Optional[int] = None
 
         for idx in _search_range(candidate_idx, len(sorted_user)):
+            if idx in matched_user_indices:
+                continue
             u_start = user_starts[idx]
             if abs(u_start - ref_start) > onset_tolerance_s:
                 # Since user_starts is sorted, stop if we're too far in one direction.
@@ -138,9 +142,13 @@ def compare_note_timing(
             if delta_s < best_delta_s:
                 best_delta_s = delta_s
                 best_user = u_event
+                best_user_idx = idx
 
         if best_user is None:
             continue
+
+        if best_user_idx is not None:
+            matched_user_indices.add(best_user_idx)
 
         matched += 1
         u_start = float(best_user.get("start_s") or best_user.get("start") or 0.0)

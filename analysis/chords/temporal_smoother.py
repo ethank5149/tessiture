@@ -6,6 +6,8 @@ from typing import Dict, Iterable, List, Sequence, Tuple
 
 import numpy as np
 
+from analysis.chords._viterbi_shared import _viterbi_smooth_sequences
+
 
 def viterbi_smooth(
     chord_names: Sequence[str],
@@ -23,34 +25,9 @@ def viterbi_smooth(
     Returns:
         List of smoothed chord labels for each frame.
     """
-    if probability_frames.size == 0:
-        return []
-
-    probs = np.asarray(probability_frames, dtype=np.float64)
-    probs = np.clip(probs, 1e-12, 1.0)
-    log_probs = np.log(probs)
-
-    time_steps, num_chords = log_probs.shape
-    dp = np.full((time_steps, num_chords), -np.inf, dtype=np.float64)
-    back = np.zeros((time_steps, num_chords), dtype=np.int64)
-
-    dp[0] = log_probs[0]
-    penalty = float(transition_penalty)
-
-    for t in range(1, time_steps):
-        prev = dp[t - 1]
-        for j in range(num_chords):
-            transition_cost = prev - penalty
-            transition_cost[j] = prev[j]
-            best_prev = int(np.argmax(transition_cost))
-            dp[t, j] = log_probs[t, j] + transition_cost[best_prev]
-            back[t, j] = best_prev
-
-    path = [int(np.argmax(dp[-1]))]
-    for t in range(time_steps - 1, 0, -1):
-        path.append(int(back[t, path[-1]]))
-    path.reverse()
-    return [chord_names[idx] for idx in path]
+    return _viterbi_smooth_sequences(
+        list(chord_names), probability_frames, transition_penalty=transition_penalty
+    )
 
 
 def smooth_probability_sequence(

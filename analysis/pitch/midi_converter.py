@@ -98,7 +98,10 @@ def build_midi_frames(
     for i, f0 in enumerate(f0_hz):
         midi_val = float(midi_vals[i])
         midi_unc = float(midi_sigma[i])
-        cents_dev = (midi_val - round(midi_val)) * 100.0 if f0 > 0.0 else 0.0
+        # Use explicit round-half-up (floor(x+0.5)) to avoid Python banker's rounding
+        # at exactly ±50 cents from a note boundary
+        nearest_midi = int(np.floor(midi_val + 0.5))
+        cents_dev = (midi_val - nearest_midi) * 100.0 if f0 > 0.0 else 0.0
         frames.append(
             MidiFrame(
                 time_index=i,

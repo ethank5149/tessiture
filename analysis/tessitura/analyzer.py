@@ -32,7 +32,7 @@ class TessituraMetrics:
     comfort_center: float
     variance: float
     std_dev: float
-    mean_variance: float
+    mean_variance: float  # Variance of weighted mean: Σ(w²σ²)/(Σw)²; assumes fixed weights
     strain_zones: Tuple[StrainZone, ...]
 @dataclass(frozen=True)
 class TessituraAnalysis:
@@ -161,6 +161,9 @@ def analyze_tessitura(
     comfort_center = float(np.sum(values * weight_values) / weight_sum)
     variance = float(np.sum(weight_values * (values - comfort_center) ** 2) / weight_sum)
     std_dev = float(math.sqrt(max(variance, 0.0)))
+    # Variance of weighted mean under fixed-weight assumption: Σ(w_i² σ_i²) / (Σw_i)²
+    # Note: this formula is exact when weights are fixed constants; if weights were
+    # inverse-variance optimal (w_i ∝ 1/σ_i²), use 1/Σ(1/σ_i²) instead.
     mean_variance = float(
         np.sum((weight_values**2) * (uncertainty_values**2))
         / max(weight_sum**2, np.finfo(float).eps)

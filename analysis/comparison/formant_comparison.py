@@ -20,9 +20,9 @@ class FormantComparisonResult:
     mean_f2_deviation_hz
         Mean absolute difference between user and reference F2 formant
         (Hz).  ``None`` if either formant summary is unavailable.
-    spectral_centroid_deviation_hz
-        Difference in average spectral brightness estimate derived from
-        the mean F1/F2 midpoint.  ``None`` if formant data is unavailable.
+    formant_midpoint_deviation_hz
+        Signed difference in (F1+F2)/2 between user and reference (Hz).
+        Not a true spectral centroid.  ``None`` if formant data is unavailable.
     formant_data_available
         ``True`` when both *user_formant_summary* and
         *reference_formant_summary* carried valid ``mean_f1_hz`` and
@@ -31,8 +31,13 @@ class FormantComparisonResult:
 
     mean_f1_deviation_hz: Optional[float]
     mean_f2_deviation_hz: Optional[float]
-    spectral_centroid_deviation_hz: Optional[float]
+    formant_midpoint_deviation_hz: Optional[float]
     formant_data_available: bool
+
+    @property
+    def spectral_centroid_deviation_hz(self) -> Optional[float]:
+        """Deprecated: use formant_midpoint_deviation_hz instead."""
+        return self.formant_midpoint_deviation_hz
 
 
 def compare_formants(
@@ -72,7 +77,7 @@ def compare_formants(
         return FormantComparisonResult(
             mean_f1_deviation_hz=None,
             mean_f2_deviation_hz=None,
-            spectral_centroid_deviation_hz=None,
+            formant_midpoint_deviation_hz=None,
             formant_data_available=False,
         )
 
@@ -80,22 +85,22 @@ def compare_formants(
     mean_f1_deviation = abs(user_f1 - ref_f1)  # type: ignore[operator]
     mean_f2_deviation = abs(user_f2 - ref_f2)  # type: ignore[operator]
 
-    # Spectral brightness estimate: midpoint of F1+F2.
-    user_centroid = (user_f1 + user_f2) / 2.0  # type: ignore[operator]
-    ref_centroid = (ref_f1 + ref_f2) / 2.0  # type: ignore[operator]
-    spectral_centroid_deviation = user_centroid - ref_centroid  # signed
+    # Formant midpoint: mean of F1 and F2 (not a true spectral centroid).
+    user_formant_midpoint = (user_f1 + user_f2) / 2.0  # type: ignore[operator]
+    ref_formant_midpoint = (ref_f1 + ref_f2) / 2.0  # type: ignore[operator]
+    formant_midpoint_deviation = user_formant_midpoint - ref_formant_midpoint  # signed
 
     logger.debug(
-        "formant_comparison.result f1_dev_hz=%.1f f2_dev_hz=%.1f centroid_dev_hz=%.1f",
+        "formant_comparison.result f1_dev_hz=%.1f f2_dev_hz=%.1f formant_midpoint_dev_hz=%.1f",
         mean_f1_deviation,
         mean_f2_deviation,
-        spectral_centroid_deviation,
+        formant_midpoint_deviation,
     )
 
     return FormantComparisonResult(
         mean_f1_deviation_hz=float(mean_f1_deviation),
         mean_f2_deviation_hz=float(mean_f2_deviation),
-        spectral_centroid_deviation_hz=float(spectral_centroid_deviation),
+        formant_midpoint_deviation_hz=float(formant_midpoint_deviation),
         formant_data_available=True,
     )
 

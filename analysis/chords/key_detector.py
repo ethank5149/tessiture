@@ -226,7 +226,7 @@ def detect_key(
     prob_map = {label: float(prob) for label, prob in zip(key_labels, probabilities)}
     ranked = sorted(prob_map.items(), key=lambda item: item[1], reverse=True)
     best = ranked[0][0] if ranked else None
-    confidence = _confidence_from_ranked(ranked)
+    confidence = entropy_confidence(list(probabilities))
     alternatives = ranked[1 : max(top_k, 1)] if ranked else []
     return KeyDetectionResult(
         best_key=best,

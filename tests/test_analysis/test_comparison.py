@@ -254,7 +254,7 @@ class TestAlignment:
         assert result["time_s"] == pytest.approx(0.1)
 
     def test_interpolate_reference_at_time_between(self):
-        """Query between two frames → f0_hz is linearly interpolated."""
+        """Query between two frames → f0_hz is geometrically (log-linearly) interpolated."""
         reference = [
             make_pitch_frame(0.0, 400.0),
             make_pitch_frame(1.0, 600.0),
@@ -263,8 +263,9 @@ class TestAlignment:
         result = interpolate_reference_at_time(reference, 0.5)
 
         assert result is not None
-        # At t=0.5, halfway between 400 and 600, expected value is 500
-        assert result["f0_hz"] == pytest.approx(500.0, abs=1.0), "f0_hz should be linearly interpolated to ~500"
+        # At t=0.5, geometric midpoint of 400 and 600: 400 * sqrt(600/400) ≈ 489.90
+        expected_geo = 400.0 * ((600.0 / 400.0) ** 0.5)
+        assert result["f0_hz"] == pytest.approx(expected_geo, abs=1.0), "f0_hz should be geometrically interpolated"
         assert result["time_s"] == pytest.approx(0.5)
 
     def test_interpolate_reference_at_time_empty(self):

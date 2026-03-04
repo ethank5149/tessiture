@@ -114,6 +114,9 @@ def _score_template(
         distances = [min((pc - exp) % 12, (exp - pc) % 12) for exp in expected] or [12]
         error_sum += float(min(distances) ** 2)
 
+    # error_sum combines squared PC distances (semitone²) and a count-based cardinality
+    # penalty (0.5 per missing/extra note). sigma simultaneously controls both components.
+    # This is an intentional design choice: the penalty grows with both distance and count.
     base_penalty = float((len(missing) + len(extra)) * 0.5)
     error_sum += base_penalty
     sigma = max(sigma, 1e-6)

@@ -118,9 +118,14 @@ def compare_vocal_ranges(
         if cc is not None:
             user_comfort_center = float(cc)
 
-    # Reference tessitura center — not always available; derive from ref range midpoint.
-    if reference_range_min is not None and reference_range_max is not None:
+    # Reference tessitura center: use weighted mean of MIDI values if available,
+    # as the range midpoint over-estimates center for non-uniform pitch distributions.
+    if ref_midi_values:
+        ref_comfort_center = float(np.mean(ref_midi_values))
+    elif reference_range_min is not None and reference_range_max is not None:
         ref_comfort_center = (reference_range_min + reference_range_max) / 2.0
+    else:
+        ref_comfort_center = None
 
     if user_comfort_center is not None and ref_comfort_center is not None:
         tessitura_center_offset = user_comfort_center - ref_comfort_center

@@ -200,9 +200,19 @@ def segment_phrases_from_energy(
             continue
 
         gap_confidence = _gap_confidence(gap_duration, continuity_ratio, min_pause_s)
+        # Interpolate boundary time to midpoint between last voiced and first silent frame
+        # This halves the worst-case quantization error vs. using frame center directly
+        if prev_end + 1 < len(times):
+            end_boundary_time = 0.5 * (float(times[prev_end]) + float(times[prev_end + 1]))
+        else:
+            end_boundary_time = float(times[prev_end])
+        if next_start > 0:
+            start_boundary_time = 0.5 * (float(times[next_start - 1]) + float(times[next_start]))
+        else:
+            start_boundary_time = float(times[next_start])
         boundaries.append(
             PhraseBoundary(
-                time_s=float(times[prev_end]),
+                time_s=end_boundary_time,
                 confidence=gap_confidence,
                 index=int(prev_end),
                 kind="end",
@@ -210,7 +220,7 @@ def segment_phrases_from_energy(
         )
         boundaries.append(
             PhraseBoundary(
-                time_s=float(times[next_start]),
+                time_s=start_boundary_time,
                 confidence=gap_confidence,
                 index=int(next_start),
                 kind="start",

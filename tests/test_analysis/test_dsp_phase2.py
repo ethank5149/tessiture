@@ -33,7 +33,7 @@ def test_preprocess_audio_downmix_resample_and_normalize() -> None:
     assert result.audio.dtype == np.float32, "Expected float32 output audio."
     assert result.audio.size == expected_len, "Expected resampled length to match target sample rate."
     assert result.info["resampled"] == 1.0, "Expected resampled flag set when sample rates differ."
-    assert result.info["peak_after"] <= result.info["peak_before"] + 1e-6, "Expected normalization to not increase peak."
+    assert result.info["peak_after"] <= 0.9 + 1e-4, "Expected normalization to reach near target peak."
 
 
 def test_compute_stft_shapes_and_peak_frequency() -> None:
@@ -62,7 +62,7 @@ def test_detect_harmonics_finds_candidates() -> None:
     frequencies = np.array([0, 100, 200, 300, 400, 500, 600, 700], dtype=np.float32)
     spectrum = np.array([[0.1], [0.2], [1.0], [0.2], [0.9], [0.2], [0.8], [0.1]], dtype=np.float32)
 
-    frames = detect_harmonics(spectrum, frequencies, n_harmonics=3, freq_tolerance=5.0)
+    frames = detect_harmonics(spectrum, frequencies, n_harmonics=3, freq_tolerance=5.0, tolerance_mode="hz")
 
     assert len(frames) == 1, "Expected one harmonic frame for one time slice."
     assert frames[0].candidates, "Expected at least one harmonic candidate."

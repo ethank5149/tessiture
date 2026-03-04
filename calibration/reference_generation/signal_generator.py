@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
@@ -29,6 +29,7 @@ def _note_count_from_params(params: Dict[str, Any]) -> int:
 def generate_synthetic_signal(
     params: Dict[str, Any],
     sample_rate: int = 44100,
+    rng: Optional[np.random.Generator] = None,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     """Generate a synthetic harmonic signal with optional vibrato and detuning.
 
@@ -37,6 +38,8 @@ def generate_synthetic_signal(
             amplitude_dbfs, harmonic_ratio, note_count, duration_s, snr_db,
             vibrato_depth_cents, and vibrato_rate_hz.
         sample_rate: Sample rate for the generated signal.
+        rng: Optional random generator for reproducible noise injection. If
+            None, a new default RNG is created each call.
 
     Returns:
         Tuple of (audio array, metadata dict).
@@ -100,7 +103,8 @@ def generate_synthetic_signal(
         signal_power = float(np.mean(signal ** 2)) if signal.size > 0 else 0.0
         if signal_power > 0:
             noise_power = signal_power / float(10.0 ** (snr_db / 10.0))
-            noise = np.random.default_rng().normal(scale=np.sqrt(noise_power), size=signal.shape)
+            _rng = rng if rng is not None else np.random.default_rng()
+            noise = _rng.normal(scale=np.sqrt(noise_power), size=signal.shape)
             signal = signal + noise
 
     midi_numbers = 69.0 + 12.0 * np.log2(base_frequencies / 440.0)

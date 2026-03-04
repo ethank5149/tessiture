@@ -13,7 +13,7 @@ class VibratoFeatures:
     """Summary vibrato metrics derived from an f0 trajectory."""
 
     rate_hz: float
-    depth_cents: float
+    depth_cents: float  # Peak amplitude in cents (single-sided; multiply by 2 for peak-to-peak extent)
     peak_power: float
     power_ratio: float
     start_index: int
@@ -123,6 +123,7 @@ def detect_vibrato(
     peak_mag = float(magnitudes[peak_local])
 
     window_sum = float(np.sum(window))
+    # amplitude is peak (single-sided); conventional vibrato extent is 2 × this value
     amplitude = (2.0 * peak_mag) / max(window_sum, np.finfo(float).eps)
     power_spectrum = np.abs(spectrum) ** 2
     peak_power = float(power_spectrum[peak_index])

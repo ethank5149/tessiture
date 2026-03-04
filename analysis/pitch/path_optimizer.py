@@ -21,9 +21,23 @@ class OptimizedPath:
     path_indices: np.ndarray
 
 
-def _transition_cost(prev_f0: float, curr_f0: float, penalty: float) -> float:
-    if prev_f0 <= 0.0 or curr_f0 <= 0.0:
-        return 0.0
+def _transition_cost(
+    prev_f0: float,
+    curr_f0: float,
+    penalty: float,
+    onset_penalty: float = 0.1,
+    offset_penalty: float = 0.1,
+) -> float:
+    prev_voiced = prev_f0 > 0.0
+    curr_voiced = curr_f0 > 0.0
+
+    if not prev_voiced and not curr_voiced:
+        return 0.0  # unvoiced to unvoiced: free
+    if not prev_voiced and curr_voiced:
+        return float(onset_penalty)  # unvoiced to voiced: onset cost
+    if prev_voiced and not curr_voiced:
+        return float(offset_penalty)  # voiced to unvoiced: offset cost
+    # Both voiced: pitch continuity penalty in octaves
     ratio = max(prev_f0, curr_f0) / min(prev_f0, curr_f0)
     return penalty * abs(np.log2(ratio))
 
@@ -32,6 +46,8 @@ def optimize_lead_voice(
     candidates: List[PitchFrame],
     alt_candidates: Optional[List[List[PitchFrame]]] = None,
     jump_penalty: float = 0.4,
+    onset_penalty: float = 0.1,
+    offset_penalty: float = 0.1,
 ) -> OptimizedPath:
     """Optimize pitch trajectory with Viterbi-like dynamic programming.
 
@@ -39,6 +55,8 @@ def optimize_lead_voice(
         candidates: Primary pitch candidates per frame.
         alt_candidates: Optional list of alternative candidates per frame.
         jump_penalty: Penalty weight for pitch discontinuity (log-frequency space).
+        onset_penalty: Penalty for unvoiced-to-voiced transitions.
+        offset_penalty: Penalty for voiced-to-unvoiced transitions.
 
     Returns:
         OptimizedPath containing selected f0 and salience per frame.
@@ -71,7 +89,7 @@ def optimize_lead_voice(
             best_score = -np.inf
             best_prev = -1
             for sp, prev in enumerate(all_candidates[t - 1]):
-                trans_cost = _transition_cost(prev.f0_hz, cand.f0_hz, jump_penalty)
+                trans_cost = _transition_cost(prev.f0_hz, cand.f0_hz, jump_penalty, onset_penalty, offset_penalty)
                 score = scores[t - 1, sp] + cand.salience - trans_cost
                 if score > best_score:
                     best_score = score

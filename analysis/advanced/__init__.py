@@ -5,6 +5,7 @@ from analysis.advanced.formants import (
     FormantTrack,
     estimate_formants_from_audio,
     estimate_formants_from_spectrum,
+    estimate_formants_lpc,
     track_to_frames,
 )
 from analysis.advanced.vibrato import VibratoFeatures, detect_vibrato
@@ -21,6 +22,7 @@ __all__ = [
     "FormantTrack",
     "estimate_formants_from_audio",
     "estimate_formants_from_spectrum",
+    "estimate_formants_lpc",
     "track_to_frames",
     "VibratoFeatures",
     "detect_vibrato",

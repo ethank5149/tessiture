@@ -159,6 +159,9 @@ def summarize_uncertainty(results: Iterable[Mapping[str, Any]]) -> Dict[str, Any
         "pitch_bias_cents": np.nan_to_num(pitch_bias, nan=0.0).tolist(),
         "pitch_variance_cents2": np.nan_to_num(pitch_variance, nan=0.0).tolist(),
         "sample_counts": counts.tolist(),
+        # detection_probability and confidence_surface are reserved for a future calibration
+        # phase that will compute the confidence surface from Monte Carlo results.
+        # See calibration/models/confidence_models.py for the surface model API.
         "detection_probability": None,
         "confidence_surface": None,
     }

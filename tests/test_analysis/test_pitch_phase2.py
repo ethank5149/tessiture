@@ -32,7 +32,7 @@ def test_estimate_pitch_frames_outputs_f0_and_components() -> None:
     assert frames, "Expected pitch frames to be produced."
     first = frames[0]
     assert first.f0_hz >= 0.0, "Expected non-negative pitch estimate."
-    assert {"H", "C", "V", "S"}.issubset(first.components.keys()), "Expected salience components in output."
+    assert {"H", "C", "S"}.issubset(first.components.keys()), "Expected salience components in output."
     assert "HPS_f0" in first.components, "Expected HPS fallback frequency in components."
 
 

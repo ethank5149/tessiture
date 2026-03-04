@@ -90,8 +90,19 @@ def apply_perturbations(
     phase_jitter_std = float(params.get("phase_jitter_std", 0.0) or 0.0)
     if phase_jitter_std > 0.0 and perturbed.size > 1:
         spectrum = np.fft.rfft(perturbed)
-        jitter = rng.normal(scale=phase_jitter_std, size=spectrum.shape)
-        spectrum *= np.exp(1j * jitter)
+        n_bins = spectrum.shape[0] if spectrum.ndim == 1 else spectrum.shape[0]
+        # Generate smoothly-varying phase perturbation using bandlimited noise
+        # Correlation length: ~10% of spectrum length (smooth variation across frequency)
+        correlation_bins = max(1, n_bins // 10)
+        # Low-pass filter white noise to get smooth phase variation
+        raw_phase = rng.normal(scale=float(phase_jitter_std), size=(n_bins,))
+        # Apply simple box-car smoothing for correlation
+        kernel = np.ones(correlation_bins, dtype=float) / correlation_bins
+        smooth_phase = np.convolve(raw_phase, kernel, mode='same')
+        # Scale to maintain approximately the target std after smoothing
+        smooth_std = float(np.std(smooth_phase)) if np.std(smooth_phase) > 0 else 1.0
+        smooth_phase = smooth_phase * (float(phase_jitter_std) / smooth_std)
+        spectrum = spectrum * np.exp(1j * smooth_phase)
         perturbed = np.fft.irfft(spectrum, n=perturbed.size)
 
     shift = int(round(float(params.get("window_shift_samples", 0.0) or 0.0)))
@@ -114,11 +125,14 @@ def apply_perturbations(
 
     if ratio is not None and ratio > 0 and ratio != 1.0 and perturbed.size > 1:
         n_samples = perturbed.size
-        target_len = max(2, int(round(n_samples * ratio)))
-        original_axis = np.linspace(0.0, 1.0, n_samples, endpoint=True)
-        target_axis = np.linspace(0.0, 1.0, target_len, endpoint=True)
-        resampled = np.interp(target_axis, original_axis, perturbed)
-        perturbed = np.interp(original_axis, target_axis, resampled)
+        # Simulate sample-clock drift: the signal was recorded at a slightly
+        # different rate, so its time axis is stretched by 1/ratio relative to
+        # the expected playback rate.
+        stretched_axis = np.linspace(0.0, 1.0 / ratio, n_samples, endpoint=False)
+        # Clamp to valid range [0, 1)
+        stretched_axis = np.clip(stretched_axis, 0.0, 1.0 - 1.0 / n_samples)
+        original_axis = np.linspace(0.0, 1.0, n_samples, endpoint=False)
+        perturbed = np.interp(stretched_axis, original_axis, perturbed)
 
     snr_db = params.get("snr_db")
     if snr_db is not None and np.isfinite(snr_db):
