@@ -7,6 +7,7 @@ import mimetypes
 import os
 import re
 import time
+import warnings
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set
 from uuid import uuid4
@@ -28,6 +29,7 @@ from analysis.pitch.midi_converter import convert_f0_to_midi
 from analysis.pitch.path_optimizer import optimize_lead_voice
 from analysis.tessitura.analyzer import analyze_tessitura
 from analysis.comparison import reference_cache as _ref_cache
+from analysis.dsp.vocal_separation import is_available as _vocal_separation_available
 from api import job_manager
 from calibration.monte_carlo.uncertainty_analyzer import summarize_uncertainty
 from calibration.reference_generation.lhs_sampler import lhs_sample
@@ -117,6 +119,34 @@ EXAMPLE_CONTENT_TYPE_OVERRIDES: Dict[str, str] = {
     ".m4a": "audio/mp4",
 }
 EXAMPLE_IMAGE_EXTENSIONS: Set[str] = {".jpg", ".jpeg", ".png", ".webp"}
+
+
+# Voiced-frame filter thresholds — aligned with compute_voicing_mask defaults.
+# Frames outside these bounds are noise/artifact detections, not genuine pitch.
+_VOICED_MIN_HZ: float = 60.0
+_VOICED_MAX_HZ: float = 1600.0
+_VOICED_MIN_SALIENCE: float = 0.15
+
+# Vocal separation configuration
+_VOCAL_SEPARATION_MODE: str = os.getenv("TESSITURE_VOCAL_SEPARATION", "auto").lower()
+_STEM_CACHE_DIR: Optional[Path] = (
+    Path(os.getenv("TESSITURE_STEM_CACHE_DIR", "/data/stem_cache"))
+    if os.getenv("TESSITURE_STEM_CACHE_DIR") or _VOCAL_SEPARATION_MODE != "off"
+    else None
+)
+
+
+def _is_voiced_frame(frame: Mapping[str, Any]) -> bool:
+    """Return True only for frames that pass frequency-range and confidence checks.
+
+    Mirrors the logic in :func:`analysis.pitch.estimator.compute_voicing_mask`
+    so that voiced_f0 collections in the pipeline stay free of artifact extremes.
+    """
+    f0 = _safe_float(frame.get("f0_hz") or frame.get("f0"))
+    if f0 is None or not (_VOICED_MIN_HZ <= f0 <= _VOICED_MAX_HZ):
+        return False
+    confidence = _safe_float(frame.get("confidence") or frame.get("salience"))
+    return confidence is not None and confidence >= _VOICED_MIN_SALIENCE
 
 
 def _ensure_upload_dir() -> None:
@@ -994,7 +1024,7 @@ def _summarize_phrases(phrase_result: Any) -> Dict[str, Any]:
 
 def _build_summary(result: Mapping[str, Any], duration_seconds: float) -> Dict[str, Any]:
     pitch_frames = result.get("pitch", {}).get("frames", []) if isinstance(result, Mapping) else []
-    voiced_f0 = [float(item["f0_hz"]) for item in pitch_frames if _safe_float(item.get("f0_hz"))]
+    voiced_f0 = [float(item["f0_hz"]) for item in pitch_frames if _is_voiced_frame(item)]
     confidences = [
         float(item["confidence"])
         for item in pitch_frames
@@ -1109,6 +1139,38 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
     )
     report_progress(15, "preprocessing", "Decoding and preprocessing audio.")
     audio, sample_rate = _decode_audio_file(file_path)
+
+    # Optional vocal source separation
+    separation_info: dict = {}
+    _do_separate = (
+        _VOCAL_SEPARATION_MODE == "on"
+        or (_VOCAL_SEPARATION_MODE == "auto" and _vocal_separation_available())
+    )
+    if _do_separate:
+        try:
+            from analysis.dsp.vocal_separation import separate_vocals as _separate_vocals
+            report_progress(20, "vocal_separation", "Separating vocals from accompaniment.")
+            sep_result = _separate_vocals(
+                audio,
+                sample_rate,
+                file_path=file_path,
+                cache_dir=_STEM_CACHE_DIR,
+            )
+            audio = sep_result.vocals
+            sample_rate = sep_result.sample_rate
+            separation_info = {
+                "model": sep_result.model_name,
+                "separation_time_s": sep_result.separation_time_s,
+                "cache_hit": sep_result.cache_hit,
+            }
+            logger.info(
+                "vocal_separation_applied model=%s separation_time_s=%.2f cache_hit=%s",
+                sep_result.model_name, sep_result.separation_time_s, sep_result.cache_hit,
+            )
+        except Exception as exc:
+            warnings.append(f"Vocal separation unavailable: {exc}")
+            logger.warning("vocal_separation_failed error=%s", exc, exc_info=True)
+
     preprocessed = preprocess_audio(
         audio,
         sample_rate=int(sample_rate),
@@ -1183,7 +1245,7 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
 
     report_progress(65, "advanced_analysis", "Running advanced musical and vocal analysis.")
     voiced_midi = [float(frame["midi"]) for frame in pitch_frames if _safe_float(frame.get("midi"))]
-    voiced_f0 = [float(frame["f0_hz"]) for frame in pitch_frames if _safe_float(frame.get("f0_hz"))]
+    voiced_f0 = [float(frame["f0_hz"]) for frame in pitch_frames if _is_voiced_frame(frame)]
     pitch_errors = [
         float(frame["cents"]) for frame in pitch_frames if _safe_float(frame.get("cents")) is not None
     ]
@@ -1294,6 +1356,8 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
         "frame_rate": float(sample_rate) / float(max(STFT_HOP, 1)),
         "duration_seconds": duration_seconds,
     }
+    if separation_info:
+        metadata_payload["vocal_separation"] = separation_info
     if isinstance(metadata, Mapping):
         for key, value in metadata.items():
             if str(key).startswith("_"):

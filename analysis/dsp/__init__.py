@@ -3,6 +3,11 @@
 from analysis.dsp.peak_detection import HarmonicCandidate, HarmonicFrame, Peak, detect_harmonics
 from analysis.dsp.preprocessing import PreprocessResult, preprocess_audio
 from analysis.dsp.stft import StftResult, compute_stft
+from analysis.dsp.vocal_separation import (
+    SeparationResult,
+    is_available as vocal_separation_available,
+    separate_vocals,
+)
 
 __all__ = [
     "Peak",
@@ -13,4 +18,7 @@ __all__ = [
     "preprocess_audio",
     "StftResult",
     "compute_stft",
+    "SeparationResult",
+    "vocal_separation_available",
+    "separate_vocals",
 ]

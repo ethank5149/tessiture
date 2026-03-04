@@ -9,7 +9,7 @@ RUN npm install --no-audit --no-fund
 COPY frontend/ ./
 RUN npm run build
 
-FROM python:3.11-slim AS runtime
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -19,17 +19,30 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     TESSITURE_UPLOAD_DIR=/data/uploads \
     TESSITURE_OUTPUT_DIR=/data/outputs \
     TESSITURE_EXAMPLES_DIR=/app/examples/tracks \
-    TESSITURE_FRONTEND_DIST=/app/frontend/dist
+    TESSITURE_FRONTEND_DIST=/app/frontend/dist \
+    TESSITURE_STEM_CACHE_DIR=/data/stem_cache
 
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libsndfile1 ffmpeg \
+    && apt-get install -y --no-install-recommends \
+        python3.11 python3.11-dev python3-pip \
+        libsndfile1 ffmpeg \
+    && ln -sf python3.11 /usr/bin/python \
+    && ln -sf python3.11 /usr/bin/python3 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./requirements.txt
+
+# Install PyTorch with CUDA support first (separate index), then remaining deps
 RUN python -m pip install --upgrade pip \
+    && python -m pip install torch==2.2.2 torchaudio==2.2.2 \
+       --index-url https://download.pytorch.org/whl/cu121 \
+    && python -m pip install demucs==4.0.1 \
     && python -m pip install -r requirements.txt
+
+# Pre-download Demucs model weights so they're baked into the image
+RUN python -c "from demucs.pretrained import get_model; get_model('htdemucs')"
 
 COPY analysis/ ./analysis/
 COPY api/ ./api/
