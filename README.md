@@ -1,5 +1,7 @@
 # Tessiture — Vocal Analysis Toolkit
 
+> Legacy status note: `tonescout/` is now read-only/maintenance-only and being archived; active development and new contributions should target `tessiture/`.
+
 Tessiture is a browser-based toolkit for analyzing vocal and acoustic recordings with statistically quantified uncertainty. Upload an audio file and get pitch trajectories, chord/key detection, tessitura metrics, vibrato analysis, formant estimates, and exportable reports — or compare your live voice against a reference track in real time.
 
 **Production:** [tess.indecisivephysicist.space](https://tess.indecisivephysicist.space)

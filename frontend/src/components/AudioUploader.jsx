@@ -6,6 +6,51 @@ const AUDIO_TYPE_OPTIONS = [
   { value: "auto",     label: "Auto-detect" },
 ];
 
+const formatFileSize = (size) => {
+  if (!Number.isFinite(size) || size < 0) {
+    return "—";
+  }
+  if (size < 1024) {
+    return `${Math.round(size)} B`;
+  }
+
+  const units = ["KB", "MB", "GB"];
+  let value = size / 1024;
+  let unitIndex = 0;
+
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+
+  return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
+};
+
+const buildUploadFeedbackMessage = ({ file, isSubmitting, jobId, status }) => {
+  if (!file) {
+    return "No file selected.";
+  }
+  if (isSubmitting) {
+    return "Uploading audio…";
+  }
+
+  const statusValue = status?.status;
+  if (jobId && statusValue === "queued") {
+    return "Upload received. Waiting for decode…";
+  }
+  if (jobId && statusValue === "processing") {
+    return "Decoding audio and extracting pitch…";
+  }
+  if (jobId && statusValue === "completed") {
+    return "Decode complete. Results are ready below.";
+  }
+  if (jobId && (statusValue === "failed" || statusValue === "error")) {
+    return "Upload processed, but analysis failed.";
+  }
+
+  return "Ready to start analysis.";
+};
+
 function AudioUploader({
   onSubmit,
   isSubmitting = false,
@@ -50,6 +95,12 @@ function AudioUploader({
   };
 
   const isBusy = Boolean(isSubmitting);
+  const uploadFeedbackMessage = buildUploadFeedbackMessage({
+    file,
+    isSubmitting,
+    jobId,
+    status,
+  });
 
   return (
     <section className="card uploader" aria-labelledby={`${inputId}-label`}>
@@ -107,13 +158,29 @@ function AudioUploader({
           </p>
         </div>
 
-        {file ? (
-          <output id={statusId} className="uploader__filename" aria-live="polite">
-            Selected file: {file.name}
-          </output>
-        ) : (
-          <p id={statusId} className="uploader__helper">No file selected.</p>
-        )}
+        <div id={statusId} className="uploader__preview" aria-live="polite">
+          {file ? (
+            <>
+              <p className="uploader__preview-title">Upload preview</p>
+              <dl className="summary-list">
+                <div className="summary-list__item">
+                  <dt>Selected file</dt>
+                  <dd>{file.name}</dd>
+                </div>
+                <div className="summary-list__item">
+                  <dt>File size</dt>
+                  <dd>{formatFileSize(file.size)}</dd>
+                </div>
+                <div className="summary-list__item">
+                  <dt>Status</dt>
+                  <dd>{uploadFeedbackMessage}</dd>
+                </div>
+              </dl>
+            </>
+          ) : (
+            <p className="uploader__helper">{uploadFeedbackMessage}</p>
+          )}
+        </div>
 
         {(localError || error) ? (
           <p className="uploader__error" role="alert">{localError ?? error}</p>

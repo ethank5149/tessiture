@@ -113,6 +113,15 @@ const formatConfidenceIntervalWithNotes = (ci) => {
   return rendered;
 };
 
+const normalizeQualityWarnings = (warnings) => {
+  if (!Array.isArray(warnings)) {
+    return [];
+  }
+  return warnings
+    .filter((warning) => typeof warning === "string" && warning.trim())
+    .map((warning) => warning.trim());
+};
+
 const hzToMidi = (hz) => {
   if (!Number.isFinite(hz) || hz <= 0) {
     return null;
@@ -331,6 +340,7 @@ function AnalysisResults({
     !hasNoteEvents &&
     !hasTessituraHistogram &&
     !hasInferentialMetrics;
+  const qualityWarnings = normalizeQualityWarnings(results?.warnings);
 
   const calibrationSummary = isPlainObject(results?.calibration?.summary)
     ? results.calibration.summary
@@ -405,6 +415,24 @@ function AnalysisResults({
                 <p className="results__empty" role="status">
                   Analysis completed, but the file did not contain enough detectable pitch activity to populate detailed charts.
                 </p>
+              ) : null}
+
+              <section className="results__section" aria-label="How to interpret analysis results">
+                <h3 className="results__section-title">Interpretation help</h3>
+                <p className="results__section-copy">
+                  Use summary metrics as your quick snapshot, then confirm patterns in the visualizations before drawing conclusions about range or consistency.
+                </p>
+              </section>
+
+              {qualityWarnings.length ? (
+                <section className="results__section" aria-label="Analysis quality warnings">
+                  <h3 className="results__section-title">Analysis quality notes</h3>
+                  <ul>
+                    {qualityWarnings.map((warning, index) => (
+                      <li key={`${warning}-${index}`}>{warning}</li>
+                    ))}
+                  </ul>
+                </section>
               ) : null}
 
               <section className="results__section results__section--summary" aria-label="Summary metrics">

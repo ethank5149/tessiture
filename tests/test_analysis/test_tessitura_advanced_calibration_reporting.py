@@ -7,6 +7,7 @@ from analysis.advanced.phrase_segmentation import (
 )
 from analysis.advanced.vibrato import detect_vibrato
 from analysis.tessitura.analyzer import analyze_tessitura
+from analysis.tessitura.vocal_range import compute_weighted_percentiles
 from calibration.models.confidence_models import (
     build_confidence_surface,
     suggest_detection_thresholds,
@@ -286,3 +287,19 @@ def test_visualization_transforms_preserve_zero_start() -> None:
 
     assert key_plot["data"][0]["x"][0] == 0.0
     assert key_plot["data"][0]["y"][0] == 0.0
+
+
+def test_analyze_tessitura_filters_non_finite_pitch_observations() -> None:
+    pitches = [60.0, np.nan, np.inf, -np.inf, 64.0]
+    weights = [1.0, 1.0, 1.0, 1.0, 1.0]
+
+    result = analyze_tessitura(pitches, weights=weights, return_pdf=False)
+
+    assert result.metrics.count == 2
+    assert np.isclose(result.metrics.range_min, 60.0)
+    assert np.isclose(result.metrics.range_max, 64.0)
+
+
+def test_compute_weighted_percentiles_rejects_out_of_bounds_percentiles() -> None:
+    with np.testing.assert_raises(ValueError):
+        compute_weighted_percentiles([60.0, 62.0, 64.0], percentiles=(0.25, 1.2))

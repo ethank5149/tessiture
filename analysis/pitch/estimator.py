@@ -7,7 +7,7 @@ Example:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -19,7 +19,7 @@ class PitchFrame:
     time_index: int
     f0_hz: float
     salience: float
-    components: Dict[str, float]
+    components: Dict[str, Any]
 
 
 def harmonic_product_spectrum(
@@ -170,6 +170,12 @@ def estimate_pitch_frames(
         hps_frame = hps_spec[:, t]
         hps_idx = int(np.argmax(hps_frame)) if hps_frame.size else 0
         hps_f0 = float(hps_freqs[hps_idx]) if hps_frame.size else 0.0
+        attempted_methods = [
+            "harmonic_candidates",
+            "hps_peak_ratio_gate",
+            "autocorrelation",
+        ]
+        strategy_path = "harmonic_candidates -> hps_peak_ratio_gate -> autocorrelation"
 
         ac_f0 = 0.0
         if audio is not None:
@@ -204,7 +210,18 @@ def estimate_pitch_frames(
                 hps_voiced = hps_median > 0.0 and (hps_peak / hps_median) >= 5.0
             else:
                 hps_voiced = False
-            f0 = hps_f0 if hps_voiced else ac_f0
+            if hps_voiced and hps_f0 > 0.0:
+                f0 = hps_f0
+                method_used = "hps_fallback"
+                fallback_reason: Optional[str] = "no_harmonic_candidates"
+            else:
+                f0 = ac_f0
+                if ac_f0 > 0.0:
+                    method_used = "autocorrelation_fallback"
+                    fallback_reason = "no_harmonic_candidates_and_hps_not_voiced"
+                else:
+                    method_used = "no_pitch_detected"
+                    fallback_reason = "no_harmonic_candidates_and_no_viable_fallback"
             h_score = float(np.max(hps_frame)) if hps_frame.size else 0.0
             c_score = _continuity_score(prev_f0, f0)
             s_score = spectral_prominence(spectrum[:, t], frequencies, f0)
@@ -215,6 +232,8 @@ def estimate_pitch_frames(
             )
         else:
             f0, h_score, c_score, s_score = best
+            method_used = "harmonic_candidates"
+            fallback_reason = None
 
         components = {
             "H": float(h_score),
@@ -222,6 +241,12 @@ def estimate_pitch_frames(
             "S": float(s_score),
             "HPS_f0": float(hps_f0),
             "AC_f0": float(ac_f0),
+            "analysis_diagnostics": {
+                "primary_method_used": method_used,
+                "attempted_methods": attempted_methods,
+                "strategy_path": strategy_path,
+                "fallback_reason": fallback_reason,
+            },
         }
         frames.append(PitchFrame(time_index=t, f0_hz=float(f0), salience=float(best_score), components=components))
         prev_f0 = float(f0)

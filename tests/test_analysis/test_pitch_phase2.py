@@ -1,6 +1,6 @@
 import numpy as np
 
-from analysis.dsp.peak_detection import detect_harmonics
+from analysis.dsp.peak_detection import HarmonicFrame, detect_harmonics
 from analysis.dsp.stft import compute_stft
 from analysis.pitch.estimator import estimate_pitch_frames
 from analysis.pitch.midi_converter import build_midi_frames, convert_f0_to_midi
@@ -34,6 +34,42 @@ def test_estimate_pitch_frames_outputs_f0_and_components() -> None:
     assert first.f0_hz >= 0.0, "Expected non-negative pitch estimate."
     assert {"H", "C", "S"}.issubset(first.components.keys()), "Expected salience components in output."
     assert "HPS_f0" in first.components, "Expected HPS fallback frequency in components."
+    assert "analysis_diagnostics" in first.components, "Expected diagnostics payload in components."
+    diagnostics = first.components["analysis_diagnostics"]
+    assert diagnostics["primary_method_used"] in {
+        "harmonic_candidates",
+        "hps_fallback",
+        "autocorrelation_fallback",
+        "no_pitch_detected",
+    }
+    assert diagnostics["attempted_methods"] == [
+        "harmonic_candidates",
+        "hps_peak_ratio_gate",
+        "autocorrelation",
+    ]
+    assert "strategy_path" in diagnostics
+    assert "fallback_reason" in diagnostics
+
+
+def test_estimate_pitch_frames_emits_fallback_reason_when_no_viable_pitch_methods() -> None:
+    spectrum = np.zeros((8, 1), dtype=np.float32)
+    frequencies = np.linspace(0.0, 700.0, 8, dtype=np.float32)
+    harmonic_frames = [HarmonicFrame(time_index=0, candidates=[])]
+    audio = np.zeros(400, dtype=np.float32)
+
+    frames = estimate_pitch_frames(
+        spectrum,
+        frequencies,
+        harmonic_frames,
+        audio=audio,
+        sample_rate=8000,
+        hop_length=128,
+    )
+
+    assert len(frames) == 1
+    diagnostics = frames[0].components["analysis_diagnostics"]
+    assert diagnostics["primary_method_used"] == "no_pitch_detected"
+    assert diagnostics["fallback_reason"] == "no_harmonic_candidates_and_no_viable_fallback"
 
 
 def test_optimize_lead_voice_returns_path_with_matching_length() -> None:

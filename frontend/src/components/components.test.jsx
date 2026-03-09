@@ -59,6 +59,58 @@ describe("AudioUploader", () => {
     expect(onSubmit).toHaveBeenCalledTimes(1);
     expect(onSubmit).toHaveBeenCalledWith(file);
   });
+
+  it("shows upload preview details after selecting a file", async () => {
+    const user = userEvent.setup();
+
+    render(<AudioUploader onSubmit={vi.fn()} isSubmitting={false} />);
+
+    const input = screen.getByLabelText("Audio file");
+    const file = new File([new Uint8Array(2048)], "preview.wav", { type: "audio/wav" });
+
+    await user.upload(input, file);
+
+    expect(screen.getByText("Upload preview")).toBeInTheDocument();
+    expect(screen.getByText("preview.wav")).toBeInTheDocument();
+    expect(screen.getByText("2.0 KB")).toBeInTheDocument();
+    expect(screen.getByText("Ready to start analysis.")).toBeInTheDocument();
+  });
+
+  it("shows progressive upload and decode messaging", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <AudioUploader onSubmit={vi.fn()} isSubmitting={false} jobId={null} status={null} />
+    );
+
+    const input = screen.getByLabelText("Audio file");
+    const file = new File([new Uint8Array(1024)], "progress.wav", { type: "audio/wav" });
+
+    await user.upload(input, file);
+    expect(screen.getByText("Ready to start analysis.")).toBeInTheDocument();
+
+    rerender(<AudioUploader onSubmit={vi.fn()} isSubmitting={true} jobId={null} status={null} />);
+    expect(screen.getByText("Uploading audio…")).toBeInTheDocument();
+
+    rerender(
+      <AudioUploader
+        onSubmit={vi.fn()}
+        isSubmitting={false}
+        jobId="job-123"
+        status={{ status: "queued" }}
+      />
+    );
+    expect(screen.getByText("Upload received. Waiting for decode…")).toBeInTheDocument();
+
+    rerender(
+      <AudioUploader
+        onSubmit={vi.fn()}
+        isSubmitting={false}
+        jobId="job-123"
+        status={{ status: "processing" }}
+      />
+    );
+    expect(screen.getByText("Decoding audio and extracting pitch…")).toBeInTheDocument();
+  });
 });
 
 describe("ExampleGallery", () => {
@@ -367,6 +419,56 @@ describe("AnalysisResults", () => {
     expect(screen.getByText("57.00 (A3)")).toBeInTheDocument();
     expect(screen.getByText("[56.50, 57.50] (G#3 to A#3)")).toBeInTheDocument();
     expect(screen.getByText("0.008")).toBeInTheDocument();
+  });
+
+  it("renders interpretation help and quality notes when warnings are present", () => {
+    const results = {
+      summary: {
+        duration_seconds: 10.0,
+      },
+      warnings: [
+        "Vocal separation unavailable: model not installed",
+        "Tessitura analysis unavailable: insufficient voiced frames",
+      ],
+    };
+
+    render(
+      <AnalysisResults
+        results={results}
+        status={{ status: "completed" }}
+        isFetchingResults={false}
+        onDownloadCsv={vi.fn()}
+        onDownloadJson={vi.fn()}
+        onDownloadPdf={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole("heading", { name: "Interpretation help" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Analysis quality notes" })).toBeInTheDocument();
+    expect(screen.getByText("Vocal separation unavailable: model not installed")).toBeInTheDocument();
+    expect(screen.getByText("Tessitura analysis unavailable: insufficient voiced frames")).toBeInTheDocument();
+  });
+
+  it("omits quality notes when no warning inputs are present", () => {
+    const results = {
+      summary: {
+        duration_seconds: 10.0,
+      },
+    };
+
+    render(
+      <AnalysisResults
+        results={results}
+        status={{ status: "completed" }}
+        isFetchingResults={false}
+        onDownloadCsv={vi.fn()}
+        onDownloadJson={vi.fn()}
+        onDownloadPdf={vi.fn()}
+      />
+    );
+
+    expect(screen.getByRole("heading", { name: "Interpretation help" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Analysis quality notes" })).not.toBeInTheDocument();
   });
 
   it("renders the coaching trio with clear chart purposes and a populated 2D heatmap", () => {

@@ -872,3 +872,47 @@ def test_run_analysis_pipeline_attempts_separation_for_mixed(tmp_path, monkeypat
     sep_info = result.get("analysis", {}).get("metadata", {}).get("vocal_separation", {})
     assert sep_info.get("audio_type_requested") == "mixed"
     assert sep_info.get("applied") is False
+
+
+def test_run_analysis_pipeline_exposes_pitch_method_diagnostics(tmp_path, monkeypatch):
+    """Pitch analysis diagnostics should be present in both summary and per-frame payloads."""
+    import numpy as np
+    import soundfile as sf
+
+    from api import routes
+
+    audio_data = np.zeros(4096, dtype=np.float32)
+    wav_path = tmp_path / "test_diagnostics.wav"
+    sf.write(str(wav_path), audio_data, 16000)
+
+    routes.UPLOAD_DIR = tmp_path / "uploads"
+    routes.OUTPUT_DIR = tmp_path / "outputs"
+    routes.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    result = routes._run_analysis_pipeline(
+        file_path=str(wav_path),
+        metadata={"filename": "test.wav", "source": "upload", "audio_type": "isolated"},
+    )
+
+    analysis = result.get("analysis", {})
+    assert "summary" in analysis
+    assert "pitch" in analysis
+
+    diagnostics = analysis.get("diagnostics", {}).get("pitch_analysis_methods", {})
+    assert "primary_method_used" in diagnostics
+    assert "attempted_methods" in diagnostics
+    assert "strategy_path" in diagnostics
+    assert "fallback_reason" in diagnostics
+    assert isinstance(diagnostics.get("method_counts"), dict)
+    assert isinstance(diagnostics.get("fallback_reasons"), dict)
+    assert isinstance(diagnostics.get("frames_with_diagnostics"), int)
+
+    pitch_frames = analysis.get("pitch", {}).get("frames", [])
+    assert isinstance(pitch_frames, list)
+    if pitch_frames:
+        frame_diag = pitch_frames[0].get("analysis_diagnostics")
+        assert isinstance(frame_diag, dict)
+        assert "primary_method_used" in frame_diag
+        assert "attempted_methods" in frame_diag
+        assert "strategy_path" in frame_diag
+        assert "fallback_reason" in frame_diag

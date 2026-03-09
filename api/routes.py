@@ -660,43 +660,6 @@ def _build_inferential_statistics(
     }
 
 
-def _midi_to_note_name(midi_value: float) -> str:
-    rounded = int(round(float(midi_value)))
-    note_index = rounded % 12
-    octave = rounded // 12 - 1
-    return f"{NOTE_NAMES[note_index]}{octave}"
-
-
-def _hz_to_note_name(frequency_hz: Any) -> Optional[str]:
-    frequency = _safe_float(frequency_hz)
-    if frequency is None or frequency <= 0.0:
-        return None
-    midi_value = 69.0 + 12.0 * float(np.log2(frequency / 440.0))
-    return _midi_to_note_name(midi_value)
-
-
-def _unit_supports_pitch_note_names(unit: Any) -> bool:
-    return str(unit or "").strip().upper() in {"HZ", "MIDI"}
-
-
-def _pitch_value_to_note_name(value: Any, unit: Any) -> Optional[str]:
-    unit_upper = str(unit or "").strip().upper()
-    if unit_upper == "MIDI":
-        midi_value = _safe_float(value)
-        return _midi_to_note_name(midi_value) if midi_value is not None else None
-    if unit_upper == "HZ":
-        return _hz_to_note_name(value)
-    return None
-
-
-def _midi_values_to_note_names(values: Sequence[Any]) -> List[Optional[str]]:
-    notes: List[Optional[str]] = []
-    for value in values:
-        midi_value = _safe_float(value)
-        notes.append(_midi_to_note_name(midi_value) if midi_value is not None else None)
-    return notes
-
-
 def _build_calibration_summary(
     uncertainty: Mapping[str, Any],
 ) -> Dict[str, Any]:
@@ -780,6 +743,118 @@ def _build_calibration_summary(
     }
 
 
+def _midi_to_note_name(midi_value: float) -> str:
+    rounded = int(round(float(midi_value)))
+    note_index = rounded % 12
+    octave = rounded // 12 - 1
+    return f"{NOTE_NAMES[note_index]}{octave}"
+
+
+def _hz_to_note_name(frequency_hz: Any) -> Optional[str]:
+    frequency = _safe_float(frequency_hz)
+    if frequency is None or frequency <= 0.0:
+        return None
+    midi_value = 69.0 + 12.0 * float(np.log2(frequency / 440.0))
+    return _midi_to_note_name(midi_value)
+
+
+def _unit_supports_pitch_note_names(unit: Any) -> bool:
+    return str(unit or "").strip().upper() in {"HZ", "MIDI"}
+
+
+def _pitch_value_to_note_name(value: Any, unit: Any) -> Optional[str]:
+    unit_upper = str(unit or "").strip().upper()
+    if unit_upper == "MIDI":
+        midi_value = _safe_float(value)
+        return _midi_to_note_name(midi_value) if midi_value is not None else None
+    if unit_upper == "HZ":
+        return _hz_to_note_name(value)
+    return None
+
+
+def _midi_values_to_note_names(values: Sequence[Any]) -> List[Optional[str]]:
+    notes: List[Optional[str]] = []
+    for value in values:
+        midi_value = _safe_float(value)
+        notes.append(_midi_to_note_name(midi_value) if midi_value is not None else None)
+    return notes
+
+
+def _normalize_analysis_diagnostics(payload: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(payload, Mapping):
+        return None
+
+    attempted_raw = payload.get("attempted_methods")
+    attempted_methods = (
+        [str(item) for item in attempted_raw if isinstance(item, (str, int, float))]
+        if isinstance(attempted_raw, Sequence) and not isinstance(attempted_raw, (str, bytes))
+        else []
+    )
+
+    strategy_path = payload.get("strategy_path")
+    fallback_reason = payload.get("fallback_reason")
+
+    return {
+        "primary_method_used": str(payload.get("primary_method_used") or "unknown"),
+        "attempted_methods": attempted_methods,
+        "strategy_path": str(strategy_path) if strategy_path is not None else None,
+        "fallback_reason": str(fallback_reason) if fallback_reason is not None else None,
+    }
+
+
+def _extract_pitch_frame_diagnostics(pitch_candidates: Sequence[Any]) -> List[Optional[Dict[str, Any]]]:
+    diagnostics: List[Optional[Dict[str, Any]]] = []
+    for frame in pitch_candidates:
+        components = getattr(frame, "components", None)
+        diag_payload = components.get("analysis_diagnostics") if isinstance(components, Mapping) else None
+        diagnostics.append(_normalize_analysis_diagnostics(diag_payload))
+    return diagnostics
+
+
+def _summarize_pitch_method_diagnostics(
+    frame_diagnostics: Sequence[Optional[Mapping[str, Any]]],
+) -> Dict[str, Any]:
+    method_counts: Dict[str, int] = {}
+    fallback_reasons: Dict[str, int] = {}
+    attempted_methods: List[str] = []
+    strategy_path: Optional[str] = None
+
+    for diag in frame_diagnostics:
+        if not isinstance(diag, Mapping):
+            continue
+
+        method = str(diag.get("primary_method_used") or "unknown")
+        method_counts[method] = method_counts.get(method, 0) + 1
+
+        fallback_reason = diag.get("fallback_reason")
+        if fallback_reason:
+            reason = str(fallback_reason)
+            fallback_reasons[reason] = fallback_reasons.get(reason, 0) + 1
+
+        if not attempted_methods:
+            attempted = diag.get("attempted_methods")
+            if isinstance(attempted, Sequence) and not isinstance(attempted, (str, bytes)):
+                attempted_methods = [str(item) for item in attempted if isinstance(item, (str, int, float))]
+
+        if strategy_path is None:
+            strategy = diag.get("strategy_path")
+            if strategy is not None:
+                strategy_path = str(strategy)
+
+    primary_method_used = max(method_counts, key=method_counts.get) if method_counts else None
+    fallback_reason = max(fallback_reasons, key=fallback_reasons.get) if fallback_reasons else None
+
+    return {
+        "primary_method_used": primary_method_used,
+        "attempted_methods": attempted_methods,
+        "strategy_path": strategy_path,
+        "fallback_reason": fallback_reason,
+        "method_counts": method_counts,
+        "fallback_reasons": fallback_reasons,
+        "frames_with_diagnostics": int(sum(1 for diag in frame_diagnostics if isinstance(diag, Mapping))),
+    }
+
+
 def _build_pitch_payload(
     f0_hz: np.ndarray,
     salience: np.ndarray,
@@ -788,6 +863,7 @@ def _build_pitch_payload(
     *,
     sample_rate: int,
     hop_length: int,
+    frame_diagnostics: Optional[Sequence[Optional[Mapping[str, Any]]]] = None,
 ) -> List[Dict[str, Any]]:
     f0_values = np.asarray(f0_hz, dtype=float)
     salience_values = np.asarray(salience, dtype=float)
@@ -811,21 +887,25 @@ def _build_pitch_payload(
         cents = float((midi_value - round(midi_value)) * 100.0) if midi_value is not None else None
         note_name = _midi_to_note_name(midi_value) if midi_value is not None else None
 
-        frames.append(
-            {
-                "index": idx,
-                "time": float(idx) * seconds_per_frame,
-                "f0_hz": f0_value,
-                "f0": f0_value,
-                "midi": midi_value,
-                "note": note_name,
-                "note_name": note_name,
-                "cents": cents,
-                "confidence": confidence,
-                "uncertainty": float(max(uncertainty_value, 0.0)) if uncertainty_value is not None else 0.0,
-                "salience": salience_value,
-            }
-        )
+        frame_payload: Dict[str, Any] = {
+            "index": idx,
+            "time": float(idx) * seconds_per_frame,
+            "f0_hz": f0_value,
+            "f0": f0_value,
+            "midi": midi_value,
+            "note": note_name,
+            "note_name": note_name,
+            "cents": cents,
+            "confidence": confidence,
+            "uncertainty": float(max(uncertainty_value, 0.0)) if uncertainty_value is not None else 0.0,
+            "salience": salience_value,
+        }
+        if frame_diagnostics is not None and idx < len(frame_diagnostics):
+            normalized_diag = _normalize_analysis_diagnostics(frame_diagnostics[idx])
+            if normalized_diag is not None:
+                frame_payload["analysis_diagnostics"] = normalized_diag
+
+        frames.append(frame_payload)
 
     return frames
 
@@ -1225,6 +1305,8 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
         sample_rate=sample_rate,
         hop_length=STFT_HOP,
     )
+    pitch_frame_diagnostics = _extract_pitch_frame_diagnostics(pitch_candidates)
+    pitch_method_diagnostics = _summarize_pitch_method_diagnostics(pitch_frame_diagnostics)
     optimized = optimize_lead_voice(pitch_candidates)
 
     if optimized.f0_hz.size:
@@ -1260,6 +1342,7 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
         midi_sigma,
         sample_rate=sample_rate,
         hop_length=STFT_HOP,
+        frame_diagnostics=pitch_frame_diagnostics,
     )
     note_events = _build_note_events(pitch_frames)
     chord_timeline = _build_chord_timeline(note_events)
@@ -1408,6 +1491,9 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
         "inferential_statistics": inferential_statistics,
         "calibration": {
             "summary": calibration_summary,
+        },
+        "diagnostics": {
+            "pitch_analysis_methods": pitch_method_diagnostics,
         },
     }
     analysis_payload["summary"] = _build_summary(analysis_payload, duration_seconds=duration_seconds)
