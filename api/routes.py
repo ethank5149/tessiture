@@ -504,6 +504,16 @@ def _build_metric_inference(
     bootstrap_samples: int,
     rng: np.random.Generator,
 ) -> Dict[str, Any]:
+    logger.debug(
+        "analysis_metric_inference_build_start metric=%s n_values=%d confidence_level=%.3f bootstrap_samples=%d unit=%s null_value=%s",
+        metric_name,
+        int(values.size),
+        float(confidence_level),
+        int(bootstrap_samples),
+        unit,
+        null_value,
+    )
+
     if values.size == 0:
         payload: Dict[str, Any] = {
             "estimate": None,
@@ -523,9 +533,57 @@ def _build_metric_inference(
         }
         if _unit_supports_pitch_note_names(unit):
             payload["estimate_note"] = None
-        payload["confidence_interval"]["low_note"] = None
-        payload["confidence_interval"]["high_note"] = None
+            payload["confidence_interval"]["low_note"] = None
+            payload["confidence_interval"]["high_note"] = None
+            payload["null_hypothesis"]["value_note"] = _pitch_value_to_note_name(null_value, unit)
+        logger.debug("analysis_metric_inference_build_empty metric=%s", metric_name)
+        return payload
+
+    samples = np.asarray(values, dtype=float)
+    sample_size = int(samples.size)
+    estimate = float(reducer(samples))
+
+    replicates = np.empty(int(bootstrap_samples), dtype=float)
+    for idx in range(int(bootstrap_samples)):
+        sampled = rng.choice(samples, size=sample_size, replace=True)
+        replicates[idx] = float(reducer(sampled))
+
+    tail = (1.0 - float(confidence_level)) / 2.0
+    ci_low = float(np.quantile(replicates, tail))
+    ci_high = float(np.quantile(replicates, 1.0 - tail))
+
+    payload: Dict[str, Any] = {
+        "estimate": estimate,
+        "confidence_interval": {
+            "level": confidence_level,
+            "low": ci_low,
+            "high": ci_high,
+        },
+        "p_value": _bootstrap_two_sided_p_value(replicates, null_value),
+        "null_hypothesis": {
+            "value": null_value,
+            "description": f"{metric_name} equals {null_value}",
+        },
+        "n_samples": sample_size,
+        "unit": unit,
+        "method": "bootstrap_percentile",
+    }
+
+    if _unit_supports_pitch_note_names(unit):
+        payload["estimate_note"] = _pitch_value_to_note_name(estimate, unit)
+        payload["confidence_interval"]["low_note"] = _pitch_value_to_note_name(ci_low, unit)
+        payload["confidence_interval"]["high_note"] = _pitch_value_to_note_name(ci_high, unit)
         payload["null_hypothesis"]["value_note"] = _pitch_value_to_note_name(null_value, unit)
+
+    logger.debug(
+        "analysis_metric_inference_build_done metric=%s estimate=%s ci_low=%s ci_high=%s p_value=%s n_samples=%d",
+        metric_name,
+        payload.get("estimate"),
+        payload.get("confidence_interval", {}).get("low"),
+        payload.get("confidence_interval", {}).get("high"),
+        payload.get("p_value"),
+        sample_size,
+    )
     return payload
 
 
@@ -1288,7 +1346,7 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
         if name.startswith("_build_") and callable(obj)
     )
     logger.info(
-        "analysis_pitch_payload_builder_check present=%s callable=%s builder_count=%s builder_sample=%s",
+        "analysis_metric_inference_builder_check present=%s callable=%s builder_count=%s builder_sample=%s",
         pitch_builder_name in globals(),
         callable(pitch_builder_obj),
         len(available_builders),
