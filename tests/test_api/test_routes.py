@@ -426,6 +426,41 @@ def test_build_summary_includes_separate_pitch_and_key_confidence_fields() -> No
     assert summary["tessitura_range_notes"] == ["A3", "C#4"]
 
 
+def test_build_summary_excludes_out_of_range_and_low_confidence_artifacts() -> None:
+    from api.routes import _build_summary
+
+    result = {
+        "pitch": {
+            "frames": [
+                {"f0_hz": 220.0, "confidence": 0.8},   # valid voiced frame
+                {"f0_hz": 70.0, "confidence": 0.95},   # artifact: below voiced min Hz
+                {"f0_hz": 1500.0, "confidence": 0.95}, # artifact: above voiced max Hz
+                {"f0_hz": 330.0, "confidence": 0.2},   # low confidence, should be unvoiced
+                {"f0_hz": 440.0, "confidence": 0.6},   # valid voiced frame
+            ]
+        },
+        "keys": {"trajectory": []},
+    }
+
+    summary = _build_summary(result, duration_seconds=1.0)
+
+    assert summary["f0_min"] == pytest.approx(220.0)
+    assert summary["f0_max"] == pytest.approx(440.0)
+    assert summary["f0_min_note"] == "A3"
+    assert summary["f0_max_note"] == "A4"
+    # Confidence should only reflect voiced-qualified frames (0.8 and 0.6).
+    assert summary["confidence"] == pytest.approx(0.7)
+
+
+def test_is_voiced_frame_applies_bounded_frequency_and_min_salience() -> None:
+    from api.routes import _is_voiced_frame
+
+    assert _is_voiced_frame({"f0_hz": 220.0, "confidence": 0.9}) is True
+    assert _is_voiced_frame({"f0_hz": 70.0, "confidence": 0.9}) is False
+    assert _is_voiced_frame({"f0_hz": 1500.0, "confidence": 0.9}) is False
+    assert _is_voiced_frame({"f0_hz": 330.0, "confidence": 0.2}) is False
+
+
 def test_build_note_events_splits_contiguous_frames_on_note_transitions() -> None:
     from api.routes import _build_note_events
 

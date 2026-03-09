@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, List, Optional
 
@@ -18,6 +19,8 @@ logger = logging.getLogger(__name__)
 _NOTE_GROUPING_SEMITONE_TOLERANCE: float = 2.0
 # Minimum duration (seconds) for a run to be considered a note event.
 _MIN_NOTE_DURATION_S: float = 0.05
+_VOICED_MIN_HZ: float = float(os.getenv("TESSITURE_VOICED_MIN_HZ", "80.0"))
+_VOICED_MAX_HZ: float = float(os.getenv("TESSITURE_VOICED_MAX_HZ", "1200.0"))
 
 
 @dataclass(frozen=True)
@@ -138,7 +141,7 @@ def _build_aligned_pairs_from_chunks(chunk_results: List[Dict[str, Any]]) -> Lis
             ref_f0_f = float(ref_f0)
         except (TypeError, ValueError):
             continue
-        if user_f0_f <= 20.0 or ref_f0_f <= 20.0:
+        if not _is_voiced_f0(user_f0_f) or not _is_voiced_f0(ref_f0_f):
             continue
 
         pairs.append(
@@ -277,9 +280,10 @@ def session_report_to_dict(report: SessionReport) -> Dict[str, Any]:
 
 
 def _is_voiced_f0(f0: Any) -> bool:
-    """Return True if *f0* represents a valid voiced frequency (> 20 Hz)."""
+    """Return True if *f0* is finite and inside the configured voiced-frequency band."""
     try:
-        return float(f0) > 20.0
+        f0_f = float(f0)
+        return math.isfinite(f0_f) and _VOICED_MIN_HZ <= f0_f <= _VOICED_MAX_HZ
     except (TypeError, ValueError):
         return False
 

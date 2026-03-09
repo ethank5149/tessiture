@@ -6,12 +6,17 @@ Example:
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
 from analysis.dsp.peak_detection import HarmonicFrame
+
+_DEFAULT_VOICED_SALIENCE_THRESHOLD: float = float(os.getenv("TESSITURE_VOICED_MIN_SALIENCE", "0.3"))
+_DEFAULT_VOICED_MIN_F0_HZ: float = float(os.getenv("TESSITURE_VOICED_MIN_HZ", "80.0"))
+_DEFAULT_VOICED_MAX_F0_HZ: float = float(os.getenv("TESSITURE_VOICED_MAX_HZ", "1200.0"))
 
 
 @dataclass
@@ -101,9 +106,9 @@ def _continuity_score(prev_f0: float, f0: float) -> float:
 
 def compute_voicing_mask(
     pitch_frames: List[PitchFrame],
-    salience_threshold: float = 0.15,
-    min_f0_hz: float = 60.0,
-    max_f0_hz: float = 1600.0,
+    salience_threshold: float = _DEFAULT_VOICED_SALIENCE_THRESHOLD,
+    min_f0_hz: float = _DEFAULT_VOICED_MIN_F0_HZ,
+    max_f0_hz: float = _DEFAULT_VOICED_MAX_F0_HZ,
 ) -> List[bool]:
     """Determine which pitch frames represent voiced segments.
 

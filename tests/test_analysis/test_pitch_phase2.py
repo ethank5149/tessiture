@@ -2,7 +2,7 @@ import numpy as np
 
 from analysis.dsp.peak_detection import HarmonicFrame, detect_harmonics
 from analysis.dsp.stft import compute_stft
-from analysis.pitch.estimator import estimate_pitch_frames
+from analysis.pitch.estimator import PitchFrame, compute_voicing_mask, estimate_pitch_frames
 from analysis.pitch.midi_converter import build_midi_frames, convert_f0_to_midi
 from analysis.pitch.path_optimizer import optimize_lead_voice
 
@@ -125,3 +125,17 @@ def test_build_midi_frames_includes_uncertainty_and_cents() -> None:
     assert len(frames) == f0_hz.size, "Expected one MIDI frame per input frequency."
     assert frames[0].midi_uncertainty > 0.0, "Expected midi uncertainty propagated to frames."
     assert abs(frames[0].cents_deviation) < 1e-3, "Expected near-zero cents deviation for 440 Hz (A4)."
+
+
+def test_compute_voicing_mask_defaults_filter_artifacts_and_keep_human_voicing() -> None:
+    frames = [
+        PitchFrame(time_index=0, f0_hz=220.0, salience=0.8, components={}),  # in range, confident
+        PitchFrame(time_index=1, f0_hz=65.0, salience=0.9, components={}),   # below min voiced Hz
+        PitchFrame(time_index=2, f0_hz=1500.0, salience=0.9, components={}), # above max voiced Hz
+        PitchFrame(time_index=3, f0_hz=330.0, salience=0.2, components={}),  # in range but low salience
+        PitchFrame(time_index=4, f0_hz=440.0, salience=0.35, components={}), # in range, confident
+    ]
+
+    voiced = compute_voicing_mask(frames)
+
+    assert voiced == [True, False, False, False, True]

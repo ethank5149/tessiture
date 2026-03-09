@@ -123,9 +123,9 @@ EXAMPLE_IMAGE_EXTENSIONS: Set[str] = {".jpg", ".jpeg", ".png", ".webp"}
 
 # Voiced-frame filter thresholds — aligned with compute_voicing_mask defaults.
 # Frames outside these bounds are noise/artifact detections, not genuine pitch.
-_VOICED_MIN_HZ: float = 60.0
-_VOICED_MAX_HZ: float = 1600.0
-_VOICED_MIN_SALIENCE: float = 0.15
+_VOICED_MIN_HZ: float = float(os.getenv("TESSITURE_VOICED_MIN_HZ", "80.0"))
+_VOICED_MAX_HZ: float = float(os.getenv("TESSITURE_VOICED_MAX_HZ", "1200.0"))
+_VOICED_MIN_SALIENCE: float = float(os.getenv("TESSITURE_VOICED_MIN_SALIENCE", "0.3"))
 
 # Vocal separation configuration
 _VOCAL_SEPARATION_MODE: str = os.getenv("TESSITURE_VOCAL_SEPARATION", "auto").lower()
@@ -525,48 +525,6 @@ def _build_metric_inference(
             payload["estimate_note"] = None
         payload["confidence_interval"]["low_note"] = None
         payload["confidence_interval"]["high_note"] = None
-        payload["null_hypothesis"]["value_note"] = _pitch_value_to_note_name(null_value, unit)
-        return payload
-
-    estimate = float(reducer(values))
-
-    if values.size == 1:
-        replicates = np.asarray([estimate], dtype=float)
-        low = estimate
-        high = estimate
-    else:
-        replicates = np.empty(int(bootstrap_samples), dtype=float)
-        for idx in range(int(bootstrap_samples)):
-            draw = values[rng.integers(0, values.size, size=values.size)]
-            replicates[idx] = float(reducer(draw))
-        alpha = (1.0 - float(confidence_level)) / 2.0
-        low = float(np.quantile(replicates, alpha))
-        high = float(np.quantile(replicates, 1.0 - alpha))
-
-    p_value = _bootstrap_two_sided_p_value(replicates, null_value)
-
-    payload = {
-        "estimate": estimate,
-        "confidence_interval": {
-            "level": confidence_level,
-            "low": low,
-            "high": high,
-        },
-        "p_value": p_value,
-        "null_hypothesis": {
-            "value": null_value,
-            "description": f"{metric_name} equals {null_value}",
-        },
-        "n_samples": int(values.size),
-        "unit": unit,
-        "method": "bootstrap_percentile",
-    }
-    if _unit_supports_pitch_note_names(unit):
-        payload["estimate_note"] = _pitch_value_to_note_name(estimate, unit)
-        low_value = _safe_float(payload["confidence_interval"]["low"])
-        high_value = _safe_float(payload["confidence_interval"]["high"])
-        payload["confidence_interval"]["low_note"] = _pitch_value_to_note_name(low_value, unit)
-        payload["confidence_interval"]["high_note"] = _pitch_value_to_note_name(high_value, unit)
         payload["null_hypothesis"]["value_note"] = _pitch_value_to_note_name(null_value, unit)
     return payload
 
@@ -1104,10 +1062,11 @@ def _summarize_phrases(phrase_result: Any) -> Dict[str, Any]:
 
 def _build_summary(result: Mapping[str, Any], duration_seconds: float) -> Dict[str, Any]:
     pitch_frames = result.get("pitch", {}).get("frames", []) if isinstance(result, Mapping) else []
-    voiced_f0 = [float(item["f0_hz"]) for item in pitch_frames if _is_voiced_frame(item)]
+    voiced_frames = [item for item in pitch_frames if _is_voiced_frame(item)]
+    voiced_f0 = [float(item["f0_hz"]) for item in voiced_frames]
     confidences = [
         float(item["confidence"])
-        for item in pitch_frames
+        for item in voiced_frames
         if _safe_float(item.get("confidence")) is not None
     ]
     mean_confidence = float(np.mean(confidences)) if confidences else 0.0
@@ -1348,20 +1307,25 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
     chord_timeline = _build_chord_timeline(note_events)
 
     report_progress(65, "advanced_analysis", "Running advanced musical and vocal analysis.")
-    voiced_midi = [float(frame["midi"]) for frame in pitch_frames if _safe_float(frame.get("midi"))]
-    voiced_f0 = [float(frame["f0_hz"]) for frame in pitch_frames if _is_voiced_frame(frame)]
+    voiced_pitch_frames = [frame for frame in pitch_frames if _is_voiced_frame(frame)]
+    voiced_midi = [
+        float(frame["midi"])
+        for frame in voiced_pitch_frames
+        if _safe_float(frame.get("midi")) is not None
+    ]
+    voiced_f0 = [float(frame["f0_hz"]) for frame in voiced_pitch_frames]
     pitch_errors = [
         float(frame["cents"]) for frame in pitch_frames if _safe_float(frame.get("cents")) is not None
     ]
     frame_confidences = [
         float(frame["confidence"])
-        for frame in pitch_frames
-        if _safe_float(frame.get("midi")) is not None and _safe_float(frame.get("confidence")) is not None
+        for frame in voiced_pitch_frames
+        if _safe_float(frame.get("confidence")) is not None
     ]
     frame_uncertainties = [
         float(frame["uncertainty"])
-        for frame in pitch_frames
-        if _safe_float(frame.get("midi")) is not None and _safe_float(frame.get("uncertainty")) is not None
+        for frame in voiced_pitch_frames
+        if _safe_float(frame.get("uncertainty")) is not None
     ]
     duration_seconds = float(mono_audio.shape[-1] / max(sample_rate, 1))
 

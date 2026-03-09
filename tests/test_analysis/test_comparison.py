@@ -18,7 +18,7 @@ from analysis.comparison.pitch_comparison import compare_pitch_tracks
 from analysis.comparison.rhythm_comparison import compare_note_timing
 from analysis.comparison.range_comparison import compare_vocal_ranges
 from analysis.comparison.formant_comparison import compare_formants
-from analysis.comparison.session_report import build_session_report, session_report_to_dict
+from analysis.comparison.session_report import _is_voiced_f0, build_session_report, session_report_to_dict
 
 
 # ---------------------------------------------------------------------------
@@ -592,13 +592,13 @@ class TestSessionReport:
             "No chunks → pitch comparison should report 0 voiced frames"
 
     def test_build_session_report_with_voiced_chunks(self):
-        """5 chunk_results with valid user_f0_hz → pitched comparison metrics computed."""
+        """5 chunk_results with in-range voiced user_f0_hz → pitch comparison metrics computed."""
         kwargs = self._make_base_kwargs()
         chunks = [make_chunk_result(i * 0.1) for i in range(5)]  # 5 chunks at 440Hz
         report = build_session_report(chunk_results=chunks, **kwargs)
 
         assert report.total_chunks_processed == 5
-        assert report.voiced_chunks == 5, "All 5 chunks have valid f0 > 20Hz"
+        assert report.voiced_chunks == 5, "All 5 chunks have in-range voiced f0"
         # Pitch comparison should have been computed over the chunks
         assert isinstance(report.pitch_comparison, dict)
         assert "voiced_frame_count" in report.pitch_comparison
@@ -617,7 +617,7 @@ class TestSessionReport:
         report = build_session_report(chunk_results=chunks, **kwargs)
 
         assert report.total_chunks_processed == 4
-        assert report.voiced_chunks == 2, "Only 2 chunks have valid voiced f0 > 20Hz"
+        assert report.voiced_chunks == 2, "Only 2 chunks have in-range voiced f0"
 
     def test_session_report_to_dict(self):
         """session_report_to_dict returns a plain dict with no dataclass instances inside."""
@@ -662,3 +662,36 @@ class TestSessionReport:
         assert report.reference_key == "A major"
         assert report.session_started_at == "2024-01-01T00:00:00Z"
         assert report.session_duration_s == pytest.approx(60.0)
+
+    def test_is_voiced_f0_uses_bounded_frequency_policy(self):
+        assert _is_voiced_f0(220.0) is True
+        assert _is_voiced_f0(79.9) is False
+        assert _is_voiced_f0(1200.0) is True
+        assert _is_voiced_f0(1200.1) is False
+
+    def test_build_session_report_excludes_out_of_range_artifacts(self):
+        kwargs = self._make_base_kwargs()
+        chunks = [
+            make_chunk_result(0.0, user_f0_hz=70.0),
+            make_chunk_result(0.1, user_f0_hz=220.0),
+            make_chunk_result(0.2, user_f0_hz=1400.0),
+        ]
+
+        report = build_session_report(chunk_results=chunks, **kwargs)
+
+        assert report.total_chunks_processed == 3
+        assert report.voiced_chunks == 1
+        assert report.pitch_comparison["voiced_frame_count"] == 1
+
+    def test_build_session_report_keeps_in_range_voiced_frequencies(self):
+        kwargs = self._make_base_kwargs()
+        chunks = [
+            make_chunk_result(0.0, user_f0_hz=85.0),
+            make_chunk_result(0.1, user_f0_hz=1100.0),
+        ]
+
+        report = build_session_report(chunk_results=chunks, **kwargs)
+
+        assert report.total_chunks_processed == 2
+        assert report.voiced_chunks == 2
+        assert report.pitch_comparison["voiced_frame_count"] == 2
