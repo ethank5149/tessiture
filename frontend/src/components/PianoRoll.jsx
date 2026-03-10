@@ -55,75 +55,23 @@ function PianoRoll({ results }) {
   const frames = notes.length === 0 ? fallbackFrames(results) : [];
   const hasNotes = notes.length > 0;
   const hasFrames = frames.length > 0;
-
-  const width = 600;
-  const height = 240;
-  const yPadding = 16;
   const pitchValues = hasNotes
     ? notes.map((note) => note.pitch)
     : hasFrames
       ? frames.map((frame) => frame.pitch)
-      : [0, 1];
-  const minPitch = (hasNotes || hasFrames) ? Math.min(...pitchValues) : 0;
-  const maxPitch = (hasNotes || hasFrames) ? Math.max(...pitchValues) : 1;
-  const pitchRange = maxPitch - minPitch || 1;
+      : [];
 
-  const timeValues = hasNotes
-    ? notes.map((note) => note.end)
-    : hasFrames
-      ? frames.map((frame) => frame.time)
-      : [0, 1];
-  const maxTime = (hasNotes || hasFrames) ? Math.max(...timeValues, 0.001) : 1;
+  const summaryText = pitchValues.length
+    ? `Detected ${hasNotes ? `${notes.length} note events` : `${frames.length} pitch frames`} spanning ${Math.min(...pitchValues).toFixed(1)} to ${Math.max(...pitchValues).toFixed(1)}.`
+    : "No note or frame data is available in this payload.";
 
   return (
-    <section className="card chart">
-      <header className="card__header">
-        <h3 className="card__title">Piano roll</h3>
-        <p className="card__meta">Note-level pitch activity</p>
-      </header>
-      <div className="chart__body" role="img" aria-label="Piano roll visualization">
-        {(hasNotes || hasFrames) ? (
-          <svg className="chart__svg" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
-            <rect width={width} height={height} fill="transparent" />
-            {hasNotes
-              ? notes.map((note, index) => {
-                  const x = (note.start / maxTime) * width;
-                  const noteWidth = (note.duration / maxTime) * width;
-                  const y =
-                    height -
-                    yPadding -
-                    ((note.pitch - minPitch) / pitchRange) * (height - yPadding * 2);
-                  return (
-                    <rect
-                      key={`${note.start}-${index}`}
-                      x={x}
-                      y={y}
-                      width={Math.max(noteWidth, 2)}
-                      height={6}
-                      fill="currentColor"
-                      opacity="0.7"
-                    />
-                  );
-                })
-              : frames.map((frame, index) => {
-                  const x = (frame.time / maxTime) * width;
-                  const y =
-                    height -
-                    yPadding -
-                    ((frame.pitch - minPitch) / pitchRange) * (height - yPadding * 2);
-                  return (
-                    <circle key={`${frame.time}-${index}`} cx={x} cy={y} r={2} fill="currentColor" />
-                  );
-                })}
-          </svg>
-        ) : (
-          <p className="chart__placeholder">No note or frame data available in results.</p>
-        )}
-      </div>
-      <footer className="chart__footer">
-        <span>Pitch range: {minPitch.toFixed(1)}–{maxPitch.toFixed(1)}</span>
-        <span>{hasNotes ? "Notes" : "Frames"}</span>
-      </footer>
+    <section className="results-helper" aria-label="Pitch activity text summary">
+      <h3 className="results-helper__title">Pitch activity summary</h3>
+      <p className="results-helper__copy">{summaryText}</p>
+      <p className="results-helper__copy">
+        On-screen piano-roll graphics are disabled in analysis views; use exported PDF reports when detailed plots are needed.
+      </p>
     </section>
   );
 }

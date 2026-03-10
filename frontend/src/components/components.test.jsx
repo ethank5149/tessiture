@@ -137,14 +137,14 @@ describe("ExampleGallery", () => {
     );
 
     // Group header should show album name and artist
-    expect(screen.getByText("Demo Album")).toBeInTheDocument();
-    expect(screen.getByText("Demo Artist")).toBeInTheDocument();
+    expect(screen.getByText(RegExp(demoExample.album, "i"))).toBeInTheDocument();
+    expect(screen.getByText(RegExp(demoExample.artist, "i"))).toBeInTheDocument();
 
     // Expand the group by clicking the header
     await user.click(screen.getByRole("button", { name: /Demo Album/i }));
 
     // Track card should now be visible; aria-label no longer includes artist
-    await user.click(screen.getByRole("button", { name: "Select example track: Demo Example" }));
+    await user.click(screen.getByRole("button", { name: `Select example track: ${demoExample.display_name}` }));
 
     expect(onSelectExample).toHaveBeenCalledTimes(1);
     expect(onSelectExample).toHaveBeenCalledWith(demoExample);
@@ -471,7 +471,7 @@ describe("AnalysisResults", () => {
     expect(screen.queryByRole("heading", { name: "Analysis quality notes" })).not.toBeInTheDocument();
   });
 
-  it("renders the coaching trio with clear chart purposes and a populated 2D heatmap", () => {
+  it("renders plain-language guidance cards and no plot-like analysis visuals", () => {
     const results = {
       metadata: { duration_seconds: 12.3 },
       summary: {
@@ -479,13 +479,12 @@ describe("AnalysisResults", () => {
       },
       pitch: {
         frames: [
-          { time: 0.0, midi: 60, f0: 261.63, confidence: 0.6 },
-          { time: 0.5, midi: 62, f0: 293.66, confidence: 0.9 },
-          { time: 1.0, midi: 64, f0: 329.63, confidence: 0.8 },
+          { time: 0.0, f0: 220.0 },
+          { time: 1.0, f0: 440.0 },
         ],
       },
       tessitura: {
-        histogram: [0.3, 0.7, 0.5],
+        histogram: [0.2, 0.5, 0.3],
       },
     };
 
@@ -500,49 +499,41 @@ describe("AnalysisResults", () => {
       />
     );
 
-    expect(screen.getByText("Piano roll")).toBeInTheDocument();
-    expect(screen.getByText("Range usage: where your voice lived today")).toBeInTheDocument();
-    expect(screen.getByText("When and where your range work happened")).toBeInTheDocument();
-    expect(screen.getByText("Pitch control: stability and drift")).toBeInTheDocument();
-    expect(screen.getByText("Use these views as a quick practice plan: range balance, time hotspots, and pitch control.")).toBeInTheDocument();
-    expect(
-      screen.getByText("Question answered: Which parts of my usable range are undertrained right now?")
-    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Practice guidance" })).toBeInTheDocument();
+    expect(screen.getByText("What should I practice next?")).toBeInTheDocument();
+    expect(screen.getByText("Where did I spend most effort?")).toBeInTheDocument();
+    expect(screen.getByText("What one adjustment should I make next session?")).toBeInTheDocument();
     expect(
       screen.getByText(
-        "Question answered: Which moments and pitch bands should I isolate in the next repetition?"
+        "This on-screen analysis is text-only with no plots or graphs; use these plain-language coaching steps for next-session decisions. Detailed plots remain available only in PDF export."
       )
     ).toBeInTheDocument();
+
+    expect(screen.queryByRole("heading", { name: /piano roll/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/session distribution summary/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/time\s*[×x]\s*pitch heatmap/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/pitch curve/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Piano roll visualization")).not.toBeInTheDocument();
+
+    expect(screen.queryByText("Where in your range did you sing most?")).not.toBeInTheDocument();
+    expect(screen.queryByText("Where should you practice in the recording next?")).not.toBeInTheDocument();
+    expect(screen.queryByText("Is your pitch staying steady through the phrase?")).not.toBeInTheDocument();
     expect(
-      screen.getByText("Question answered: Is my pitch staying steady, drifting, or jumping between notes?")
-    ).toBeInTheDocument();
-
-    expect(screen.getByText("Most-used zone")).toBeInTheDocument();
-    expect(screen.getByText("Least-used zone")).toBeInTheDocument();
-    expect(screen.getByText("Potential overreach")).toBeInTheDocument();
-    expect(screen.getByText(/Busiest window:/)).toBeInTheDocument();
-    expect(screen.getByText(/High-range load:/)).toBeInTheDocument();
-    expect(screen.getByText(/Alternate high drills with easy mid-range resets\./)).toBeInTheDocument();
+      screen.queryByLabelText("Range usage split across lower, middle, and upper range")
+    ).not.toBeInTheDocument();
     expect(
-      screen.getByText(
-        "Frequent large pitch jumps detected. Practice slow glides and interval accuracy before tempo runs."
-      )
-    ).toBeInTheDocument();
-    expect(screen.getByText("Stability")).toBeInTheDocument();
-    expect(screen.getByText("Drift")).toBeInTheDocument();
-    expect(screen.getByText("Control band")).toBeInTheDocument();
+      screen.queryByLabelText("Singing time split across start, middle, and end of the recording")
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("Average pitch at start, middle, and end of the phrase")
+    ).not.toBeInTheDocument();
 
-    const heatmap = screen.getByLabelText("Time and pitch usage map across the session");
-    expect(heatmap).toBeInTheDocument();
-    const heatmapSvg = heatmap.querySelector("svg");
-    expect(heatmapSvg).not.toBeNull();
-    expect(heatmapSvg.querySelectorAll("rect").length).toBeGreaterThan(1);
-
-    expect(screen.getByText("Timeline: 0.0s–1.0s")).toBeInTheDocument();
-    expect(screen.getByText("Observed pitch: C4 (60.0 MIDI) to E4 (64.0 MIDI)")).toBeInTheDocument();
+    expect(screen.getByText(/Most effort was in the .* of the recording/)).toBeInTheDocument();
+    expect(screen.getByText(/Detected pitch span in this take:/)).toBeInTheDocument();
+    expect(screen.getByText(/Use one small adjustment next time|Reduce tempo by about 10%/)).toBeInTheDocument();
   });
 
-  it("keeps time/pitch and range guidance usable when only one pitch frame is present", () => {
+  it("keeps guidance cards usable when only one pitch frame is present", () => {
     const results = {
       summary: {
         duration_seconds: 8.0,
@@ -566,14 +557,14 @@ describe("AnalysisResults", () => {
       />
     );
 
-    expect(screen.getByText("Range usage: where your voice lived today")).toBeInTheDocument();
-    expect(screen.getByText("Most-used zone")).toBeInTheDocument();
-    expect(screen.getByText(/Busiest window:/)).toBeInTheDocument();
-    expect(screen.getByText("Not enough pitch frames to evaluate pitch control yet.")).toBeInTheDocument();
-    expect(screen.queryByText("Stability")).not.toBeInTheDocument();
+    expect(screen.getByText("What should I practice next?")).toBeInTheDocument();
+    expect(screen.getByText("Where did I spend most effort?")).toBeInTheDocument();
+    expect(screen.getByText("What one adjustment should I make next session?")).toBeInTheDocument();
+    expect(screen.getByText(/Start with the start of the recording/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Average pitch at start, middle, and end of the phrase")).not.toBeInTheDocument();
   });
 
-  it("shows a 2D heatmap placeholder when no pitch-frame data is available", () => {
+  it("uses range-derived plain-language effort guidance when pitch-frame timing is unavailable", () => {
     const results = {
       summary: {
         duration_seconds: 8.0,
@@ -594,11 +585,14 @@ describe("AnalysisResults", () => {
       />
     );
 
-    expect(screen.getByText("Range usage: where your voice lived today")).toBeInTheDocument();
-    expect(screen.getByText("No time-aligned pitch frames are available for this practice map.")).toBeInTheDocument();
+    expect(screen.getByText("What should I practice next?")).toBeInTheDocument();
+    expect(screen.getByText("Where did I spend most effort?")).toBeInTheDocument();
+    expect(screen.getByText("What one adjustment should I make next session?")).toBeInTheDocument();
+    expect(screen.getByText(/Most effort was in your upper range/)).toBeInTheDocument();
+    expect(screen.queryByText("No time-aligned pitch data is available for this recording.")).not.toBeInTheDocument();
   });
 
-  it("renders graceful fallbacks for sparse visual data", () => {
+  it("renders graceful sparse-data guidance copy", () => {
     const results = {
       summary: {
         duration_seconds: 6.0,
@@ -618,14 +612,35 @@ describe("AnalysisResults", () => {
 
     expect(
       screen.getByText(
-        "Analysis completed, but the file did not contain enough detectable pitch activity to populate detailed charts."
+        "Analysis completed, but the file did not contain enough detectable pitch activity for detailed personalized guidance."
       )
     ).toBeInTheDocument();
-    expect(screen.getByText("No range-usage histogram is available for this session.")).toBeInTheDocument();
-    expect(screen.getByText("No time-aligned pitch frames are available for this practice map.")).toBeInTheDocument();
-    expect(screen.getByText("Not enough pitch frames to evaluate pitch control yet.")).toBeInTheDocument();
-    expect(screen.queryByText(/Busiest window:/)).not.toBeInTheDocument();
-    expect(screen.queryByText("Most-used zone")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Practice guidance" })).toBeInTheDocument();
+    expect(screen.getByText("What should I practice next?")).toBeInTheDocument();
+    expect(screen.getByText("Where did I spend most effort?")).toBeInTheDocument();
+    expect(screen.getByText("What one adjustment should I make next session?")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /piano roll/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/session distribution summary/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/time\s*[×x]\s*pitch heatmap/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/pitch curve/i)).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "We could not detect enough pitch activity to map effort by time or range in this recording."
+      )
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Practice the section that felt hardest at a slower tempo (about 70%) and repeat it three times."
+      )
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Use one small adjustment next time: take a full breath before each phrase and keep volume comfortable."
+      )
+    ).toBeInTheDocument();
+    expect(screen.queryByText("No range-usage data is available for this session.")).not.toBeInTheDocument();
+    expect(screen.queryByText("No time-aligned pitch data is available for this recording.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Not enough pitch data is available to show a trend yet.")).not.toBeInTheDocument();
   });
 
   it("renders a dedicated reference calibration tab and allows selecting it", async () => {
@@ -679,7 +694,7 @@ describe("AnalysisResults", () => {
 
     await user.click(calibrationTab);
 
-    const referenceSamplesItem = screen.getByText("Reference samples (N)").closest(".summary-list__item");
+    const sampleCountItem = screen.getByText("Reference samples (N)").closest(".summary-list__item");
 
     expect(calibrationTab).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("heading", { name: "Reference calibration summary" })).toBeInTheDocument();
@@ -690,8 +705,8 @@ describe("AnalysisResults", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("100.00 to 300.00")).toBeInTheDocument();
     expect(screen.getByText("-0.20")).toBeInTheDocument();
-    expect(referenceSamplesItem).not.toBeNull();
-    expect(within(referenceSamplesItem).getByText("5")).toBeInTheDocument();
+    expect(sampleCountItem).not.toBeNull();
+    expect(within(sampleCountItem).getByText("5")).toBeInTheDocument();
   });
 
   it("renders reference calibration values from analysis.calibration.summary payload shape", async () => {
@@ -733,17 +748,45 @@ describe("AnalysisResults", () => {
     expect(within(voicedFramesItem).getByText("9")).toBeInTheDocument();
   });
 
-  it("handles partial calibration summary values gracefully", async () => {
-    const user = userEvent.setup();
+  it("renders evidence-linked diagnostics with timestamp fallback when no audio source is provided", () => {
     const results = {
       summary: {
-        duration_seconds: 7.0,
+        duration_seconds: 12.0,
       },
-      calibration: {
-        summary: {
-          reference_sample_count: 2,
-          voiced_frame_count: null,
-        },
+      evidence: {
+        events: [
+          {
+            id: "lowest_voiced_note",
+            label: "Lowest voiced note",
+            timestamp_s: 3.2,
+            timestamp_label: "00:03",
+            note: "A3",
+          },
+          {
+            id: "highest_voiced_note",
+            label: "Highest voiced note",
+            timestamp_s: 8.4,
+            timestamp_label: "00:08",
+            note: "A4",
+          },
+          {
+            id: "largest_pitch_jump",
+            label: "Largest pitch jump",
+            timestamp_s: 8.4,
+            timestamp_label: "00:08",
+          },
+        ],
+        lowest_voiced_note_ref: "lowest_voiced_note",
+        highest_voiced_note_ref: "highest_voiced_note",
+        guidance: [
+          {
+            id: "guidance_large_transition_control",
+            claim: "One transition shows the largest pitch jump.",
+            why: "The largest jump is around 00:08.",
+            action: "Loop that transition slowly before singing full tempo.",
+            evidence_refs: ["largest_pitch_jump"],
+          },
+        ],
       },
     };
 
@@ -758,21 +801,99 @@ describe("AnalysisResults", () => {
       />
     );
 
-    await user.click(screen.getByRole("tab", { name: "Reference calibration" }));
+    expect(screen.getByRole("heading", { name: "Evidence references" })).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Audio playback is unavailable for this result. Use timestamp references to locate moments manually."
+      )
+    ).toBeInTheDocument();
+    expect(screen.getByText("A3 at 00:03")).toBeInTheDocument();
+    expect(screen.getByText("A4 at 00:08")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Jump to 00:03" })[0]).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Listen snippet" })).not.toBeInTheDocument();
 
-    const sampleCountItem = screen.getByText("Reference samples (N)").closest(".summary-list__item");
-    const frequencyRangeItem = screen
-      .getByText("Reference frequency range (Hz)")
-      .closest(".summary-list__item");
-    const voicedFramesItem = screen.getByText("Voiced frame count").closest(".summary-list__item");
+    expect(screen.getByText(/Claim:/)).toBeInTheDocument();
+    expect(screen.getByText(/Why:/)).toBeInTheDocument();
+    expect(screen.getByText(/Action:/)).toBeInTheDocument();
+    expect(screen.getByText("Largest pitch jump (00:08)")).toBeInTheDocument();
 
-    expect(sampleCountItem).not.toBeNull();
-    expect(frequencyRangeItem).not.toBeNull();
-    expect(voicedFramesItem).not.toBeNull();
+    expect(screen.queryByRole("heading", { name: /piano roll/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/time\s*[×x]\s*pitch heatmap/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/pitch curve/i)).not.toBeInTheDocument();
+  });
 
-    expect(within(sampleCountItem).getByText("2")).toBeInTheDocument();
-    expect(within(frequencyRangeItem).getByText("—")).toBeInTheDocument();
-    expect(within(voicedFramesItem).getByText("—")).toBeInTheDocument();
+  it("supports jump and listen controls when an audio source is available", async () => {
+    vi.useFakeTimers();
+    const playSpy = vi
+      .spyOn(HTMLMediaElement.prototype, "play")
+      .mockImplementation(() => Promise.resolve());
+    const pauseSpy = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+
+    const results = {
+      summary: {
+        duration_seconds: 12.0,
+      },
+      evidence: {
+        events: [
+          {
+            id: "lowest_voiced_note",
+            label: "Lowest voiced note",
+            timestamp_s: 2.0,
+            timestamp_label: "00:02",
+            note: "A3",
+          },
+          {
+            id: "highest_voiced_note",
+            label: "Highest vocal note",
+            timestamp_s: 6.0,
+            timestamp_label: "00:06",
+            note: "A4",
+          },
+        ],
+        lowest_voiced_note_ref: "lowest_voiced_note",
+        highest_voiced_note_ref: "highest_voiced_note",
+        guidance: [],
+      },
+      pitch: { frames: [{ time: 0.0, f0: 220.0 }] },
+      tessitura: { histogram: [0.4, 0.6] },
+    };
+
+    render(
+      <AnalysisResults
+        results={results}
+        status={{ status: "completed" }}
+        isFetchingResults={false}
+        onDownloadCsv={vi.fn()}
+        onDownloadJson={vi.fn()}
+        onDownloadPdf={vi.fn()}
+        audioSourceUrl="/examples/demo.opus"
+        audioSourceLabel="Demo Example"
+      />
+    );
+
+    const audio = screen.getByLabelText("Evidence playback source: Demo Example");
+    expect(audio).toHaveAttribute("src", expect.stringContaining("/examples/demo.opus"));
+
+    const lowRow = screen.getByText("Lowest voiced note").closest(".evidence-row");
+    expect(lowRow).not.toBeNull();
+
+    const jumpButton = within(lowRow).getByRole("button", { name: "Jump to 00:02" });
+    const listenButton = within(lowRow).getByRole("button", { name: "Listen snippet" });
+
+    fireEvent.click(jumpButton);
+    expect(audio.currentTime).toBeCloseTo(2.0, 1);
+
+    fireEvent.click(listenButton);
+    expect(audio.currentTime).toBeCloseTo(0.5, 1);
+    expect(playSpy).toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    expect(pauseSpy).toHaveBeenCalled();
+
+    playSpy.mockRestore();
+    pauseSpy.mockRestore();
   });
 });
 
@@ -854,6 +975,75 @@ describe("App example gallery wiring", () => {
     await waitFor(() => {
       expect(screen.getByRole("heading", { name: "Analysis results" })).toBeInTheDocument();
     });
+
+    expect(screen.getByRole("heading", { name: "Practice guidance" })).toBeInTheDocument();
+    expect(screen.getByText(/text-only with no plots or graphs/i)).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /piano roll/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/session distribution summary/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/time\s*[×x]\s*pitch heatmap/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/pitch curve/i)).not.toBeInTheDocument();
+  });
+
+  it("wires example analysis audio URL into evidence playback when source metadata is example", async () => {
+    const user = userEvent.setup();
+
+    fetchExampleTracks.mockResolvedValue([
+      {
+        id: "demo-1",
+        display_name: "Demo Example",
+        artist: "Demo Artist",
+      },
+    ]);
+    submitExampleAnalysisJob.mockResolvedValue({ job_id: "job-demo-audio" });
+    fetchJobStatus.mockResolvedValue({ status: "completed" });
+    fetchJobResults.mockResolvedValue({
+      metadata: {
+        source: "example",
+        input_type: "example",
+        filename: "Demo Example",
+        original_filename: "demo.opus",
+      },
+      summary: {
+        duration_seconds: 10,
+      },
+      evidence: {
+        events: [
+          {
+            id: "lowest_voiced_note",
+            label: "Lowest voiced note",
+            timestamp_s: 2.0,
+            timestamp_label: "00:02",
+            note: "A3",
+          },
+          {
+            id: "highest_voiced_note",
+            label: "Highest voiced note",
+            timestamp_s: 6.0,
+            timestamp_label: "00:06",
+            note: "A4",
+          },
+        ],
+        lowest_voiced_note_ref: "lowest_voiced_note",
+        highest_voiced_note_ref: "highest_voiced_note",
+        guidance: [],
+      },
+      pitch: { frames: [{ time: 0.0, f0: 220.0 }] },
+      tessitura: { histogram: [0.4, 0.6] },
+    });
+
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /Example Library/i }));
+    await user.click(await screen.findByRole("button", { name: /Demo Artist/i }));
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Select example track: Demo Example",
+      })
+    );
+    await user.click(await screen.findByRole("button", { name: /Full analysis/i }));
+
+    const evidenceAudio = await screen.findByLabelText("Evidence playback source: Demo Example");
+    expect(evidenceAudio).toHaveAttribute("src", expect.stringContaining("/examples/demo.opus"));
   });
 
   it("stops polling after first status failure", async () => {
@@ -1147,6 +1337,22 @@ describe("ComparisonResults", () => {
     );
 
     expect(screen.getByRole("heading", { name: "Session Complete" })).toBeInTheDocument();
+  });
+
+  it("keeps comparison report text-first with no forbidden analysis visuals", () => {
+    render(
+      <ComparisonResults
+        sessionReport={mockSessionReport}
+        onClose={vi.fn()}
+        onStartNew={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText(/Mean pitch error of 0\.0 cents/i)).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /piano roll/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/session distribution summary/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/time\s*[×x]\s*pitch heatmap/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/pitch curve/i)).not.toBeInTheDocument();
   });
 
   it("calls onClose when close button clicked", async () => {

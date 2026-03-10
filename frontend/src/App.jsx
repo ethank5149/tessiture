@@ -386,6 +386,35 @@ function App() {
   const hasJobInProgress = isSubmitting || isPolling || isFetchingResults;
   const showResults = results !== null || error !== null || isSubmitting || isPolling || isFetchingResults;
 
+  const analysisAudioSourceUrl = (() => {
+    if (!results || typeof results !== "object") {
+      return null;
+    }
+
+    const source = String(results?.metadata?.source ?? results?.metadata?.input_type ?? "").toLowerCase();
+    if (source !== "example") {
+      return null;
+    }
+
+    const originalFilename =
+      typeof results?.metadata?.original_filename === "string" && results.metadata.original_filename.trim()
+        ? results.metadata.original_filename.trim()
+        : null;
+
+    if (!originalFilename) {
+      return null;
+    }
+
+    return `/examples/${encodeURIComponent(originalFilename)}`;
+  })();
+
+  const analysisAudioSourceLabel =
+    analysisAudioSourceUrl && typeof results?.metadata?.filename === "string" && results.metadata.filename.trim()
+      ? results.metadata.filename.trim()
+      : analysisAudioSourceUrl
+        ? "Example track"
+        : null;
+
   // Whether the results/status region should be shown (Step 3)
   const showStep3 =
     showResults ||
@@ -606,6 +635,8 @@ function App() {
               onDownloadCsv={() => downloadResults("csv")}
               onDownloadJson={() => downloadResults("json")}
               onDownloadPdf={() => downloadResults("pdf")}
+              audioSourceUrl={analysisAudioSourceUrl}
+              audioSourceLabel={analysisAudioSourceLabel}
             />
             <div className="step-panel__actions">
               <button type="button" className="button" onClick={resetAll}>

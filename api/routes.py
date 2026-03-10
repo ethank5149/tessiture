@@ -655,6 +655,33 @@ def _build_inferential_statistics(
         ),
     }
 
+    # Add note-name annotations for pitch-unit metrics (Hz, MIDI).
+    for payload in metrics.values():
+        if not isinstance(payload, Mapping):
+            continue
+        unit = payload.get("unit")
+        if not _unit_supports_pitch_note_names(unit):
+            continue
+
+        estimate_note = _pitch_value_to_note_name(payload.get("estimate"), unit)
+        if estimate_note is not None:
+            payload["estimate_note"] = estimate_note
+
+        confidence_interval = payload.get("confidence_interval")
+        if isinstance(confidence_interval, Mapping):
+            low_note = _pitch_value_to_note_name(confidence_interval.get("low"), unit)
+            high_note = _pitch_value_to_note_name(confidence_interval.get("high"), unit)
+            if low_note is not None:
+                confidence_interval["low_note"] = low_note
+            if high_note is not None:
+                confidence_interval["high_note"] = high_note
+
+        null_hypothesis = payload.get("null_hypothesis")
+        if isinstance(null_hypothesis, Mapping):
+            value_note = _pitch_value_to_note_name(null_hypothesis.get("value"), unit)
+            if value_note is not None:
+                null_hypothesis["value_note"] = value_note
+
     for metric_name, payload in metrics.items():
         ci = payload.get("confidence_interval") if isinstance(payload, Mapping) else None
         logger.info(
@@ -665,7 +692,7 @@ def _build_inferential_statistics(
             ci.get("low") if isinstance(ci, Mapping) else None,
             ci.get("high") if isinstance(ci, Mapping) else None,
             payload.get("p_value") if isinstance(payload, Mapping) else None,
-            payload.get("n_sample") if isinstance(payload, Mapping) else None,
+            payload.get("n_samples") if isinstance(payload, Mapping) else None,
         )
 
     return {
@@ -1003,6 +1030,201 @@ def _build_note_events(frames: Sequence[Mapping[str, Any]]) -> List[Dict[str, An
         _close_event(len(frames) - 1)
 
     return events
+
+
+def _format_timestamp_label(seconds: Any) -> str:
+    """Format seconds as MM:SS timestamp label."""
+    timestamp = _safe_float(seconds)
+    if timestamp is None or timestamp < 0.0:
+        return "00:00"
+    rounded_seconds = int(float(np.floor(float(timestamp))))
+    minutes = rounded_seconds // 60
+    remainder = rounded_seconds % 60
+    return f"{minutes:02d}:{remainder:02d}"
+
+
+def _build_evidence_payload(
+    pitch_frames: Sequence[Mapping[str, Any]],
+    *,
+    note_events: Sequence[Mapping[str, Any]],
+    duration_seconds: float,
+) -> Dict[str, Any]:
+    """Build additive evidence payload with low/high note references and guidance items."""
+    evidence: Dict[str, Any] = {
+        "events": [],
+        "guidance": [],
+        "lowest_voiced_note_ref": None,
+        "highest_voiced_note_ref": None,
+        "note_event_count": int(len(note_events)),
+    }
+
+    voiced_frames_data: List[Dict[str, float]] = []
+    for idx, frame in enumerate(pitch_frames):
+        if not isinstance(frame, Mapping) or not _is_voiced_frame(frame):
+            continue
+
+        time_s = _safe_float(frame.get("time"))
+        if time_s is None:
+            time_s = float(idx)
+
+        midi_value = _safe_float(frame.get("midi"))
+        f0_hz = _safe_float(frame.get("f0_hz") or frame.get("f0"))
+        if midi_value is None and f0_hz is not None and f0_hz > 0.0:
+            midi_value = 69.0 + 12.0 * float(np.log2(f0_hz / 440.0))
+        if midi_value is None:
+            continue
+
+        voiced_frames_data.append(
+            {
+                "time": float(max(time_s, 0.0)),
+                "midi": float(midi_value),
+                "f0_hz": float(f0_hz) if f0_hz is not None else 0.0,
+                "confidence": float(_safe_float(frame.get("confidence")) or 0.0),
+            }
+        )
+
+    if not voiced_frames_data:
+        return evidence
+
+    appended_events: List[Dict[str, Any]] = []
+
+    def _add_event(event_id: str, label: str, timestamp_s: float, **extra: Any) -> Dict[str, Any]:
+        safe_timestamp = float(max(_safe_float(timestamp_s) or 0.0, 0.0))
+        payload: Dict[str, Any] = {
+            "id": event_id,
+            "label": label,
+            "timestamp_s": safe_timestamp,
+            "timestamp_label": _format_timestamp_label(safe_timestamp),
+        }
+        payload.update(extra)
+        appended_events.append(payload)
+        return payload
+
+    lowest_frame = min(voiced_frames_data, key=lambda f: f["midi"])
+    highest_frame = max(voiced_frames_data, key=lambda f: f["midi"])
+
+    lowest_event = _add_event(
+        "lowest_voiced_note",
+        "Lowest voiced note",
+        lowest_frame["time"],
+        note=_midi_to_note_name(lowest_frame["midi"]),
+        midi=lowest_frame["midi"],
+        f0_hz=lowest_frame["f0_hz"],
+        confidence=lowest_frame["confidence"],
+    )
+    highest_event = _add_event(
+        "highest_voiced_note",
+        "Highest voiced note",
+        highest_frame["time"],
+        note=_midi_to_note_name(highest_frame["midi"]),
+        midi=highest_frame["midi"],
+        f0_hz=highest_frame["f0_hz"],
+        confidence=highest_frame["confidence"],
+    )
+
+    evidence["lowest_voiced_note_ref"] = lowest_event["id"]
+    evidence["highest_voiced_note_ref"] = highest_event["id"]
+
+    safe_duration = _safe_float(duration_seconds)
+    if safe_duration is None or safe_duration <= 0.0:
+        safe_duration = max(f["time"] for f in voiced_frames_data)
+    safe_duration = max(float(safe_duration), 1e-6)
+
+    segment_labels = ("Start", "Middle", "End")
+    segment_stats: List[Dict[str, Any]] = [
+        {"label": lbl, "count": 0, "weight": 0.0, "first_time": None}
+        for lbl in segment_labels
+    ]
+    for vf in voiced_frames_data:
+        normalized = float(np.clip(vf["time"] / safe_duration, 0.0, 0.999999))
+        seg_idx = int(normalized * len(segment_labels))
+        seg_idx = min(seg_idx, len(segment_labels) - 1)
+        seg = segment_stats[seg_idx]
+        seg["count"] += 1
+        seg["weight"] += vf["confidence"] if vf["confidence"] > 0.0 else 1.0
+        if seg["first_time"] is None:
+            seg["first_time"] = vf["time"]
+
+    peak_segment = max(segment_stats, key=lambda s: (s["count"], s["weight"]))
+    peak_segment_event = _add_event(
+        "segment_peak_voiced_activity",
+        "Peak voiced activity segment",
+        float(peak_segment["first_time"] if peak_segment["first_time"] is not None else 0.0),
+        segment=peak_segment["label"],
+        voiced_frame_count=int(peak_segment["count"]),
+    )
+
+    largest_jump_event: Optional[Dict[str, Any]] = None
+    if len(voiced_frames_data) >= 2:
+        ordered_frames = sorted(voiced_frames_data, key=lambda f: f["time"])
+        best_jump: Optional[Dict[str, Any]] = None
+        for prev, curr in zip(ordered_frames, ordered_frames[1:]):
+            jump_midi = abs(curr["midi"] - prev["midi"])
+            if best_jump is None or jump_midi > float(best_jump["delta_midi"]):
+                best_jump = {
+                    "delta_midi": float(jump_midi),
+                    "start_s": float(prev["time"]),
+                    "end_s": float(curr["time"]),
+                    "from_note": _midi_to_note_name(prev["midi"]),
+                    "to_note": _midi_to_note_name(curr["midi"]),
+                }
+        if best_jump is not None:
+            largest_jump_event = _add_event(
+                "largest_pitch_jump",
+                "Largest pitch jump",
+                best_jump["end_s"],
+                start_s=best_jump["start_s"],
+                end_s=best_jump["end_s"],
+                delta_midi=best_jump["delta_midi"],
+                from_note=best_jump["from_note"],
+                to_note=best_jump["to_note"],
+            )
+
+    evidence["events"] = appended_events
+
+    event_by_id = {e["id"]: e for e in appended_events}
+
+    evidence["guidance"].append(
+        {
+            "id": "guidance_range_edges",
+            "claim": "Your lowest and highest voiced notes define the current edges of this take.",
+            "why": (
+                f"Lowest note {lowest_event.get('note')} appears near {lowest_event.get('timestamp_label')}, "
+                f"and highest note {highest_event.get('note')} appears near {highest_event.get('timestamp_label')}."
+            ),
+            "action": "Jump to each edge and practice smooth, relaxed transitions into and out of those notes.",
+            "evidence_refs": [lowest_event["id"], highest_event["id"]],
+        }
+    )
+
+    evidence["guidance"].append(
+        {
+            "id": "guidance_peak_segment",
+            "claim": "Most voiced activity is concentrated in one section of the recording.",
+            "why": (
+                f"The {peak_segment_event.get('segment', 'session')} segment contains the highest concentration "
+                "of voiced frames."
+            ),
+            "action": "Start focused practice in that segment, then repeat once after a short recovery breath.",
+            "evidence_refs": [peak_segment_event["id"]],
+        }
+    )
+
+    if largest_jump_event is not None:
+        evidence["guidance"].append(
+            {
+                "id": "guidance_large_transition_control",
+                "claim": "One transition has the largest pitch jump and needs extra control.",
+                "why": (
+                    f"A jump of about {float(largest_jump_event.get('delta_midi') or 0.0):.1f} MIDI steps occurs near "
+                    f"{largest_jump_event.get('timestamp_label')}."
+                ),
+                "action": "Loop this transition slowly before returning to full-tempo phrasing.",
+                "evidence_refs": [largest_jump_event["id"]],
+            }
+        )
+
+    return evidence
 
 
 def _build_chord_timeline(note_events: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
@@ -1475,6 +1697,11 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
     calibration_summary = _build_calibration_summary(
         reference_uncertainty,
     )
+    evidence_payload = _build_evidence_payload(
+        pitch_frames,
+        note_events=note_events,
+        duration_seconds=duration_seconds,
+    )
 
     metadata_payload: Dict[str, Any] = {
         "sample_rate": sample_rate,
@@ -1517,6 +1744,7 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
         "diagnostics": {
             "pitch_analysis_methods": pitch_method_diagnostics,
         },
+        "evidence": evidence_payload,
     }
     analysis_payload["summary"] = _build_summary(analysis_payload, duration_seconds=duration_seconds)
 

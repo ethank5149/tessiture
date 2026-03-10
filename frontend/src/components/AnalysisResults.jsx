@@ -1,8 +1,7 @@
-import { useEffect, useId, useMemo, useState } from "react";
-import PitchCurve from "./PitchCurve";
-import PianoRoll from "./PianoRoll";
-import TessituraHeatmap from "./TessituraHeatmap";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import ReportExporter from "./ReportExporter";
+
+const SESSION_SEGMENTS = ["Start", "Middle", "End"];
 
 const RESULTS_VIEWS = {
   analysis: "analysis",
@@ -13,37 +12,6 @@ const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", 
 
 const isPlainObject = (value) =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);
-
-const summarizeNumericSeries = (values) => {
-  const numericValues = values.filter((value) => Number.isFinite(value));
-  if (!numericValues.length) {
-    return { count: 0, min: null, max: null, mean: null };
-  }
-
-  const total = numericValues.reduce((sum, value) => sum + value, 0);
-  return {
-    count: numericValues.length,
-    min: Math.min(...numericValues),
-    max: Math.max(...numericValues),
-    mean: total / numericValues.length,
-  };
-};
-
-const computeQuantile = (values, percentile) => {
-  const numericValues = values.filter((value) => Number.isFinite(value));
-  if (!numericValues.length) {
-    return null;
-  }
-  const sorted = [...numericValues].sort((a, b) => a - b);
-  const position = Math.max(0, Math.min(sorted.length - 1, (sorted.length - 1) * percentile));
-  const lower = Math.floor(position);
-  const upper = Math.ceil(position);
-  if (lower === upper) {
-    return sorted[lower];
-  }
-  const weight = position - lower;
-  return sorted[lower] * (1 - weight) + sorted[upper] * weight;
-};
 
 const formatMidiNote = (midiValue) => {
   if (!Number.isFinite(midiValue)) {
@@ -150,11 +118,216 @@ const normalizeQualityWarnings = (warnings) => {
     .map((warning) => warning.trim());
 };
 
+const formatTimestampLabel = (seconds) => {
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value < 0) {
+    return "00:00";
+  }
+  const rounded = Math.floor(value);
+  const minutes = Math.floor(rounded / 60);
+  const remainder = rounded % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
+};
+
+const normalizeEvidencePayload = (evidence) => {
+  if (!evidence || typeof evidence !== "object") {
+    return {
+      events: [],
+      guidance: [],
+      lowest_voiced_note_ref: null,
+      highest_voiced_note_ref: null,
+    };
+  }
+
+  const events = Array.isArray(evidence.events)
+    ? evidence.events.filter((event) => event && typeof event === "object")
+    : [];
+
+  const guidance = Array.isArray(evidence.guidance)
+    ? evidence.guidance.filter((item) => item && typeof item === "object")
+    : [];
+
+  return {
+    events,
+    guidance,
+    lowest_voiced_note_ref:
+      typeof evidence.lowest_voiced_note_ref === "string" ? evidence.lowest_voiced_note_ref : null,
+    highest_voiced_note_ref:
+      typeof evidence.highest_voiced_note_ref === "string" ? evidence.highest_voiced_note_ref : null,
+  };
+};
+
 const hzToMidi = (hz) => {
   if (!Number.isFinite(hz) || hz <= 0) {
     return null;
   }
   return 69 + 12 * Math.log2(hz / 440);
+};
+
+const extractTessituraHistogramBins = (results) => {
+  const bins =
+    results?.tessitura?.histogram ??
+    results?.tessitura?.heatmap ??
+    results?.tessitura?.pdf?.density ??
+    results?.tessitura_histogram ??
+    results?.histogram ??
+    [];
+
+  if (!Array.isArray(bins)) {
+    return [];
+  }
+
+  return bins
+    .map((bin) => {
+      if (typeof bin === "number") {
+        return bin;
+      }
+      if (bin && typeof bin === "object") {
+        const numeric = Number(bin.value ?? bin.count ?? bin.intensity);
+        return Number.isFinite(numeric) ? numeric : null;
+      }
+      return null;
+    })
+    .filter((value) => Number.isFinite(value) && value >= 0);
+};
+
+const summarizeTimeEffort = (results) => {
+  const frames = extractPitchFramesForGuidance(results);
+  if (!frames.length) {
+    return null;
+  }
+
+  const minTime = Math.min(...frames.map((frame) => frame.time));
+  const maxTime = Math.max(...frames.map((frame) => frame.time));
+  const minMidi = Math.min(...frames.map((frame) => frame.midi));
+  const maxMidi = Math.max(...frames.map((frame) => frame.midi));
+
+  const timeSpan = Math.max(maxTime - minTime, 1e-6);
+  const totalWeight = frames.reduce((sum, frame) => sum + frame.weight, 0);
+
+  const segments = SESSION_SEGMENTS.map((label, index) => {
+    const start = index / SESSION_SEGMENTS.length;
+    const end = (index + 1) / SESSION_SEGMENTS.length;
+    const usage = frames.reduce((sum, frame) => {
+      const normalizedTime = Math.min(Math.max((frame.time - minTime) / timeSpan, 0), 1);
+      const inSegment =
+        index === SESSION_SEGMENTS.length - 1
+          ? normalizedTime >= start && normalizedTime <= end
+          : normalizedTime >= start && normalizedTime < end;
+      return sum + (inSegment ? frame.weight : 0);
+    }, 0);
+
+    return {
+      label,
+      usage,
+      ratio: totalWeight > 0 ? usage / totalWeight : 0,
+    };
+  });
+
+  const mostActiveSegment = segments.reduce((best, segment) =>
+    segment.usage > best.usage ? segment : best
+  , segments[0]);
+
+  return {
+    mostActiveSegment,
+    minMidi,
+    maxMidi,
+  };
+};
+
+const summarizeRangeEffort = (results) => {
+  const bins = extractTessituraHistogramBins(results);
+  if (!bins.length) {
+    return null;
+  }
+
+  const labels = ["lower range", "middle range", "upper range"];
+  const total = bins.reduce((sum, value) => sum + value, 0);
+  const bandSize = Math.ceil(bins.length / labels.length);
+
+  const bands = labels
+    .map((label, bandIndex) => {
+      const start = bandIndex * bandSize;
+      const end = Math.min(bins.length, start + bandSize);
+      const slice = bins.slice(start, end);
+      const usage = slice.reduce((sum, value) => sum + value, 0);
+      return {
+        label,
+        usage,
+        ratio: total > 0 ? usage / total : 0,
+      };
+    })
+    .filter((band) => band.usage > 0 || total === 0);
+
+  if (!bands.length) {
+    return null;
+  }
+
+  const mostUsedBand = bands.reduce((best, band) => (band.usage > best.usage ? band : best), bands[0]);
+  const leastUsedBand = bands.reduce((lowest, band) => (band.usage < lowest.usage ? band : lowest), bands[0]);
+  const upperBandRatio = bands.find((band) => band.label === "upper range")?.ratio ?? 0;
+
+  return {
+    mostUsedBand,
+    leastUsedBand,
+    upperBandRatio,
+  };
+};
+
+const summarizePitchControl = (results) => {
+  const frames = extractPitchFramesForGuidance(results);
+  const values = frames.map((frame) => frame.midi);
+  if (values.length < 2) {
+    return null;
+  }
+
+  const buckets = {
+    Start: [],
+    Middle: [],
+    End: [],
+  };
+
+  values.forEach((value, index) => {
+    const ratio = values.length <= 1 ? 0 : index / (values.length - 1);
+    if (ratio < 1 / 3) {
+      buckets.Start.push(value);
+    } else if (ratio < 2 / 3) {
+      buckets.Middle.push(value);
+    } else {
+      buckets.End.push(value);
+    }
+  });
+
+  const mean = (bucket) =>
+    bucket.length ? bucket.reduce((sum, value) => sum + value, 0) / bucket.length : null;
+
+  const startMean = mean(buckets.Start);
+  const endMean = mean(buckets.End);
+  const drift = Number.isFinite(startMean) && Number.isFinite(endMean) ? endMean - startMean : null;
+
+  const stepDiffs = values.slice(1).map((value, index) => Math.abs(value - values[index]));
+  const averageStep = stepDiffs.length
+    ? stepDiffs.reduce((sum, value) => sum + value, 0) / stepDiffs.length
+    : 0;
+
+  const trendLabel =
+    !Number.isFinite(drift) || Math.abs(drift) < 0.5
+      ? "steady"
+      : drift > 0
+        ? "rising"
+        : "falling";
+
+  return {
+    trendLabel,
+    averageStep,
+  };
+};
+
+const calculateSemitoneSpan = (minHz, maxHz) => {
+  if (!Number.isFinite(minHz) || !Number.isFinite(maxHz) || minHz <= 0 || maxHz <= 0 || maxHz < minHz) {
+    return null;
+  }
+  return 12 * Math.log2(maxHz / minHz);
 };
 
 function VocalSeparationStatus({ vocalSeparation }) {
@@ -194,7 +367,7 @@ function VocalSeparationStatus({ vocalSeparation }) {
   return null;
 }
 
-const extractPitchFramesForHeatmap = (results) => {
+const extractPitchFramesForGuidance = (results) => {
   const frames = results?.pitch?.frames ?? results?.pitch_frames ?? [];
   if (!Array.isArray(frames)) {
     return [];
@@ -211,7 +384,9 @@ const extractPitchFramesForHeatmap = (results) => {
       const rawHz = frame.f0_hz ?? frame.f0 ?? frame.frequency_hz ?? null;
 
       const time = Number(rawTime);
-      const midi = Number.isFinite(Number(rawMidi)) ? Number(rawMidi) : hzToMidi(Number(rawHz));
+      const parsedMidi = Number(rawMidi);
+      const hasRawMidi = rawMidi !== null && rawMidi !== undefined && rawMidi !== "";
+      const midi = hasRawMidi && Number.isFinite(parsedMidi) ? parsedMidi : hzToMidi(Number(rawHz));
       if (!Number.isFinite(time) || !Number.isFinite(midi)) {
         return null;
       }
@@ -224,197 +399,6 @@ const extractPitchFramesForHeatmap = (results) => {
     .filter(Boolean);
 };
 
-function TimePitchHeatmap({ results }) {
-  const heatmapData = useMemo(() => {
-    const frames = extractPitchFramesForHeatmap(results);
-    if (!frames.length) {
-      return null;
-    }
-
-    const minTime = Math.min(...frames.map((frame) => frame.time));
-    const maxTime = Math.max(...frames.map((frame) => frame.time));
-    const minMidi = Math.min(...frames.map((frame) => frame.midi));
-    const maxMidi = Math.max(...frames.map((frame) => frame.midi));
-
-    const timeSpan = Math.max(maxTime - minTime, 1e-6);
-    const pitchSpan = Math.max(maxMidi - minMidi, 1e-6);
-
-    const timeBins = Math.max(24, Math.min(120, Math.round(frames.length / 4)));
-    const pitchBins = Math.max(18, Math.min(72, Math.round(pitchSpan) + 6));
-
-    const matrix = Array.from({ length: pitchBins }, () => Array.from({ length: timeBins }, () => 0));
-
-    frames.forEach((frame) => {
-      const normalizedTime = Math.min(Math.max((frame.time - minTime) / timeSpan, 0), 1);
-      const normalizedPitch = Math.min(Math.max((frame.midi - minMidi) / pitchSpan, 0), 1);
-      const xBin = Math.min(timeBins - 1, Math.floor(normalizedTime * timeBins));
-      const yBinFromBottom = Math.min(pitchBins - 1, Math.floor(normalizedPitch * pitchBins));
-      const yBin = pitchBins - 1 - yBinFromBottom;
-      matrix[yBin][xBin] += frame.weight;
-    });
-
-    const values = matrix.flat();
-    const maxValue = Math.max(...values, 0);
-    const totalWeight = values.reduce((sum, value) => sum + value, 0);
-
-    const timeColumnTotals = Array.from({ length: timeBins }, (_, xIndex) =>
-      matrix.reduce((sum, row) => sum + row[xIndex], 0)
-    );
-    const busiestTimeColumnValue = Math.max(...timeColumnTotals, 0);
-    const busiestTimeColumnIndex = timeColumnTotals.indexOf(busiestTimeColumnValue);
-    const busiestTimeStart = (busiestTimeColumnIndex / timeBins) * timeSpan;
-    const busiestTimeEnd = ((busiestTimeColumnIndex + 1) / timeBins) * timeSpan;
-
-    const highBandThreshold = minMidi + pitchSpan * 0.75;
-    const highBandWeight = frames.reduce(
-      (sum, frame) => sum + (frame.midi >= highBandThreshold ? frame.weight : 0),
-      0
-    );
-    const highBandRatio = totalWeight > 0 ? highBandWeight / totalWeight : 0;
-
-    const midiValues = frames.map((frame) => frame.midi);
-    const midiQ25 = computeQuantile(midiValues, 0.25);
-    const midiQ75 = computeQuantile(midiValues, 0.75);
-    const focusedPitchBand =
-      Number.isFinite(midiQ25) && Number.isFinite(midiQ75) ? Math.max(midiQ75 - midiQ25, 0) : null;
-
-    const stepDiffs = frames.slice(1).map((frame, index) => Math.abs(frame.midi - frames[index].midi));
-    const jumpRatio = stepDiffs.length
-      ? stepDiffs.filter((difference) => Number.isFinite(difference) && difference >= 2).length /
-        stepDiffs.length
-      : 0;
-
-    return {
-      matrix,
-      maxValue,
-      minMidi,
-      maxMidi,
-      timeSpan,
-      timeBins,
-      pitchBins,
-      insights: {
-        busiestTimeStart,
-        busiestTimeEnd,
-        timeFocusRatio: totalWeight > 0 ? busiestTimeColumnValue / totalWeight : 0,
-        highBandRatio,
-        focusedPitchBand,
-        jumpRatio,
-      },
-    };
-  }, [results]);
-
-  const width = 600;
-  const height = 240;
-
-  const insightChips = (() => {
-    if (!heatmapData) {
-      return [];
-    }
-
-    const busiestChip = `Busiest window: ${heatmapData.insights.busiestTimeStart.toFixed(1)}s–${heatmapData.insights.busiestTimeEnd.toFixed(1)}s. Repeat that phrase slowly to clean intonation.`;
-    const highBandPercent = Math.round(heatmapData.insights.highBandRatio * 100);
-    const highBandChip = `High-range load: ${highBandPercent}% of voiced frames in upper-range bins. ${
-      highBandPercent >= 35
-        ? "Alternate high drills with easy mid-range resets."
-        : "High-range load looks manageable; keep endurance sets short and consistent."
-    }`;
-
-    const movementChip = heatmapData.insights.jumpRatio >= 0.25
-      ? "Frequent large pitch jumps detected. Practice slow glides and interval accuracy before tempo runs."
-      : "Pitch movement is relatively smooth. Keep reinforcing phrase connection and breath pacing.";
-
-    return [busiestChip, highBandChip, movementChip];
-  })();
-
-  return (
-    <section className="card chart chart--time-pitch">
-      <header className="card__header">
-        <h3 className="card__title">When and where your range work happened</h3>
-        <p className="card__meta">
-          Darker cells mean you spent more sung time there. Use this to spot repeated trouble moments and pacing issues.
-        </p>
-      </header>
-
-      <div className="chart__body" role="img" aria-label="Time and pitch usage map across the session">
-        {heatmapData ? (
-          <svg className="chart__svg" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
-            <rect width={width} height={height} fill="transparent" />
-            {heatmapData.matrix.map((row, yIndex) =>
-              row.map((cellValue, xIndex) => {
-                if (cellValue <= 0 || heatmapData.maxValue <= 0) {
-                  return null;
-                }
-
-                const normalized = Math.min(Math.max(cellValue / heatmapData.maxValue, 0), 1);
-                const opacity = 0.1 + Math.pow(normalized, 0.65) * 0.9;
-                const cellWidth = width / heatmapData.timeBins;
-                const cellHeight = height / heatmapData.pitchBins;
-
-                const timeStart = (xIndex / heatmapData.timeBins) * heatmapData.timeSpan;
-                const timeEnd = ((xIndex + 1) / heatmapData.timeBins) * heatmapData.timeSpan;
-                const pitchTop =
-                  heatmapData.maxMidi -
-                  (yIndex / heatmapData.pitchBins) * (heatmapData.maxMidi - heatmapData.minMidi);
-                const pitchBottom =
-                  heatmapData.maxMidi -
-                  ((yIndex + 1) / heatmapData.pitchBins) * (heatmapData.maxMidi - heatmapData.minMidi);
-
-                return (
-                  <rect
-                    key={`${xIndex}-${yIndex}`}
-                    x={xIndex * cellWidth}
-                    y={yIndex * cellHeight}
-                    width={cellWidth}
-                    height={cellHeight}
-                    fill="currentColor"
-                    opacity={opacity}
-                  >
-                    <title>{`Time ${timeStart.toFixed(1)}s–${timeEnd.toFixed(1)}s · ${formatMidiNote(pitchBottom)} to ${formatMidiNote(pitchTop)} · intensity ${cellValue.toFixed(2)}`}</title>
-                  </rect>
-                );
-              })
-            )}
-          </svg>
-        ) : (
-          <p className="chart__placeholder">No time-aligned pitch frames are available for this practice map.</p>
-        )}
-      </div>
-
-      <div className="chart__axes" aria-hidden="true">
-        <span>Start of recording</span>
-        <span>End of recording</span>
-      </div>
-      <p className="chart__axis-note">Vertical axis reads from lower pitch (bottom) to higher pitch (top).</p>
-
-      <div className="chart__legend" aria-label="Time and pitch map legend">
-        <span className="chart__legend-title">Cell intensity</span>
-        <div className="chart__legend-scale">
-          <span>Brief/rare</span>
-          <span className="chart__legend-gradient" />
-          <span>Frequent/sustained</span>
-        </div>
-      </div>
-
-      {insightChips.length ? (
-        <div className="insight-chips" aria-label="Time and pitch practice insights">
-          {insightChips.map((chip) => (
-            <p key={chip} className="insight-chip">
-              {chip}
-            </p>
-          ))}
-        </div>
-      ) : null}
-
-      <footer className="chart__footer">
-        <span>Timeline: {heatmapData ? `0.0s–${heatmapData.timeSpan.toFixed(1)}s` : "—"}</span>
-        <span>
-          Observed pitch: {heatmapData ? `${formatMidiNote(heatmapData.minMidi)} to ${formatMidiNote(heatmapData.maxMidi)}` : "—"}
-        </span>
-      </footer>
-    </section>
-  );
-}
-
 function AnalysisResults({
   results = null,
   status = null,
@@ -423,10 +407,14 @@ function AnalysisResults({
   onDownloadCsv,
   onDownloadJson,
   onDownloadPdf,
+  audioSourceUrl = null,
+  audioSourceLabel = null,
 }) {
   const titleId = useId();
   const [activeResultsView, setActiveResultsView] = useState(RESULTS_VIEWS.analysis);
   const hasResults = Boolean(results && Object.keys(results).length > 0);
+  const audioRef = useRef(null);
+  const snippetTimeoutRef = useRef(null);
 
   const summary = results?.summary ?? results?.stats ?? results?.tessitura ?? null;
   const duration = results?.metadata?.duration_seconds ?? results?.duration_seconds ?? summary?.duration_seconds;
@@ -463,6 +451,94 @@ function AnalysisResults({
     !hasTessituraHistogram &&
     !hasInferentialMetrics;
   const qualityWarnings = normalizeQualityWarnings(results?.warnings);
+  const timeEffortSummary = useMemo(() => summarizeTimeEffort(results), [results]);
+  const rangeEffortSummary = useMemo(() => summarizeRangeEffort(results), [results]);
+  const pitchControlSummary = useMemo(() => summarizePitchControl(results), [results]);
+  const semitoneSpan = calculateSemitoneSpan(Number(f0Min), Number(f0Max));
+  const evidence = useMemo(() => normalizeEvidencePayload(results?.evidence), [results]);
+  const evidenceEventMap = useMemo(() => {
+    const map = new Map();
+    evidence.events.forEach((event) => {
+      if (typeof event.id === "string" && event.id.trim()) {
+        map.set(event.id, event);
+      }
+    });
+    return map;
+  }, [evidence]);
+  const lowestEvidenceEvent = evidence.lowest_voiced_note_ref
+    ? evidenceEventMap.get(evidence.lowest_voiced_note_ref)
+    : null;
+  const highestEvidenceEvent = evidence.highest_voiced_note_ref
+    ? evidenceEventMap.get(evidence.highest_voiced_note_ref)
+    : null;
+  const hasAudioReference = typeof audioSourceUrl === "string" && audioSourceUrl.trim().length > 0;
+
+  const guidanceCards = useMemo(() => {
+    const defaultPractice =
+      "Practice the section that felt hardest at a slower tempo (about 70%) and repeat it three times.";
+
+    let practiceNextAnswer = defaultPractice;
+    if (pitchControlSummary?.averageStep >= 1.5) {
+      practiceNextAnswer =
+        "Practice smooth note-to-note slides for 5 minutes, then repeat your hardest phrase slowly to reduce sudden pitch jumps.";
+    } else if (pitchControlSummary?.trendLabel === "rising" || pitchControlSummary?.trendLabel === "falling") {
+      practiceNextAnswer =
+        `Your pitch trend was ${pitchControlSummary.trendLabel}. Repeat one phrase at a comfortable key and keep the final note centered.`;
+    } else if (timeEffortSummary?.mostActiveSegment?.label) {
+      practiceNextAnswer =
+        `Start with the ${timeEffortSummary.mostActiveSegment.label.toLowerCase()} of the recording, since that section carried most of your effort.`;
+    }
+
+    let effortAnswer =
+      "We could not detect enough pitch activity to map effort by time or range in this recording.";
+    if (timeEffortSummary?.mostActiveSegment?.label) {
+      const effortPct = Math.round((timeEffortSummary.mostActiveSegment.ratio ?? 0) * 100);
+      effortAnswer =
+        `Most effort was in the ${timeEffortSummary.mostActiveSegment.label.toLowerCase()} of the recording (${effortPct}% of detected voiced time).`;
+    } else if (rangeEffortSummary?.mostUsedBand?.label) {
+      const effortPct = Math.round((rangeEffortSummary.mostUsedBand.ratio ?? 0) * 100);
+      effortAnswer =
+        `Most effort was in your ${rangeEffortSummary.mostUsedBand.label} (${effortPct}% of detected range usage).`;
+    }
+
+    let effortDetail = null;
+    if (timeEffortSummary) {
+      effortDetail =
+        `Detected pitch span in this take: ${formatMidiNote(timeEffortSummary.minMidi)} to ${formatMidiNote(timeEffortSummary.maxMidi)}.`;
+    }
+
+    let adjustmentAnswer =
+      "Use one small adjustment next time: take a full breath before each phrase and keep volume comfortable.";
+    if (Number.isFinite(semitoneSpan) && semitoneSpan >= 12) {
+      adjustmentAnswer =
+        "Add one recovery reset after each high phrase (easy middle-range hum, then continue) to reduce fatigue in wide-range passages.";
+    } else if (rangeEffortSummary?.upperBandRatio >= 0.35) {
+      adjustmentAnswer =
+        "Alternate each high phrase with one easy middle-range phrase so your voice can reset between upper-range efforts.";
+    } else if (Number.isFinite(semitoneSpan) && semitoneSpan < 7) {
+      adjustmentAnswer =
+        "Add one gentle higher pass and one gentle lower pass to expand control beyond today’s narrow range.";
+    } else if (pitchControlSummary?.averageStep >= 1.5) {
+      adjustmentAnswer =
+        "Reduce tempo by about 10% on the hardest phrase to smooth transitions between notes.";
+    }
+
+    return [
+      {
+        question: "What should I practice next?",
+        answer: practiceNextAnswer,
+      },
+      {
+        question: "Where did I spend most effort?",
+        answer: effortAnswer,
+        detail: effortDetail,
+      },
+      {
+        question: "What one adjustment should I make next session?",
+        answer: adjustmentAnswer,
+      },
+    ];
+  }, [pitchControlSummary, rangeEffortSummary, semitoneSpan, timeEffortSummary]);
 
   const calibrationSummary = isPlainObject(results?.calibration?.summary)
     ? results.calibration.summary
@@ -484,6 +560,56 @@ function AnalysisResults({
   const calibrationTabId = `${titleId}-tab-calibration`;
   const calibrationPanelId = `${titleId}-panel-calibration`;
 
+  useEffect(() => () => {
+    if (snippetTimeoutRef.current) {
+      window.clearTimeout(snippetTimeoutRef.current);
+      snippetTimeoutRef.current = null;
+    }
+  }, []);
+
+  const jumpToEvidence = (event) => {
+    const audio = audioRef.current;
+    if (!audio) {
+      return;
+    }
+    const timestamp = Number(event?.timestamp_s ?? event?.start_s);
+    if (!Number.isFinite(timestamp) || timestamp < 0) {
+      return;
+    }
+    audio.currentTime = timestamp;
+  };
+
+  const playEvidenceSnippet = (event) => {
+    if (!hasAudioReference) {
+      return;
+    }
+    const audio = audioRef.current;
+    if (!audio) {
+      return;
+    }
+    const timestamp = Number(event?.timestamp_s ?? event?.start_s);
+    if (!Number.isFinite(timestamp) || timestamp < 0) {
+      return;
+    }
+
+    const snippetDurationSeconds = 3;
+    const start = Math.max(0, timestamp - 1.5);
+    audio.currentTime = start;
+
+    const playPromise = audio.play?.();
+    if (playPromise && typeof playPromise.catch === "function") {
+      playPromise.catch(() => {});
+    }
+
+    if (snippetTimeoutRef.current) {
+      window.clearTimeout(snippetTimeoutRef.current);
+    }
+    snippetTimeoutRef.current = window.setTimeout(() => {
+      audio.pause?.();
+      snippetTimeoutRef.current = null;
+    }, snippetDurationSeconds * 1000);
+  };
+
   return (
     <section className="card results" aria-labelledby={titleId} aria-busy={isFetchingResults}>
       <header className="card__header results__header">
@@ -491,7 +617,7 @@ function AnalysisResults({
           <h2 id={titleId} className="card__title">Analysis results</h2>
           <p className={`results__status results__status--${status?.status ?? "idle"}`}>{readableStatus}</p>
         </div>
-        <p className="card__meta">Key outcomes are shown first, with detailed plots and statistics below.</p>
+        <p className="card__meta">Key outcomes are shown first, followed by plain-language practice guidance and supporting statistics.</p>
       </header>
 
       {error ? <p className="results__error" role="alert">{error}</p> : null}
@@ -535,14 +661,14 @@ function AnalysisResults({
             >
               {isSparseCompletedResults ? (
                 <p className="results__empty" role="status">
-                  Analysis completed, but the file did not contain enough detectable pitch activity to populate detailed charts.
+                  Analysis completed, but the file did not contain enough detectable pitch activity for detailed personalized guidance.
                 </p>
               ) : null}
 
               <section className="results__section" aria-label="How to interpret analysis results">
                 <h3 className="results__section-title">Interpretation help</h3>
                 <p className="results__section-copy">
-                  Use summary metrics as your quick snapshot, then confirm patterns in the visualizations before drawing conclusions about range or consistency.
+                  Use summary metrics as your quick snapshot, then follow the guidance cards below to pick one clear practice action.
                 </p>
               </section>
 
@@ -583,36 +709,143 @@ function AnalysisResults({
                 </dl>
               </section>
 
-              <section className="results__section results__section--visuals" aria-label="Analysis visualizations">
+              <section className="results__section results__section--evidence" aria-label="Evidence references">
                 <div className="results__section-header">
-                  <h3 className="results__section-title">What should I practice next?</h3>
+                  <h3 className="results__section-title">Evidence references</h3>
                   <p className="results__section-meta">
-                    Use these views as a quick practice plan: range balance, time hotspots, and pitch control.
+                    Each diagnostic is linked to timestamped track moments so you can jump and listen without using charts.
                   </p>
                 </div>
-                <div className="results__visual-guide" aria-label="Visualization practice guide">
-                  <article className="results__visual-guide-item">
-                    <h4>Range usage map</h4>
-                    <p>Question answered: Which parts of my usable range are undertrained right now?</p>
-                  </article>
-                  <article className="results__visual-guide-item">
-                    <h4>Time × pitch map</h4>
-                    <p>Question answered: Which moments and pitch bands should I isolate in the next repetition?</p>
-                  </article>
-                  <article className="results__visual-guide-item">
-                    <h4>Pitch control curve</h4>
-                    <p>Question answered: Is my pitch staying steady, drifting, or jumping between notes?</p>
-                  </article>
+
+                {hasAudioReference ? (
+                  <audio
+                    ref={audioRef}
+                    className="results__evidence-audio"
+                    controls
+                    preload="metadata"
+                    src={audioSourceUrl}
+                    aria-label={
+                      audioSourceLabel
+                        ? `Evidence playback source: ${audioSourceLabel}`
+                        : "Evidence playback source"
+                    }
+                  />
+                ) : (
+                  <p className="evidence-actions__fallback">
+                    Audio playback is unavailable for this result. Use timestamp references to locate moments manually.
+                  </p>
+                )}
+
+                <ul className="results__evidence-list">
+                  {[
+                    { key: "lowest", title: "Lowest voiced note", event: lowestEvidenceEvent },
+                    { key: "highest", title: "Highest voiced note", event: highestEvidenceEvent },
+                  ].map((row) => {
+                    if (!row.event) {
+                      return null;
+                    }
+
+                    const timestampLabel =
+                      row.event.timestamp_label ?? formatTimestampLabel(row.event.timestamp_s ?? row.event.start_s);
+                    const noteLabel = row.event.note ?? "Unknown note";
+
+                    return (
+                      <li key={row.key} className="evidence-row">
+                        <div className="evidence-row__meta">
+                          <p className="guidance-card__question">{row.title}</p>
+                          <p className="guidance-card__detail">
+                            {noteLabel} at {timestampLabel}
+                          </p>
+                        </div>
+                        <div className="evidence-actions" role="group" aria-label={`${row.title} actions`}>
+                          <button
+                            type="button"
+                            className="button button--secondary"
+                            onClick={() => jumpToEvidence(row.event)}
+                            disabled={!hasAudioReference}
+                          >
+                            Jump to {timestampLabel}
+                          </button>
+                          {hasAudioReference ? (
+                            <button
+                              type="button"
+                              className="button"
+                              onClick={() => playEvidenceSnippet(row.event)}
+                            >
+                              Listen snippet
+                            </button>
+                          ) : null}
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+
+              <section className="results__section results__section--guidance" aria-label="Practice guidance cards">
+                <div className="results__section-header">
+                  <h3 className="results__section-title">Practice guidance</h3>
+                  <p className="results__section-meta">
+                    This on-screen analysis is text-only with no plots or graphs; use these plain-language coaching steps for next-session decisions. Detailed plots remain available only in PDF export.
+                  </p>
                 </div>
-                <p className="results__section-copy">
-                  Suggested flow: inspect note-level detail in the piano roll, then use the three coaching views below to pick your next drill.
-                </p>
-                <div className="results__visuals">
-                  <PianoRoll results={results} />
-                  <TessituraHeatmap results={results} />
-                  <TimePitchHeatmap results={results} />
-                  <PitchCurve results={results} />
-                </div>
+                <ol className="results__guidance-list" aria-label="Practice action steps">
+                  {evidence.guidance.length
+                    ? evidence.guidance.map((item, index) => {
+                        const refs = Array.isArray(item.evidence_refs)
+                          ? item.evidence_refs.filter((ref) => typeof ref === "string")
+                          : [];
+                        return (
+                          <li key={item.id ?? `evidence-guidance-${index}`} className="guidance-card">
+                            <h4 className="guidance-card__question">Guidance {index + 1}</h4>
+                            <p className="guidance-card__answer"><strong>Claim:</strong> {item.claim ?? "—"}</p>
+                            <p className="guidance-card__detail"><strong>Why:</strong> {item.why ?? "—"}</p>
+                            <p className="guidance-card__detail"><strong>Action:</strong> {item.action ?? "—"}</p>
+                            {refs.length ? (
+                              <ul className="guidance-card__evidence" aria-label="Evidence references">
+                                {refs.map((ref) => {
+                                  const event = evidenceEventMap.get(ref);
+                                  const timestampLabel = event?.timestamp_label ?? formatTimestampLabel(event?.timestamp_s);
+                                  return (
+                                    <li key={ref} className="guidance-card__evidence-item">
+                                      <span>
+                                        {event?.label ?? ref} ({timestampLabel})
+                                      </span>
+                                      <span className="evidence-actions">
+                                        <button
+                                          type="button"
+                                          className="button button--secondary"
+                                          onClick={() => jumpToEvidence(event)}
+                                          disabled={!hasAudioReference || !event}
+                                        >
+                                          Jump to {timestampLabel}
+                                        </button>
+                                        {hasAudioReference && event ? (
+                                          <button
+                                            type="button"
+                                            className="button"
+                                            onClick={() => playEvidenceSnippet(event)}
+                                          >
+                                            Listen snippet
+                                          </button>
+                                        ) : null}
+                                      </span>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            ) : null}
+                          </li>
+                        );
+                      })
+                    : guidanceCards.map((card) => (
+                        <li key={card.question} className="guidance-card">
+                          <h4 className="guidance-card__question">{card.question}</h4>
+                          <p className="guidance-card__answer">{card.answer}</p>
+                          {card.detail ? <p className="guidance-card__detail">{card.detail}</p> : null}
+                        </li>
+                      ))}
+                </ol>
               </section>
 
               {inferentialMetrics.length ? (

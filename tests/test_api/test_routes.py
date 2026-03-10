@@ -521,6 +521,59 @@ def test_build_note_events_splits_on_low_confidence_breaks() -> None:
     assert events[1]["start"] >= frames[4]["time"]
 
 
+def test_build_evidence_payload_links_low_high_notes_and_guidance_refs() -> None:
+    from api.routes import _build_evidence_payload
+
+    pitch_frames = [
+        {"time": 0.10, "f0_hz": 220.0, "midi": 57.0, "confidence": 0.95},
+        {"time": 0.40, "f0_hz": 246.94, "midi": 59.0, "confidence": 0.95},
+        {"time": 1.20, "f0_hz": 329.63, "midi": 64.0, "confidence": 0.95},
+        {"time": 2.60, "f0_hz": 440.0, "midi": 69.0, "confidence": 0.95},
+    ]
+
+    evidence = _build_evidence_payload(
+        pitch_frames,
+        note_events=[{"start": 0.1, "end": 0.2}],
+        duration_seconds=3.0,
+    )
+
+    assert evidence["note_event_count"] == 1
+    assert isinstance(evidence["events"], list)
+    assert isinstance(evidence["guidance"], list)
+    assert evidence["lowest_voiced_note_ref"] == "lowest_voiced_note"
+    assert evidence["highest_voiced_note_ref"] == "highest_voiced_note"
+
+    event_by_id = {
+        str(event["id"]): event
+        for event in evidence["events"]
+        if isinstance(event, dict) and event.get("id") is not None
+    }
+    assert "lowest_voiced_note" in event_by_id
+    assert "highest_voiced_note" in event_by_id
+    assert "segment_peak_voiced_activity" in event_by_id
+    assert "largest_pitch_jump" in event_by_id
+
+    lowest_event = event_by_id[evidence["lowest_voiced_note_ref"]]
+    highest_event = event_by_id[evidence["highest_voiced_note_ref"]]
+
+    assert lowest_event["label"] == "Lowest voiced note"
+    assert highest_event["label"] == "Highest voiced note"
+    assert lowest_event["timestamp_s"] <= highest_event["timestamp_s"]
+    assert isinstance(lowest_event.get("timestamp_label"), str)
+    assert isinstance(highest_event.get("timestamp_label"), str)
+
+    assert evidence["guidance"]
+    for item in evidence["guidance"]:
+        assert isinstance(item.get("claim"), str) and item["claim"]
+        assert isinstance(item.get("why"), str) and item["why"]
+        assert isinstance(item.get("action"), str) and item["action"]
+        refs = item.get("evidence_refs")
+        assert isinstance(refs, list)
+        assert refs
+        for ref in refs:
+            assert ref in event_by_id
+
+
 def test_build_calibration_summary_uses_weighted_uncertainty_aggregates() -> None:
     from api.routes import _build_calibration_summary
 
