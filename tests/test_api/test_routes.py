@@ -214,6 +214,24 @@ def test_extract_result_path_json_allows_generic_fallback_only() -> None:
     assert _extract_result_path(result, "pdf") is None
 
 
+def test_extract_result_path_supports_nested_analysis_payload() -> None:
+    from api.routes import _extract_result_path
+
+    result = {
+        "analysis": {
+            "files": {
+                "csv": "/tmp/nested.csv",
+                "pdf": "/tmp/nested.pdf",
+            },
+            "result_path": "/tmp/nested.json",
+        }
+    }
+
+    assert _extract_result_path(result, "csv") == "/tmp/nested.csv"
+    assert _extract_result_path(result, "pdf") == "/tmp/nested.pdf"
+    assert _extract_result_path(result, "json") == "/tmp/nested.json"
+
+
 def test_results_csv_pdf_require_explicit_artifact_paths(tmp_path, monkeypatch) -> None:
     from api import routes
 

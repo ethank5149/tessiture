@@ -318,14 +318,29 @@ export const fetchJobResults = async (jobId, format = "json") => {
 
 export const downloadJobResults = async (jobId, format = "csv") => {
   const result = await fetchJobResults(jobId, format);
-  if (!result?.blob) {
-    return result;
+  if (result?.blob) {
+    const url = URL.createObjectURL(result.blob);
+    return {
+      ...result,
+      url,
+    };
   }
-  const url = URL.createObjectURL(result.blob);
-  return {
-    ...result,
-    url,
-  };
+
+  if (format === "json" && result && typeof result === "object") {
+    const blob = new Blob([JSON.stringify(result, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    return {
+      blob,
+      contentType: "application/json",
+      filename: "results.json",
+      url,
+      data: result,
+    };
+  }
+
+  return result;
 };
 
 export const prepareReferenceFromExample = async (exampleId) => {

@@ -402,14 +402,27 @@ def _sanitize_error(error: Optional[str]) -> Optional[str]:
 
 
 def _extract_result_path(result: Mapping[str, Any], fmt: str) -> Optional[str]:
-    files = result.get("files") if isinstance(result, Mapping) else None
-    if isinstance(files, Mapping) and files.get(fmt):
-        return str(files.get(fmt))
-    key = f"{fmt}_path"
-    if isinstance(result, Mapping) and result.get(key):
-        return str(result.get(key))
-    if fmt == "json" and isinstance(result, Mapping) and result.get("result_path"):
-        return str(result.get("result_path"))
+    if not isinstance(result, Mapping):
+        return None
+
+    search_spaces: List[Mapping[str, Any]] = [result]
+    nested_analysis = result.get("analysis")
+    if isinstance(nested_analysis, Mapping):
+        search_spaces.append(nested_analysis)
+
+    for payload in search_spaces:
+        files = payload.get("files")
+        if isinstance(files, Mapping) and files.get(fmt):
+            return str(files.get(fmt))
+        key = f"{fmt}_path"
+        if payload.get(key):
+            return str(payload.get(key))
+
+    if fmt == "json":
+        for payload in search_spaces:
+            if payload.get("result_path"):
+                return str(payload.get("result_path"))
+
     return None
 
 
@@ -529,13 +542,7 @@ def _build_metric_inference(
             },
             "n_samples": 0,
             "unit": unit,
-            "method": "bootstrap_percentile",
         }
-        if _unit_supports_pitch_note_names(unit):
-            payload["estimate_note"] = None
-            payload["confidence_interval"]["low_note"] = None
-            payload["confidence_interval"]["high_note"] = None
-            payload["null_hypothesis"]["value_note"] = _pitch_value_to_note_name(null_value, unit)
         logger.debug("analysis_metric_inference_build_empty metric=%s", metric_name)
         return payload
 
@@ -566,17 +573,10 @@ def _build_metric_inference(
         },
         "n_samples": sample_size,
         "unit": unit,
-        "method": "bootstrap_percentile",
     }
 
-    if _unit_supports_pitch_note_names(unit):
-        payload["estimate_note"] = _pitch_value_to_note_name(estimate, unit)
-        payload["confidence_interval"]["low_note"] = _pitch_value_to_note_name(ci_low, unit)
-        payload["confidence_interval"]["high_note"] = _pitch_value_to_note_name(ci_high, unit)
-        payload["null_hypothesis"]["value_note"] = _pitch_value_to_note_name(null_value, unit)
-
     logger.debug(
-        "analysis_metric_inference_build_done metric=%s estimate=%s ci_low=%s ci_high=%s p_value=%s n_samples=%d",
+        "analysis_metric_inference_build_done metric=%s estimate=%s ci_low=%s ci_high=%s p_value=%s n_sample=%d",
         metric_name,
         payload.get("estimate"),
         payload.get("confidence_interval", {}).get("low"),
@@ -658,14 +658,14 @@ def _build_inferential_statistics(
     for metric_name, payload in metrics.items():
         ci = payload.get("confidence_interval") if isinstance(payload, Mapping) else None
         logger.info(
-            "analysis_metric_inference metric=%s preset=%s estimate=%s ci_low=%s ci_high=%s p_value=%s n=%s",
+            "analysis_metric_inference metric=%s preset=%s estimate=%s ci_low=%s ci_high=%s p_value=%s n_sample=%s",
             metric_name,
             preset_name,
             payload.get("estimate") if isinstance(payload, Mapping) else None,
             ci.get("low") if isinstance(ci, Mapping) else None,
             ci.get("high") if isinstance(ci, Mapping) else None,
             payload.get("p_value") if isinstance(payload, Mapping) else None,
-            payload.get("n_samples") if isinstance(payload, Mapping) else None,
+            payload.get("n_sample") if isinstance(payload, Mapping) else None,
         )
 
     return {
@@ -1519,12 +1519,51 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
         },
     }
     analysis_payload["summary"] = _build_summary(analysis_payload, duration_seconds=duration_seconds)
+
+    export_files: Dict[str, str] = {}
+    export_stem = f"{Path(file_path).stem}_{uuid4().hex[:8]}"
+    export_json_path = OUTPUT_DIR / f"{export_stem}.json"
+    export_csv_path = OUTPUT_DIR / f"{export_stem}.csv"
+    export_pdf_path = OUTPUT_DIR / f"{export_stem}.pdf"
+
+    try:
+        generate_json_report(analysis_payload, output_path=str(export_json_path))
+        export_files["json"] = str(export_json_path)
+    except Exception as exc:
+        warnings.append(f"JSON export unavailable: {exc}")
+        logger.warning("analysis_export_json_failed file_path=%s error=%s", file_path, exc)
+
+    try:
+        generate_csv_report(analysis_payload, output_path=str(export_csv_path))
+        export_files["csv"] = str(export_csv_path)
+    except Exception as exc:
+        warnings.append(f"CSV export unavailable: {exc}")
+        logger.warning("analysis_export_csv_failed file_path=%s error=%s", file_path, exc)
+
+    try:
+        generate_pdf_report(analysis_payload, output_path=str(export_pdf_path))
+        export_files["pdf"] = str(export_pdf_path)
+    except Exception as exc:
+        warnings.append(f"PDF export unavailable: {exc}")
+        logger.warning("analysis_export_pdf_failed file_path=%s error=%s", file_path, exc)
+
+    if export_files:
+        analysis_payload["files"] = dict(export_files)
+        if export_files.get("json"):
+            analysis_payload["result_path"] = export_files["json"]
+
     if warnings:
         analysis_payload["warnings"] = warnings
 
-    return {
+    response_payload: Dict[str, Any] = {
         "analysis": analysis_payload,
     }
+    if export_files:
+        response_payload["files"] = dict(export_files)
+        if export_files.get("json"):
+            response_payload["result_path"] = export_files["json"]
+
+    return response_payload
 
 
 async def analysis_pipeline(
