@@ -219,6 +219,7 @@ const ReferenceTrackSelector = ({ exampleTracks = [], onReferenceReady, isLoadin
                 id={`ref-group-tracks-${group.key}`}
                 className="reference-selector__group-tracks"
                 aria-label={`Tracks in ${group.label}`}
+                hidden={!isOpen}
               >
                 {group.tracks.map((track) => {
                   const trackId = track?.id ?? track?.example_id ?? track?.filename;

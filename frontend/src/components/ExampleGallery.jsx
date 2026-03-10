@@ -69,29 +69,9 @@ function ExampleGallery({
   const colorExtractionRef = useRef({});
 
   const resolvedThumbnails = useExampleThumbnails(examples);
+  const isDebug = import.meta.env.DEV;
 
   const groups = useMemo(() => groupExamples(examples), [examples]);
-
-  // Extract dominant colors from group thumbnails when groups or resolved thumbnails change
-  useEffect(() => {
-    if (!groups) return;
-    for (const group of groups) {
-      const firstTrack = group.tracks[0];
-      if (!firstTrack) continue;
-      const direct = getThumbnailUrl(firstTrack);
-      const thumbUrl = direct || resolvedThumbnails[firstTrack?.id]?.url || null;
-      if (!thumbUrl) continue;
-      // Skip if already extracted for this key+url combo
-      const cacheKey = `${group.key}::${thumbUrl}`;
-      if (colorExtractionRef.current[cacheKey]) continue;
-      colorExtractionRef.current[cacheKey] = true;
-      extractDominantColor(thumbUrl).then((color) => {
-        if (color) {
-          setGroupColors((prev) => ({ ...prev, [group.key]: color }));
-        }
-      });
-    }
-  }, [groups, resolvedThumbnails]);
 
   const toggleGroup = (key) => {
     setOpenGroups((prev) => {
@@ -122,6 +102,53 @@ function ExampleGallery({
     const direct = getThumbnailUrl(example);
     return direct || resolvedThumbnails[example?.id]?.url || null;
   };
+
+  useEffect(() => {
+    if (!isDebug || groups === null) return;
+
+    const snapshot = groups.slice(0, 4).map((group) => {
+      const listId = `examples-group-tracks-${group.key}`;
+      const listNode = typeof document !== "undefined" ? document.getElementById(listId) : null;
+      const headerNode = listNode?.previousElementSibling;
+      const thumbNode = headerNode?.querySelector?.(".examples__group-header-thumb");
+      const thumbRect = thumbNode?.getBoundingClientRect?.();
+      const listDisplay =
+        listNode && typeof window !== "undefined" ? window.getComputedStyle(listNode).display : null;
+
+      return {
+        key: group.key,
+        isOpenState: openGroups.has(group.key),
+        hiddenAttr: listNode?.hasAttribute("hidden") ?? null,
+        listDisplay,
+        thumbSize: thumbRect
+          ? { width: Math.round(thumbRect.width), height: Math.round(thumbRect.height) }
+          : null,
+      };
+    });
+
+    console.debug("[ExampleGallery] grouped card diagnostics", snapshot);
+  }, [groups, openGroups, isDebug]);
+
+  // Extract dominant colors from group thumbnails when groups or resolved thumbnails change
+  useEffect(() => {
+    if (!groups) return;
+    for (const group of groups) {
+      const firstTrack = group.tracks[0];
+      if (!firstTrack) continue;
+      const direct = getThumbnailUrl(firstTrack);
+      const thumbUrl = direct || resolvedThumbnails[firstTrack?.id]?.url || null;
+      if (!thumbUrl) continue;
+      // Skip if already extracted for this key+url combo
+      const cacheKey = `${group.key}::${thumbUrl}`;
+      if (colorExtractionRef.current[cacheKey]) continue;
+      colorExtractionRef.current[cacheKey] = true;
+      extractDominantColor(thumbUrl).then((color) => {
+        if (color) {
+          setGroupColors((prev) => ({ ...prev, [group.key]: color }));
+        }
+      });
+    }
+  }, [groups, resolvedThumbnails]);
 
   return (
     <section className="card examples" aria-labelledby="example-gallery-title">
@@ -221,6 +248,7 @@ function ExampleGallery({
                   id={`examples-group-tracks-${group.key}`}
                   className="examples__group-tracks examples__grid"
                   role="list"
+                  hidden={!isOpen}
                 >
                   {group.tracks.map((example) => {
                     const title = getTitle(example);
