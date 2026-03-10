@@ -402,7 +402,7 @@ describe("AnalysisResults", () => {
 
     expect(screen.getByText("Analysis results")).toBeInTheDocument();
     expect(screen.getByText("Summary")).toBeInTheDocument();
-    expect(screen.getByText("Visualizations")).toBeInTheDocument();
+    expect(screen.getByText("What should I practice next?")).toBeInTheDocument();
     expect(screen.getByText("completed", { selector: ".results__status" })).toBeInTheDocument();
     expect(screen.getByText("10.00")).toBeInTheDocument();
     expect(screen.getByText("220.00 (A3)")).toBeInTheDocument();
@@ -479,9 +479,9 @@ describe("AnalysisResults", () => {
       },
       pitch: {
         frames: [
-          { time: 0.0, midi: 60, confidence: 0.6 },
-          { time: 0.5, midi: 62, confidence: 0.9 },
-          { time: 1.0, midi: 64, confidence: 0.8 },
+          { time: 0.0, midi: 60, f0: 261.63, confidence: 0.6 },
+          { time: 0.5, midi: 62, f0: 293.66, confidence: 0.9 },
+          { time: 1.0, midi: 64, f0: 329.63, confidence: 0.8 },
         ],
       },
       tessitura: {
@@ -501,22 +501,76 @@ describe("AnalysisResults", () => {
     );
 
     expect(screen.getByText("Piano roll")).toBeInTheDocument();
-    expect(screen.getByText("Session distribution summary (1D tessitura)")).toBeInTheDocument();
-    expect(screen.getByText("Time × pitch heatmap (2D)")).toBeInTheDocument();
+    expect(screen.getByText("Range usage: where your voice lived today")).toBeInTheDocument();
+    expect(screen.getByText("When and where your range work happened")).toBeInTheDocument();
+    expect(screen.getByText("Pitch control: stability and drift")).toBeInTheDocument();
+    expect(screen.getByText("Use these views as a quick practice plan: range balance, time hotspots, and pitch control.")).toBeInTheDocument();
+    expect(
+      screen.getByText("Question answered: Which parts of my usable range are undertrained right now?")
+    ).toBeInTheDocument();
     expect(
       screen.getByText(
-        "Use this coaching trio together: detailed note trace (piano roll), session distribution summary (1D tessitura), and a 2D time × pitch heatmap."
+        "Question answered: Which moments and pitch bands should I isolate in the next repetition?"
       )
     ).toBeInTheDocument();
+    expect(
+      screen.getByText("Question answered: Is my pitch staying steady, drifting, or jumping between notes?")
+    ).toBeInTheDocument();
 
-    const heatmap = screen.getByLabelText("Time by pitch density heatmap");
+    expect(screen.getByText("Most-used zone")).toBeInTheDocument();
+    expect(screen.getByText("Least-used zone")).toBeInTheDocument();
+    expect(screen.getByText("Potential overreach")).toBeInTheDocument();
+    expect(screen.getByText(/Busiest window:/)).toBeInTheDocument();
+    expect(screen.getByText(/High-range load:/)).toBeInTheDocument();
+    expect(screen.getByText(/Alternate high drills with easy mid-range resets\./)).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Frequent large pitch jumps detected. Practice slow glides and interval accuracy before tempo runs."
+      )
+    ).toBeInTheDocument();
+    expect(screen.getByText("Stability")).toBeInTheDocument();
+    expect(screen.getByText("Drift")).toBeInTheDocument();
+    expect(screen.getByText("Control band")).toBeInTheDocument();
+
+    const heatmap = screen.getByLabelText("Time and pitch usage map across the session");
     expect(heatmap).toBeInTheDocument();
     const heatmapSvg = heatmap.querySelector("svg");
     expect(heatmapSvg).not.toBeNull();
     expect(heatmapSvg.querySelectorAll("rect").length).toBeGreaterThan(1);
 
-    expect(screen.getByText("Time span: 1.0s")).toBeInTheDocument();
-    expect(screen.getByText("Pitch span: 60.0–64.0 MIDI")).toBeInTheDocument();
+    expect(screen.getByText("Timeline: 0.0s–1.0s")).toBeInTheDocument();
+    expect(screen.getByText("Observed pitch: C4 (60.0 MIDI) to E4 (64.0 MIDI)")).toBeInTheDocument();
+  });
+
+  it("keeps time/pitch and range guidance usable when only one pitch frame is present", () => {
+    const results = {
+      summary: {
+        duration_seconds: 8.0,
+      },
+      pitch: {
+        frames: [{ time: 0.0, midi: 60, f0: 261.63, confidence: 0.95 }],
+      },
+      tessitura: {
+        histogram: [0.2, 0.4, 0.6],
+      },
+    };
+
+    render(
+      <AnalysisResults
+        results={results}
+        status={{ status: "completed" }}
+        isFetchingResults={false}
+        onDownloadCsv={vi.fn()}
+        onDownloadJson={vi.fn()}
+        onDownloadPdf={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("Range usage: where your voice lived today")).toBeInTheDocument();
+    expect(screen.getByText("Most-used zone")).toBeInTheDocument();
+    expect(screen.getByText(/Busiest window:/)).toBeInTheDocument();
+    expect(screen.getByText("Not enough pitch frames to evaluate pitch control yet.")).toBeInTheDocument();
+    expect(screen.queryByText("Stability")).not.toBeInTheDocument();
   });
 
   it("shows a 2D heatmap placeholder when no pitch-frame data is available", () => {
@@ -540,10 +594,38 @@ describe("AnalysisResults", () => {
       />
     );
 
-    expect(screen.getByText("Time × pitch heatmap (2D)")).toBeInTheDocument();
+    expect(screen.getByText("Range usage: where your voice lived today")).toBeInTheDocument();
+    expect(screen.getByText("No time-aligned pitch frames are available for this practice map.")).toBeInTheDocument();
+  });
+
+  it("renders graceful fallbacks for sparse visual data", () => {
+    const results = {
+      summary: {
+        duration_seconds: 6.0,
+      },
+    };
+
+    render(
+      <AnalysisResults
+        results={results}
+        status={{ status: "completed" }}
+        isFetchingResults={false}
+        onDownloadCsv={vi.fn()}
+        onDownloadJson={vi.fn()}
+        onDownloadPdf={vi.fn()}
+      />
+    );
+
     expect(
-      screen.getByText("No pitch frame data available for the 2D time × pitch heatmap.")
+      screen.getByText(
+        "Analysis completed, but the file did not contain enough detectable pitch activity to populate detailed charts."
+      )
     ).toBeInTheDocument();
+    expect(screen.getByText("No range-usage histogram is available for this session.")).toBeInTheDocument();
+    expect(screen.getByText("No time-aligned pitch frames are available for this practice map.")).toBeInTheDocument();
+    expect(screen.getByText("Not enough pitch frames to evaluate pitch control yet.")).toBeInTheDocument();
+    expect(screen.queryByText(/Busiest window:/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Most-used zone")).not.toBeInTheDocument();
   });
 
   it("renders a dedicated reference calibration tab and allows selecting it", async () => {

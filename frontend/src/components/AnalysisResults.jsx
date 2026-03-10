@@ -9,6 +9,8 @@ const RESULTS_VIEWS = {
   calibration: "calibration",
 };
 
+const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+
 const isPlainObject = (value) =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
@@ -25,6 +27,32 @@ const summarizeNumericSeries = (values) => {
     max: Math.max(...numericValues),
     mean: total / numericValues.length,
   };
+};
+
+const computeQuantile = (values, percentile) => {
+  const numericValues = values.filter((value) => Number.isFinite(value));
+  if (!numericValues.length) {
+    return null;
+  }
+  const sorted = [...numericValues].sort((a, b) => a - b);
+  const position = Math.max(0, Math.min(sorted.length - 1, (sorted.length - 1) * percentile));
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  if (lower === upper) {
+    return sorted[lower];
+  }
+  const weight = position - lower;
+  return sorted[lower] * (1 - weight) + sorted[upper] * weight;
+};
+
+const formatMidiNote = (midiValue) => {
+  if (!Number.isFinite(midiValue)) {
+    return "—";
+  }
+  const rounded = Math.round(midiValue);
+  const pitchClass = ((rounded % 12) + 12) % 12;
+  const octave = Math.floor(rounded / 12) - 1;
+  return `${NOTE_NAMES[pitchClass]}${octave} (${midiValue.toFixed(1)} MIDI)`;
 };
 
 const formatValue = (value) => {
@@ -227,6 +255,34 @@ function TimePitchHeatmap({ results }) {
 
     const values = matrix.flat();
     const maxValue = Math.max(...values, 0);
+    const totalWeight = values.reduce((sum, value) => sum + value, 0);
+
+    const timeColumnTotals = Array.from({ length: timeBins }, (_, xIndex) =>
+      matrix.reduce((sum, row) => sum + row[xIndex], 0)
+    );
+    const busiestTimeColumnValue = Math.max(...timeColumnTotals, 0);
+    const busiestTimeColumnIndex = timeColumnTotals.indexOf(busiestTimeColumnValue);
+    const busiestTimeStart = (busiestTimeColumnIndex / timeBins) * timeSpan;
+    const busiestTimeEnd = ((busiestTimeColumnIndex + 1) / timeBins) * timeSpan;
+
+    const highBandThreshold = minMidi + pitchSpan * 0.75;
+    const highBandWeight = frames.reduce(
+      (sum, frame) => sum + (frame.midi >= highBandThreshold ? frame.weight : 0),
+      0
+    );
+    const highBandRatio = totalWeight > 0 ? highBandWeight / totalWeight : 0;
+
+    const midiValues = frames.map((frame) => frame.midi);
+    const midiQ25 = computeQuantile(midiValues, 0.25);
+    const midiQ75 = computeQuantile(midiValues, 0.75);
+    const focusedPitchBand =
+      Number.isFinite(midiQ25) && Number.isFinite(midiQ75) ? Math.max(midiQ75 - midiQ25, 0) : null;
+
+    const stepDiffs = frames.slice(1).map((frame, index) => Math.abs(frame.midi - frames[index].midi));
+    const jumpRatio = stepDiffs.length
+      ? stepDiffs.filter((difference) => Number.isFinite(difference) && difference >= 2).length /
+        stepDiffs.length
+      : 0;
 
     return {
       matrix,
@@ -236,19 +292,50 @@ function TimePitchHeatmap({ results }) {
       timeSpan,
       timeBins,
       pitchBins,
+      insights: {
+        busiestTimeStart,
+        busiestTimeEnd,
+        timeFocusRatio: totalWeight > 0 ? busiestTimeColumnValue / totalWeight : 0,
+        highBandRatio,
+        focusedPitchBand,
+        jumpRatio,
+      },
     };
   }, [results]);
 
   const width = 600;
   const height = 240;
 
+  const insightChips = (() => {
+    if (!heatmapData) {
+      return [];
+    }
+
+    const busiestChip = `Busiest window: ${heatmapData.insights.busiestTimeStart.toFixed(1)}s–${heatmapData.insights.busiestTimeEnd.toFixed(1)}s. Repeat that phrase slowly to clean intonation.`;
+    const highBandPercent = Math.round(heatmapData.insights.highBandRatio * 100);
+    const highBandChip = `High-range load: ${highBandPercent}% of voiced frames in upper-range bins. ${
+      highBandPercent >= 35
+        ? "Alternate high drills with easy mid-range resets."
+        : "High-range load looks manageable; keep endurance sets short and consistent."
+    }`;
+
+    const movementChip = heatmapData.insights.jumpRatio >= 0.25
+      ? "Frequent large pitch jumps detected. Practice slow glides and interval accuracy before tempo runs."
+      : "Pitch movement is relatively smooth. Keep reinforcing phrase connection and breath pacing.";
+
+    return [busiestChip, highBandChip, movementChip];
+  })();
+
   return (
-    <section className="card chart">
+    <section className="card chart chart--time-pitch">
       <header className="card__header">
-        <h3 className="card__title">Time × pitch heatmap (2D)</h3>
-        <p className="card__meta">Where your singing concentrated over time (x-axis) and pitch (y-axis).</p>
+        <h3 className="card__title">When and where your range work happened</h3>
+        <p className="card__meta">
+          Darker cells mean you spent more sung time there. Use this to spot repeated trouble moments and pacing issues.
+        </p>
       </header>
-      <div className="chart__body" role="img" aria-label="Time by pitch density heatmap">
+
+      <div className="chart__body" role="img" aria-label="Time and pitch usage map across the session">
         {heatmapData ? (
           <svg className="chart__svg" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
             <rect width={width} height={height} fill="transparent" />
@@ -263,6 +350,15 @@ function TimePitchHeatmap({ results }) {
                 const cellWidth = width / heatmapData.timeBins;
                 const cellHeight = height / heatmapData.pitchBins;
 
+                const timeStart = (xIndex / heatmapData.timeBins) * heatmapData.timeSpan;
+                const timeEnd = ((xIndex + 1) / heatmapData.timeBins) * heatmapData.timeSpan;
+                const pitchTop =
+                  heatmapData.maxMidi -
+                  (yIndex / heatmapData.pitchBins) * (heatmapData.maxMidi - heatmapData.minMidi);
+                const pitchBottom =
+                  heatmapData.maxMidi -
+                  ((yIndex + 1) / heatmapData.pitchBins) * (heatmapData.maxMidi - heatmapData.minMidi);
+
                 return (
                   <rect
                     key={`${xIndex}-${yIndex}`}
@@ -272,21 +368,47 @@ function TimePitchHeatmap({ results }) {
                     height={cellHeight}
                     fill="currentColor"
                     opacity={opacity}
-                  />
+                  >
+                    <title>{`Time ${timeStart.toFixed(1)}s–${timeEnd.toFixed(1)}s · ${formatMidiNote(pitchBottom)} to ${formatMidiNote(pitchTop)} · intensity ${cellValue.toFixed(2)}`}</title>
+                  </rect>
                 );
               })
             )}
           </svg>
         ) : (
-          <p className="chart__placeholder">No pitch frame data available for the 2D time × pitch heatmap.</p>
+          <p className="chart__placeholder">No time-aligned pitch frames are available for this practice map.</p>
         )}
       </div>
+
+      <div className="chart__axes" aria-hidden="true">
+        <span>Start of recording</span>
+        <span>End of recording</span>
+      </div>
+      <p className="chart__axis-note">Vertical axis reads from lower pitch (bottom) to higher pitch (top).</p>
+
+      <div className="chart__legend" aria-label="Time and pitch map legend">
+        <span className="chart__legend-title">Cell intensity</span>
+        <div className="chart__legend-scale">
+          <span>Brief/rare</span>
+          <span className="chart__legend-gradient" />
+          <span>Frequent/sustained</span>
+        </div>
+      </div>
+
+      {insightChips.length ? (
+        <div className="insight-chips" aria-label="Time and pitch practice insights">
+          {insightChips.map((chip) => (
+            <p key={chip} className="insight-chip">
+              {chip}
+            </p>
+          ))}
+        </div>
+      ) : null}
+
       <footer className="chart__footer">
+        <span>Timeline: {heatmapData ? `0.0s–${heatmapData.timeSpan.toFixed(1)}s` : "—"}</span>
         <span>
-          Time span: {heatmapData ? `${heatmapData.timeSpan.toFixed(1)}s` : "—"}
-        </span>
-        <span>
-          Pitch span: {heatmapData ? `${heatmapData.minMidi.toFixed(1)}–${heatmapData.maxMidi.toFixed(1)} MIDI` : "—"}
+          Observed pitch: {heatmapData ? `${formatMidiNote(heatmapData.minMidi)} to ${formatMidiNote(heatmapData.maxMidi)}` : "—"}
         </span>
       </footer>
     </section>
@@ -463,14 +585,27 @@ function AnalysisResults({
 
               <section className="results__section results__section--visuals" aria-label="Analysis visualizations">
                 <div className="results__section-header">
-                  <h3 className="results__section-title">Visualizations</h3>
+                  <h3 className="results__section-title">What should I practice next?</h3>
                   <p className="results__section-meta">
-                    Use this coaching trio together: detailed note trace (piano roll), session distribution summary (1D tessitura), and a 2D time × pitch heatmap.
+                    Use these views as a quick practice plan: range balance, time hotspots, and pitch control.
                   </p>
                 </div>
+                <div className="results__visual-guide" aria-label="Visualization practice guide">
+                  <article className="results__visual-guide-item">
+                    <h4>Range usage map</h4>
+                    <p>Question answered: Which parts of my usable range are undertrained right now?</p>
+                  </article>
+                  <article className="results__visual-guide-item">
+                    <h4>Time × pitch map</h4>
+                    <p>Question answered: Which moments and pitch bands should I isolate in the next repetition?</p>
+                  </article>
+                  <article className="results__visual-guide-item">
+                    <h4>Pitch control curve</h4>
+                    <p>Question answered: Is my pitch staying steady, drifting, or jumping between notes?</p>
+                  </article>
+                </div>
                 <p className="results__section-copy">
-                  Reading tip: start with the piano roll for note-by-note detail, use the 1D tessitura chart for overall balance,
-                  then use the 2D heatmap to see where and when your voice concentrated.
+                  Suggested flow: inspect note-level detail in the piano roll, then use the three coaching views below to pick your next drill.
                 </p>
                 <div className="results__visuals">
                   <PianoRoll results={results} />
