@@ -1815,6 +1815,19 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
 analysis_pipeline = _run_analysis_pipeline
 
 
+def _get_analysis_pipeline():
+    """Get analysis_pipeline, supporting monkeypatching from tests.
+    
+    This function looks up analysis_pipeline from the routes module,
+    allowing tests to monkeypatch routes.analysis_pipeline.
+    """
+    try:
+        from api import routes
+        return routes.analysis_pipeline
+    except ImportError:
+        return analysis_pipeline
+
+
 @router.post("/analyze/example")
 async def analyze_example_audio(
     request: Request,
@@ -1829,7 +1842,7 @@ async def analyze_example_audio(
     example, file_path = _resolve_example_track(example_id)
     job_id = job_manager.create_job(
         str(file_path),
-        analysis_pipeline,
+        _get_analysis_pipeline(),
         metadata={
             "filename": example["display_name"],
             "content_type": example["content_type"],
@@ -1859,7 +1872,7 @@ async def analyze_audio(request: Request, audio: UploadFile = File(...)) -> Dict
     file_path = await _save_upload(audio)
     job_id = job_manager.create_job(
         str(file_path),
-        analysis_pipeline,
+        _get_analysis_pipeline(),
         metadata={"filename": audio.filename, "content_type": audio.content_type, "source": "upload"},
     )
     _job_file_paths[job_id] = str(file_path)
@@ -2230,7 +2243,7 @@ async def upload_reference_track(
     file_path = await _save_upload(audio)
     try:
         result = await asyncio.to_thread(
-            _run_analysis_pipeline,
+            _get_analysis_pipeline(),
             file_path=str(file_path),
             metadata={
                 "filename": audio.filename,
@@ -2305,7 +2318,7 @@ async def reference_from_example(
     example, file_path = _resolve_example_track(example_id)
     try:
         result = await asyncio.to_thread(
-            _run_analysis_pipeline,
+            _get_analysis_pipeline(),
             file_path=str(file_path),
             metadata={
                 "filename": example.get("filename", example_id),
