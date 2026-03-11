@@ -11,8 +11,10 @@ from fastapi import APIRouter, File, Form, Query, Request, UploadFile
 
 from api import job_manager
 from api import api_router as main_routes
+from api import logging_config
 
 router = APIRouter()
+logger = logging_config.get_logger(__name__)
 
 
 @router.post("/analyze/example")
@@ -41,6 +43,16 @@ async def analyze_example_audio(
         },
     )
     main_routes._job_file_paths[job_id] = str(file_path)
+    
+    # Log job creation with metadata
+    job_logger = logging_config.get_job_logger(job_id)
+    job_logger.info(
+        "Job created from example: job_id=%s, source=example, filename=%s, example_id=%s",
+        job_id,
+        example["display_name"],
+        example["id"]
+    )
+    
     return {
         "job_id": job_id,
         "status_url": f"/status/{job_id}",
@@ -74,6 +86,16 @@ async def analyze_audio(
         },
     )
     main_routes._job_file_paths[job_id] = str(file_path)
+    
+    # Log job creation with metadata
+    job_logger = logging_config.get_job_logger(job_id)
+    job_logger.info(
+        "Job created from upload: job_id=%s, source=upload, filename=%s, content_type=%s",
+        job_id,
+        audio.filename,
+        audio.content_type
+    )
+    
     return {
         "job_id": job_id,
         "status_url": f"/status/{job_id}",

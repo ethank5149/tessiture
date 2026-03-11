@@ -10,6 +10,8 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional
 
+from api import logging_config
+
 JobState = str
 AnalysisResult = Dict[str, Any]
 AnalysisFn = Callable[[str, Optional[Mapping[str, Any]]], Awaitable[AnalysisResult] | AnalysisResult]
@@ -54,6 +56,18 @@ def _set_status(job_id: str, **updates: Any) -> None:
     for key, value in updates.items():
         setattr(job, key, value)
     job.updated_at = _now()
+    
+    # Log progress updates to job logger
+    job_logger = logging_config.get_job_logger(job_id)
+    progress = updates.get("progress", job.progress)
+    stage = updates.get("stage", job.stage)
+    message = updates.get("message", job.message)
+    job_logger.debug(
+        "Progress update: progress=%d, stage=%s, message=%s",
+        progress,
+        stage,
+        message
+    )
 
 
 def _build_progress_callback(job_id: str) -> Callable[[int, Optional[str], Optional[str]], None]:
@@ -76,9 +90,14 @@ async def _run_job(
     analysis_fn: AnalysisFn,
     metadata: Optional[Mapping[str, Any]],
 ) -> None:
+    job_logger = logging_config.get_job_logger(job_id)
+    
+    job_logger.info("Job starting: file_path=%s", file_path)
     _set_status(job_id, status="processing", progress=5, stage="starting", message="Analysis job started.")
     try:
+        # Add job_id to metadata for analysis pipeline logging
         job_metadata = dict(metadata or {})
+        job_metadata["job_id"] = job_id
         job_metadata[_PROGRESS_CALLBACK_KEY] = _build_progress_callback(job_id)
         result_or_coro = analysis_fn(file_path, job_metadata)
         result = await result_or_coro if inspect.isawaitable(result_or_coro) else result_or_coro
@@ -94,8 +113,9 @@ async def _run_job(
             result=dict(result) if isinstance(result, Mapping) else result,
             result_path=result_path,
         )
+        job_logger.info("Job completed successfully: job_id=%s, result_path=%s", job_id, result_path)
     except Exception as exc:
-        logger.exception("Job %s failed during analysis", job_id)
+        job_logger.exception("Job failed during analysis: job_id=%s, error=%s", job_id, str(exc))
         safe_error = str(exc).strip() or "Analysis failed."
         _set_status(
             job_id,
@@ -119,6 +139,8 @@ def create_job(
     """
     job_id = str(uuid.uuid4())
     now = _now()
+    
+    # Create job status
     _jobs[job_id] = JobStatus(
         job_id=job_id,
         status="queued",
@@ -128,6 +150,19 @@ def create_job(
         stage="queued",
         message="Job queued.",
     )
+    
+    # Log job creation
+    job_logger = logging_config.get_job_logger(job_id)
+    filename = metadata.get("filename") if metadata else None
+    source = metadata.get("source") if metadata else None
+    job_logger.info(
+        "Job created: job_id=%s, filename=%s, source=%s",
+        job_id,
+        filename,
+        source
+    )
+    
+    # Start the job
     loop = asyncio.get_running_loop()
     _tasks[job_id] = loop.create_task(_run_job(job_id, file_path, analysis_fn, metadata))
     return job_id

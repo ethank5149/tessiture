@@ -1,3 +1,4 @@
+import logging
 import os
 from pathlib import Path
 
@@ -5,10 +6,23 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from api import logging_config
 from api.api_router import router as api_router
 from api.streaming import streaming_router
 
 app = FastAPI(title="Tessiture API", version="0.1.0")
+
+# Initialize logging on app startup
+@app.on_event("startup")
+async def startup_event():
+    """Initialize logging and log startup information."""
+    logging_config.init_logging()
+    logger = logging_config.get_logger(__name__)
+    logger.info(
+        "Tessiture API starting: log_dir=%s, jobs_dir=%s",
+        str(logging_config.get_log_dir()),
+        str(logging_config.get_jobs_dir())
+    )
 
 cors_origins = [
     origin.strip()

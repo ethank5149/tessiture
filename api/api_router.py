@@ -31,6 +31,7 @@ from analysis.tessitura.analyzer import analyze_tessitura
 from analysis.comparison import reference_cache as _ref_cache
 from analysis.dsp.vocal_separation import is_available as _vocal_separation_available
 from api import job_manager
+from api import logging_config
 from calibration.monte_carlo.uncertainty_analyzer import summarize_uncertainty
 from calibration.reference_generation.lhs_sampler import lhs_sample
 from calibration.reference_generation.parameter_ranges import get_default_parameter_ranges
@@ -1460,6 +1461,19 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
     _ensure_output_dir()
     warnings: List[str] = []
     report_progress = _resolve_progress_update(metadata)
+    
+    # Get job logger if job_id is in metadata
+    job_id = metadata.get("job_id") if metadata else None
+    job_logger = logging_config.get_job_logger(job_id) if job_id else None
+    
+    if job_logger:
+        job_logger.info(
+            "Analysis pipeline starting: file_path=%s, filename=%s, source=%s",
+            file_path,
+            metadata.get("filename") if isinstance(metadata, Mapping) else None,
+            metadata.get("source") if isinstance(metadata, Mapping) else None,
+        )
+    
     logger.info(
         "analysis_pipeline_start file_path=%s filename=%s source=%s example_id=%s",
         file_path,
@@ -1468,6 +1482,8 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
         metadata.get("example_id") if isinstance(metadata, Mapping) else None,
     )
     report_progress(15, "decoding", "Decoding audio.")
+    if job_logger:
+        job_logger.debug("Stage: decoding audio file")
     audio, sample_rate = _decode_audio_file(file_path)
 
     # Optional vocal source separation — gated by audio_type
@@ -1510,6 +1526,8 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
         try:
             from analysis.dsp.vocal_separation import separate_vocals as _separate_vocals
             report_progress(20, "vocal_separation", "Separating vocals.")
+            if job_logger:
+                job_logger.debug("Stage: vocal separation")
             sep_result = _separate_vocals(
                 audio,
                 sample_rate,
@@ -1541,6 +1559,8 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
     sample_rate = int(preprocessed.sample_rate)
 
     report_progress(35, "pitch_extraction", "Extracting pitch.")
+    if job_logger:
+        job_logger.debug("Stage: pitch extraction")
     stft_result = compute_stft(
         mono_audio,
         sample_rate=sample_rate,
@@ -1652,6 +1672,8 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
             )
 
     report_progress(72, "tessitura", "Analyzing vocal range.")
+    if job_logger:
+        job_logger.debug("Stage: tessitura analysis")
     report_progress(72, "tessitura", "Analyzing vocal range.")
     tessitura_payload: Dict[str, Any] = {}
     if voiced_midi:
@@ -1667,6 +1689,8 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
             warnings.append(f"Tessitura analysis unavailable: {exc}")
 
     report_progress(79, "vibrato", "Analyzing vibrato.")
+    if job_logger:
+        job_logger.debug("Stage: vibrato analysis")
     advanced_payload: Dict[str, Any] = {}
     try:
         vibrato = detect_vibrato(
@@ -1687,6 +1711,8 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
         warnings.append(f"Vibrato analysis unavailable: {exc}")
 
     report_progress(86, "formants", "Analyzing formants.")
+    if job_logger:
+        job_logger.debug("Stage: formant analysis")
     try:
         formant_track = estimate_formants_from_audio(
             mono_audio,
@@ -1698,6 +1724,8 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
         warnings.append(f"Formant analysis unavailable: {exc}")
 
     report_progress(92, "phrases", "Segmenting phrases.")
+    if job_logger:
+        job_logger.debug("Stage: phrase segmentation")
     try:
         phrase_result = segment_phrases_from_audio(
             mono_audio,
@@ -1784,6 +1812,8 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
     analysis_payload["summary"] = _build_summary(analysis_payload, duration_seconds)
 
     report_progress(96, "export", "Generating export files.")
+    if job_logger:
+        job_logger.debug("Stage: generating export files")
     export_files: Dict[str, str] = {}
     export_stem = f"{Path(file_path).stem}_{uuid4().hex[:8]}"
     export_json_path = OUTPUT_DIR / f"{export_stem}.json"
