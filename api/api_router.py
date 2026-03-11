@@ -1066,6 +1066,9 @@ def _build_evidence_payload(
         "note_event_count": int(len(note_events)),
     }
 
+    # Calculate seconds per frame for timestamp fallback
+    seconds_per_frame = float(duration_seconds) / float(max(len(pitch_frames), 1))
+
     voiced_frames_data: List[Dict[str, float]] = []
     for idx, frame in enumerate(pitch_frames):
         if not isinstance(frame, Mapping) or not _is_voiced_frame(frame):
@@ -1073,7 +1076,7 @@ def _build_evidence_payload(
 
         time_s = _safe_float(frame.get("time"))
         if time_s is None:
-            time_s = float(idx)
+            time_s = float(idx) * seconds_per_frame
 
         midi_value = _safe_float(frame.get("midi"))
         f0_hz = _safe_float(frame.get("f0_hz") or frame.get("f0"))
@@ -1464,7 +1467,7 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
         metadata.get("source") if isinstance(metadata, Mapping) else None,
         metadata.get("example_id") if isinstance(metadata, Mapping) else None,
     )
-    report_progress(15, "preprocessing", "Decoding and preprocessing audio.")
+    report_progress(15, "decoding", "Decoding audio.")
     audio, sample_rate = _decode_audio_file(file_path)
 
     # Optional vocal source separation — gated by audio_type
@@ -1506,7 +1509,7 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
     if _do_separate:
         try:
             from analysis.dsp.vocal_separation import separate_vocals as _separate_vocals
-            report_progress(20, "vocal_separation", "Separating vocals from accompaniment.")
+            report_progress(20, "vocal_separation", "Separating vocals.")
             sep_result = _separate_vocals(
                 audio,
                 sample_rate,
@@ -1537,7 +1540,7 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
     mono_audio = preprocessed.audio
     sample_rate = int(preprocessed.sample_rate)
 
-    report_progress(35, "pitch_extraction", "Extracting pitch and harmonic tracks.")
+    report_progress(35, "pitch_extraction", "Extracting pitch.")
     stft_result = compute_stft(
         mono_audio,
         sample_rate=sample_rate,
@@ -1602,7 +1605,7 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
     note_events = _build_note_events(pitch_frames)
     chord_timeline = _build_chord_timeline(note_events)
 
-    report_progress(65, "advanced_analysis", "Running advanced musical and vocal analysis.")
+    report_progress(65, "key_detection", "Detecting musical key.")
     # Spectrogram data is served via the dedicated GET /spectrogram/{job_id} endpoint;
     # the legacy stft_raw is kept as an empty dict for backward compatibility with any
     # consuming code that reads analysis_payload["spectrogram"] or ["spectrum"].
@@ -1629,6 +1632,7 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
     ]
     duration_seconds = float(mono_audio.shape[-1] / max(sample_rate, 1))
 
+    report_progress(65, "key_detection", "Detecting musical key.")
     key_detection_result = detect_key(voiced_midi, input_unit="midi") if voiced_midi else None
     key_trajectory: List[Dict[str, Any]] = []
     key_probabilities: Dict[str, float] = {}
@@ -1647,6 +1651,8 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
                 }
             )
 
+    report_progress(72, "tessitura", "Analyzing vocal range.")
+    report_progress(72, "tessitura", "Analyzing vocal range.")
     tessitura_payload: Dict[str, Any] = {}
     if voiced_midi:
         try:
@@ -1660,6 +1666,7 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
         except Exception as exc:
             warnings.append(f"Tessitura analysis unavailable: {exc}")
 
+    report_progress(79, "vibrato", "Analyzing vibrato.")
     advanced_payload: Dict[str, Any] = {}
     try:
         vibrato = detect_vibrato(
@@ -1679,6 +1686,7 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
     except Exception as exc:
         warnings.append(f"Vibrato analysis unavailable: {exc}")
 
+    report_progress(86, "formants", "Analyzing formants.")
     try:
         formant_track = estimate_formants_from_audio(
             mono_audio,
@@ -1689,6 +1697,7 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
     except Exception as exc:
         warnings.append(f"Formant analysis unavailable: {exc}")
 
+    report_progress(92, "phrases", "Segmenting phrases.")
     try:
         phrase_result = segment_phrases_from_audio(
             mono_audio,
@@ -1743,7 +1752,6 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
 
     analysis_payload: Dict[str, Any] = {
         "metadata": metadata_payload,
-        "summary": {},
         "pitch": {
             "frames": pitch_frames,
             "f0_min": float(np.min(voiced_f0)) if voiced_f0 else None,
@@ -1772,6 +1780,10 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
     }
     analysis_payload["evidence"] = evidence_payload
 
+    # Build summary with note notation (f0_min_note, f0_max_note)
+    analysis_payload["summary"] = _build_summary(analysis_payload, duration_seconds)
+
+    report_progress(96, "export", "Generating export files.")
     export_files: Dict[str, str] = {}
     export_stem = f"{Path(file_path).stem}_{uuid4().hex[:8]}"
     export_json_path = OUTPUT_DIR / f"{export_stem}.json"

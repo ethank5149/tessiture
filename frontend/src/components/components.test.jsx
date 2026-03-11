@@ -1519,12 +1519,12 @@ describe("SpectrogramInspector", () => {
     // The details summary toggle should be present with the updated label
     expect(screen.getByText("Audio inspector")).toBeInTheDocument();
 
-    // The inspector section should be visible (open=true by default)
+    // The inspector section should be collapsed by default to avoid extra loading after results appear
     const details = screen.getByText("Audio inspector").closest("details");
-    expect(details).toHaveAttribute("open");
+    expect(details).not.toHaveAttribute("open");
 
-    // fetchSpectrogram should have been called immediately on mount
-    expect(fetchSpectrogram).toHaveBeenCalledWith("test-job-open");
+    // fetchSpectrogram should NOT be called since inspector is collapsed by default
+    expect(fetchSpectrogram).not.toHaveBeenCalled();
   });
 
   it("does not break text-first guidance cards (no-graphs constraint)", () => {

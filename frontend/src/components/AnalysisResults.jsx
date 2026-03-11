@@ -18,14 +18,12 @@ const RESULTS_VIEWS = {
 };
 
 /**
- * AdvancedInspectorSection
- * Renders the SpectrogramInspector open/visible by default as a primary
- * analysis feature. The collapsible details wrapper is retained so the user
- * can optionally collapse it, but we initialise open=true so it renders
- * immediately on mount and the spectrogram fetch fires right away.
+ * AdvancedInspectorToggle
+ * Renders the SpectrogramInspector as a collapsible section.
+ * The user can expand to view the spectrogram visualization.
  */
 function AdvancedInspectorToggle({ jobId, audioRef, results, duration }) {
-  const [isOpen, setIsOpen] = useState(true);
+  const [isOpen, setIsOpen] = useState(false);
   return (
     <details
       className="spectrogram-inspector-toggle"
