@@ -821,6 +821,90 @@ a:focus-visible {
 }
 
 /* ============================================================
+   Advanced Audio Inspector (P2 â SpectrogramInspector)
+   ============================================================ */
+
+.spectrogram-inspector-toggle {
+  margin-top: var(--space-lg);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface-1);
+  overflow: hidden;
+}
+
+.spectrogram-inspector-toggle__summary {
+  padding: 0.65rem 1rem;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--text-muted);
+  user-select: none;
+  list-style: none;
+}
+
+.spectrogram-inspector-toggle__summary::before {
+  content: "â¶ ";
+  font-size: 0.75rem;
+}
+
+.spectrogram-inspector-toggle[open] .spectrogram-inspector-toggle__summary::before {
+  content: "â¼ ";
+}
+
+.spectrogram-inspector {
+  padding: 0.75rem 1rem 1rem;
+}
+
+.spectrogram-inspector__canvas-wrap {
+  position: relative;
+  width: 100%;
+  background: #050714;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.spectrogram-inspector__canvas {
+  display: block;
+  width: 100%;
+  height: 200px;
+  cursor: crosshair;
+}
+
+.spectrogram-inspector__tooltip {
+  position: absolute;
+  background: rgba(0, 0, 0, 0.82);
+  color: #fff;
+  font-size: 0.78rem;
+  padding: 0.2rem 0.45rem;
+  border-radius: 4px;
+  pointer-events: none;
+  white-space: nowrap;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transform: translateX(-50%);
+  z-index: 10;
+}
+
+.spectrogram-inspector__loading,
+.spectrogram-inspector__error {
+  padding: 0.75rem 1rem;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
+.spectrogram-inspector__error {
+  color: var(--color-error, #c0392b);
+}
+
+.spectrogram-inspector__vocals-note {
+  margin: 0.5rem 0 0;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* ============================================================
    Source Selector — Step 1
    ============================================================ */
 

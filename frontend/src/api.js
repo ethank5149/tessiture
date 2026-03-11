@@ -361,3 +361,20 @@ export const prepareReferenceFromUpload = async (audioFile) => {
   await ensureOk(response);
   return response.json();
 };
+
+/**
+ * Fetch spectrogram data for the Advanced audio inspector (P2-A).
+ * Lazy endpoint Ã¢ only called when the user opens the inspector toggle.
+ *
+ * @param {string} jobId
+ * @returns {Promise<{mix: object, vocals: object}>}
+ */
+export const fetchSpectrogram = async (jobId) => {
+  if (!jobId) throw new Error("Job ID is required.");
+  const response = await fetch(buildUrl(`/spectrogram/${jobId}`), { method: "GET" });
+  if (!response.ok) {
+    const msg = await parseErrorMessage(response);
+    throw new Error(msg || `Spectrogram unavailable (${response.status})`);
+  }
+  return response.json();
+};

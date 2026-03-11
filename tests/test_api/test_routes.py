@@ -1022,3 +1022,166 @@ def test_run_analysis_pipeline_exposes_pitch_method_diagnostics(tmp_path, monkey
         assert "attempted_methods" in frame_diag
         assert "strategy_path" in frame_diag
         assert "fallback_reason" in frame_diag
+
+
+# ---------------------------------------------------------------------------
+# GET /spectrogram/{job_id}  (P2-A)
+# ---------------------------------------------------------------------------
+
+def test_spectrogram_endpoint_returns_404_for_unknown_job() -> None:
+    """P2-A: GET /spectrogram/{job_id} returns 404 for a nonexistent job."""
+    from api.server import app as _app
+    _reset_job_state()
+    with TestClient(_app) as client:
+        resp = client.get("/spectrogram/no-such-job-id")
+    assert resp.status_code == 404
+    _reset_job_state()
+
+
+def test_spectrogram_endpoint_returns_200_with_expected_keys(tmp_path, monkeypatch) -> None:
+    """P2-A: returns 200 with mix.frames_b64/n_time/n_freq and vocals.available after a
+    completed job whose file path is registered in _job_file_paths."""
+    import numpy as np
+    import struct
+    import wave
+    from api import routes
+    from api.server import app as _app
+
+    _reset_job_state()
+    routes.UPLOAD_DIR = tmp_path / "uploads"
+    routes.OUTPUT_DIR = tmp_path / "outputs"
+
+    # Create a minimal valid WAV file (0.1 s of silence, 44100 Hz mono)
+    wav_path = tmp_path / "test_audio.wav"
+    n_frames = 4410  # 0.1 s at 44100 Hz
+    with wave.open(str(wav_path), "w") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(44100)
+        wf.writeframes(b"\x00\x00" * n_frames)
+
+    async def fake_pipeline(file_path: str, metadata=None):
+        routes.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        return {"metadata": {}, "summary": {}}
+
+    monkeypatch.setattr(routes, "analysis_pipeline", fake_pipeline)
+
+    with TestClient(_app) as client:
+        # Upload the WAV file to get a job_id
+        with open(wav_path, "rb") as fh:
+            resp = client.post(
+                "/analyze",
+                files={"audio": ("test_audio.wav", fh, "audio/wav")},
+            )
+        assert resp.status_code == 200
+        job_id = resp.json()["job_id"]
+
+        # Wait for completion
+        status = _wait_for_completion(client, job_id, timeout_s=5.0)
+        assert status["status"] == "completed"
+
+        # The spectrogram endpoint should return 200 with expected shape
+        spec_resp = client.get(f"/spectrogram/{job_id}")
+        assert spec_resp.status_code == 200
+        payload = spec_resp.json()
+
+        # Top-level keys
+        assert "mix" in payload
+        assert "vocals" in payload
+
+        mix = payload["mix"]
+        assert "frames_b64" in mix
+        assert "n_time" in mix
+        assert "n_freq" in mix
+        assert "frequencies_hz" in mix
+        assert "times_s" in mix
+        assert isinstance(mix["n_time"], int) and mix["n_time"] > 0
+        assert isinstance(mix["n_freq"], int) and mix["n_freq"] > 0
+        assert isinstance(mix["frequencies_hz"], list)
+
+        vocals = payload["vocals"]
+        assert "available" in vocals
+
+    _reset_job_state()
+
+
+def test_spectrogram_endpoint_vocals_available_false_when_demucs_unavailable(tmp_path, monkeypatch) -> None:
+    """P2-A: vocals.available=False when Demucs is not installed or cache miss."""
+    import wave
+    from api import routes
+    from api.server import app as _app
+
+    _reset_job_state()
+    routes.UPLOAD_DIR = tmp_path / "uploads"
+    routes.OUTPUT_DIR = tmp_path / "outputs"
+
+    # Patch vocal separation to be unavailable
+    monkeypatch.setattr(routes, "_vocal_separation_available", lambda: False, raising=False)
+
+    wav_path = tmp_path / "silent.wav"
+    with wave.open(str(wav_path), "w") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(44100)
+        wf.writeframes(b"\x00\x00" * 4410)
+
+    async def fake_pipeline(file_path: str, metadata=None):
+        routes.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        return {"metadata": {}, "summary": {}}
+
+    monkeypatch.setattr(routes, "analysis_pipeline", fake_pipeline)
+
+    with TestClient(_app) as client:
+        with open(wav_path, "rb") as fh:
+            resp = client.post(
+                "/analyze",
+                files={"audio": ("silent.wav", fh, "audio/wav")},
+            )
+        job_id = resp.json()["job_id"]
+        _wait_for_completion(client, job_id, timeout_s=5.0)
+
+        spec_resp = client.get(f"/spectrogram/{job_id}")
+        assert spec_resp.status_code == 200
+        payload = spec_resp.json()
+        # Vocals should be unavailable when separation is off and cache is empty
+        assert payload["vocals"]["available"] is False
+
+    _reset_job_state()
+
+
+def test_spectrogram_endpoint_existing_results_endpoint_unchanged(tmp_path, monkeypatch) -> None:
+    """P2-A: GET /results/{job_id} payload does NOT contain spectrogram data (AC-6)."""
+    from api import routes
+    from api.server import app as _app
+
+    _reset_job_state()
+    routes.UPLOAD_DIR = tmp_path / "uploads"
+    routes.OUTPUT_DIR = tmp_path / "outputs"
+
+    async def fake_pipeline(file_path: str, metadata=None):
+        routes.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        return {"metadata": {}, "summary": {}, "pitch": {}}
+
+    monkeypatch.setattr(routes, "analysis_pipeline", fake_pipeline)
+
+    import wave
+    wav_path = tmp_path / "check.wav"
+    with wave.open(str(wav_path), "w") as wf:
+        wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(44100)
+        wf.writeframes(b"\x00\x00" * 4410)
+
+    with TestClient(_app) as client:
+        with open(wav_path, "rb") as fh:
+            resp = client.post("/analyze", files={"audio": ("check.wav", fh, "audio/wav")})
+        job_id = resp.json()["job_id"]
+        _wait_for_completion(client, job_id, timeout_s=5.0)
+
+        result_resp = client.get(f"/results/{job_id}?format=json")
+        assert result_resp.status_code == 200
+        result_payload = result_resp.json()
+        # Ensure no spectrogram key injected into standard results payload
+        assert "spectrogram" not in result_payload
+        assert "mix" not in result_payload
+        assert "vocals" not in result_payload
+
+    _reset_job_state()

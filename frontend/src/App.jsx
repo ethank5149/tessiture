@@ -637,6 +637,7 @@ function App() {
               onDownloadPdf={() => downloadResults("pdf")}
               audioSourceUrl={analysisAudioSourceUrl}
               audioSourceLabel={analysisAudioSourceLabel}
+              jobId={jobId}
             />
             <div className="step-panel__actions">
               <button type="button" className="button" onClick={resetAll}>

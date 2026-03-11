@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import ReportExporter from "./ReportExporter";
+import SpectrogramInspector from "./SpectrogramInspector";
 
 const SESSION_SEGMENTS = ["Start", "Middle", "End"];
 
@@ -399,6 +400,38 @@ const extractPitchFramesForGuidance = (results) => {
     .filter(Boolean);
 };
 
+/**
+ * AdvancedInspectorSection
+ * Renders the SpectrogramInspector open/visible by default as a primary
+ * analysis feature. The collapsible details wrapper is retained so the user
+ * can optionally collapse it, but we initialise open=true so it renders
+ * immediately on mount and the spectrogram fetch fires right away.
+ */
+function AdvancedInspectorToggle({ jobId, audioRef, results, duration }) {
+  const [isOpen, setIsOpen] = useState(true);
+  return (
+    <details
+      className="spectrogram-inspector-toggle"
+      open={isOpen}
+      onToggle={(e) => setIsOpen(e.currentTarget.open)}
+    >
+      <summary className="spectrogram-inspector-toggle__summary">
+        Audio inspector
+      </summary>
+      {isOpen ? (
+        <SpectrogramInspector
+          jobId={jobId}
+          audioRef={audioRef}
+          evidenceEvents={results?.evidence?.events ?? []}
+          durationSeconds={duration ?? 0}
+          pitchFrames={results?.pitch?.frames ?? results?.pitch_frames ?? []}
+        />
+      ) : null}
+    </details>
+  );
+}
+
+
 function AnalysisResults({
   results = null,
   status = null,
@@ -409,6 +442,7 @@ function AnalysisResults({
   onDownloadPdf,
   audioSourceUrl = null,
   audioSourceLabel = null,
+  jobId = null,
 }) {
   const titleId = useId();
   const [activeResultsView, setActiveResultsView] = useState(RESULTS_VIEWS.analysis);
@@ -958,6 +992,15 @@ function AnalysisResults({
                 </div>
               </dl>
             </section>
+          ) : null}
+
+          {jobId ? (
+            <AdvancedInspectorToggle
+              jobId={jobId}
+              audioRef={audioRef}
+              results={results}
+              duration={duration}
+            />
           ) : null}
 
           <ReportExporter

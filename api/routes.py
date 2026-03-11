@@ -9,7 +9,7 @@ import re
 import time
 import warnings
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set, Union
 from uuid import uuid4
 
 import numpy as np
@@ -134,6 +134,16 @@ _STEM_CACHE_DIR: Optional[Path] = (
     if os.getenv("TESSITURE_STEM_CACHE_DIR") or _VOCAL_SEPARATION_MODE != "off"
     else None
 )
+
+# Spectrogram frequency display bounds (Hz)
+_SPECT_FREQ_MIN_HZ: float = 80.0
+_SPECT_FREQ_MAX_HZ: float = 8000.0
+
+# Volatile in-process file-path registry.  Populated by the analyze endpoints
+# at job-creation time so that /spectrogram/{job_id} can find the source file
+# without re-loading the full result.  Falls back to metadata._original_file_path
+# stored in the analysis result when the dict is empty after a server restart.
+_job_file_paths: Dict[str, str] = {}
 
 
 def _is_voiced_frame(frame: Mapping[str, Any]) -> bool:
@@ -444,8 +454,6 @@ def _as_finite_array(values: Sequence[Any]) -> np.ndarray:
             continue
         numeric.append(float(number))
     return np.asarray(numeric, dtype=float)
-
-
 @lru_cache(maxsize=1)
 def _build_reference_calibration_uncertainty() -> Dict[str, Any]:
     try:
@@ -576,12 +584,12 @@ def _build_metric_inference(
     }
 
     logger.debug(
-        "analysis_metric_inference_build_done metric=%s estimate=%s ci_low=%s ci_high=%s p_value=%s n_sample=%d",
+        "analysis_metric_inference_build_done metric=%s estimate=%s ci_low=%s ci_high=%s p_value=%s n_sample=%s",
         metric_name,
-        payload.get("estimate"),
-        payload.get("confidence_interval", {}).get("low"),
-        payload.get("confidence_interval", {}).get("high"),
-        payload.get("p_value"),
+        payload.get("estimate") if isinstance(payload, Mapping) else None,
+        payload.get("confidence_interval", {}).get("low") if isinstance(payload, Mapping) else None,
+        payload.get("confidence_interval", {}).get("high") if isinstance(payload, Mapping) else None,
+        payload.get("p_value") if isinstance(payload, Mapping) else None,
         sample_size,
     )
     return payload
@@ -1352,7 +1360,7 @@ def _build_summary(result: Mapping[str, Any], duration_seconds: float) -> Dict[s
     mean_confidence = float(np.mean(confidences)) if confidences else 0.0
 
     tessitura_metrics = result.get("tessitura", {}).get("metrics", {}) if isinstance(result, Mapping) else {}
-    tessitura_band = tessitura_metrics.get("tessitura_band") if isinstance(tessitura_metrics, Mapping) else None
+    tessitura_band = tessitura_metrics.get("tessitura_band") if isinstance(tessitura_metrics, Mapping) else []
     tessitura_range_notes: Optional[List[str]] = None
     if isinstance(tessitura_band, Sequence) and not isinstance(tessitura_band, (str, bytes)):
         candidate_notes = [note for note in _midi_values_to_note_names(list(tessitura_band)[:2]) if note is not None]
@@ -1587,6 +1595,10 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
     chord_timeline = _build_chord_timeline(note_events)
 
     report_progress(65, "advanced_analysis", "Running advanced musical and vocal analysis.")
+    # Spectrogram data is served via the dedicated GET /spectrogram/{job_id} endpoint;
+    # the legacy stft_raw is kept as an empty dict for backward compatibility with any
+    # consuming code that reads analysis_payload["spectrogram"] or ["spectrum"].
+    stft_raw: Dict[str, Any] = {}
     voiced_pitch_frames = [frame for frame in pitch_frames if _is_voiced_frame(frame)]
     voiced_midi = [
         float(frame["midi"])
@@ -1708,6 +1720,7 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
         "hop_length": STFT_HOP,
         "frame_rate": float(sample_rate) / float(max(STFT_HOP, 1)),
         "duration_seconds": duration_seconds,
+        "spectrogram": stft_raw
     }
     if separation_info:
         metadata_payload["vocal_separation"] = separation_info
@@ -1716,6 +1729,9 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
             if str(key).startswith("_"):
                 continue
             metadata_payload[str(key)] = value
+    # Store the original file path so the spectrogram endpoint can recover it
+    # from the job result even after a server restart (_job_file_paths eviction).
+    metadata_payload["_original_file_path"] = file_path
 
     analysis_payload: Dict[str, Any] = {
         "metadata": metadata_payload,
@@ -1725,28 +1741,28 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
             "f0_min": float(np.min(voiced_f0)) if voiced_f0 else None,
             "f0_max": float(np.max(voiced_f0)) if voiced_f0 else None,
         },
-        "pitch_frames": pitch_frames,
-        "note_events": note_events,
-        "notes": {"events": note_events},
-        "chords": {"timeline": chord_timeline},
-        "keys": {
-            "trajectory": key_trajectory,
-            "probabilities": key_probabilities,
-            "best_key": key_detection_result.best_key if key_detection_result else None,
-        },
-        "tessitura": tessitura_payload,
-        "advanced": advanced_payload,
-        "uncertainty": analysis_uncertainty,
-        "inferential_statistics": inferential_statistics,
-        "calibration": {
-            "summary": calibration_summary,
-        },
-        "diagnostics": {
-            "pitch_analysis_methods": pitch_method_diagnostics,
-        },
-        "evidence": evidence_payload,
+        "spectrum": stft_raw
     }
-    analysis_payload["summary"] = _build_summary(analysis_payload, duration_seconds=duration_seconds)
+    analysis_payload["pitch_frames"] = pitch_frames
+    analysis_payload["note_events"] = note_events
+    analysis_payload["notes"] = {"events": note_events}
+    analysis_payload["chords"] = {"timeline": chord_timeline}
+    analysis_payload["keys"] = {
+        "trajectory": key_trajectory,
+        "probabilities": key_probabilities,
+        "best_key": key_detection_result.best_key if key_detection_result else None,
+    }
+    analysis_payload["tessitura"] = tessitura_payload
+    analysis_payload["advanced"] = advanced_payload
+    analysis_payload["uncertainty"] = analysis_uncertainty
+    analysis_payload["inferential_statistics"] = inferential_statistics
+    analysis_payload["calibration"] = {
+        "summary": calibration_summary,
+    }
+    analysis_payload["diagnostics"] = {
+        "pitch_analysis_methods": pitch_method_diagnostics,
+    }
+    analysis_payload["evidence"] = evidence_payload
 
     export_files: Dict[str, str] = {}
     export_stem = f"{Path(file_path).stem}_{uuid4().hex[:8]}"
@@ -1794,11 +1810,108 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
     return response_payload
 
 
-async def analysis_pipeline(
-    file_path: str,
-    metadata: Optional[Mapping[str, Any]] = None,
+# Public alias exposed at module level so tests can monkeypatch it without
+# reaching into the private name.  All analyze endpoints should use this name.
+analysis_pipeline = _run_analysis_pipeline
+
+
+@router.post("/analyze/example")
+async def analyze_example_audio(
+    request: Request,
+    example_id: str = Query(..., min_length=1),
 ) -> Dict[str, Any]:
-    return await asyncio.to_thread(_run_analysis_pipeline, file_path=file_path, metadata=metadata)
+    """Start an analysis job for a gallery example track.
+
+    Returns:
+        ``{ job_id, status_url, results_url }``
+    """
+    _rate_limit_check(request)
+    example, file_path = _resolve_example_track(example_id)
+    job_id = job_manager.create_job(
+        str(file_path),
+        analysis_pipeline,
+        metadata={
+            "filename": example["display_name"],
+            "content_type": example["content_type"],
+            "source": "example",
+            "example_id": example["id"],
+            "original_filename": example["filename"],
+            "audio_type_requested": "analytical",
+            "audio_type_detected": "analytical",
+        },
+    )
+    _job_file_paths[job_id] = str(file_path)
+    return {
+        "job_id": job_id,
+        "status_url": f"/status/{job_id}",
+        "results_url": f"/results/{job_id}",
+    }
+
+
+@router.post("/analyze")
+async def analyze_audio(request: Request, audio: UploadFile = File(...)) -> Dict[str, Any]:
+    """Upload and analyse an audio file.
+
+    Returns:
+        ``{ job_id, status_url, results_url }``
+    """
+    _rate_limit_check(request)
+    file_path = await _save_upload(audio)
+    job_id = job_manager.create_job(
+        str(file_path),
+        analysis_pipeline,
+        metadata={"filename": audio.filename, "content_type": audio.content_type, "source": "upload"},
+    )
+    _job_file_paths[job_id] = str(file_path)
+    return {
+        "job_id": job_id,
+        "status_url": f"/status/{job_id}",
+        "results_url": f"/results/{job_id}",
+    }
+
+
+@router.get("/status/{job_id}")
+def get_status(job_id: str) -> Dict[str, Any]:
+    job = job_manager.get_status(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    logger.info(
+        "analysis_status_poll job_id=%s status=%s progress=%s stage=%s",
+        job_id,
+        job.status,
+        job.progress,
+        job.stage,
+    )
+    return _serialize_status(job)
+
+
+@router.get("/results/{job_id}")
+def get_results(
+    job_id: str,
+    format: str = Query("json", pattern="^(json|csv|pdf)$"),
+) -> Any:
+    job = job_manager.get_status(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    if job.status != "completed":
+        raise HTTPException(status_code=409, detail=f"Job not completed (status={job.status}).")
+    result = job_manager.get_result(job_id) or {}
+    if format == "json":
+        return result
+    if not isinstance(result, Mapping):
+        raise HTTPException(status_code=404, detail=f"No {format} result available.")
+    result_path = _extract_result_path(result, format)
+    if not result_path:
+        raise HTTPException(status_code=404, detail=f"No {format} result available.")
+    file_path = Path(result_path)
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"{format.upper()} output not found.")
+    media_type = "text/csv" if format == "csv" else "application/pdf"
+    return FileResponse(
+        str(file_path),
+        media_type=media_type,
+        filename=file_path.name,
+    )
 
 
 @router.get("/examples")
@@ -1939,97 +2052,167 @@ def serve_example_file(filename: str) -> Any:
     return FileResponse(str(candidate), media_type=media_type, filename=filename)
 
 
-@router.post("/analyze/example")
-async def analyze_example_audio(
-    request: Request,
-    example_id: str = Query(..., min_length=1),
+def _build_spectrogram_payload(
+    file_path: str,
+    *,
+    vocal_cache_key: Optional[str] = None,
 ) -> Dict[str, Any]:
-    _rate_limit_check(request)
-    example, file_path = _resolve_example_track(example_id)
-    job_id = job_manager.create_job(
-        str(file_path),
-        analysis_pipeline,
-        metadata={
-            "filename": example["display_name"],
-            "content_type": example["content_type"],
-            "source": "example",
-            "example_id": example["id"],
-            "original_filename": example["filename"],
-            "audio_type_requested": "analytical",
-            "audio_type_detected": "analytical",
-        },
-    )
-    return {
-        "job_id": job_id,
-        "status_url": f"/status/{job_id}",
-        "results_url": f"/results/{job_id}",
-    }
+    """Compute and return base64-encoded spectrogram data for the mix and optionally vocals.
+
+    Loads the audio, computes STFT, filters to [_SPECT_FREQ_MIN_HZ, _SPECT_FREQ_MAX_HZ],
+    normalises to dB, scales to uint8 and base64-encodes for JSON transport.
+
+    Args:
+        file_path: Path to the original audio file.
+        vocal_cache_key: SHA-256 cache key used to look up a pre-separated vocal
+            stem.  If ``None`` or the stem is not cached, the vocals channel will
+            report ``available=False``.
+
+    Returns:
+        ``{"mix": {frames_b64, n_time, n_freq, frequencies_hz, times_s},
+           "vocals": {available, [same keys if available]}}``
+    """
+    import base64
+
+    # Load the mix audio using the same two-step decode+preprocess as the main pipeline.
+    try:
+        _raw_audio, _raw_sr = _decode_audio_file(file_path)
+        _preprocessed = preprocess_audio(
+            _raw_audio,
+            sample_rate=int(_raw_sr),
+            target_sr=TARGET_SAMPLE_RATE,
+            mono=True,
+            normalize=True,
+        )
+        mix_audio = _preprocessed.audio
+        sample_rate = int(_preprocessed.sample_rate)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Could not load audio for spectrogram: {exc}",
+        )
+
+    def _stft_to_payload(audio: np.ndarray, sr: int) -> Dict[str, Any]:
+        result = compute_stft(audio, sample_rate=sr, n_fft=STFT_NFFT, hop_length=STFT_HOP)
+        freqs = result.frequencies
+        freq_mask = (freqs >= _SPECT_FREQ_MIN_HZ) & (freqs <= _SPECT_FREQ_MAX_HZ)
+        # compute_stft returns spectrum as (n_freq, n_time); select freq bands → (n_filtered_freq, n_time)
+        mag = result.spectrum[freq_mask, :]  # shape: (n_freq_filtered, n_time)
+
+        # Convert to dB, clamp, normalise to [0, 1], scale to uint8
+        db_floor = -80.0
+        ref_val = float(np.max(mag)) if mag.size > 0 else 1.0
+        ref_val = max(ref_val, 1e-10)
+        mag_db = 20.0 * np.log10(mag / ref_val + 1e-10)
+        mag_db = np.clip(mag_db, db_floor, 0.0)
+        mag_norm = ((mag_db - db_floor) / (-db_floor))
+        mag_uint8 = (mag_norm * 255.0).astype(np.uint8)
+        frames_b64 = base64.b64encode(mag_uint8.tobytes()).decode("ascii")
+        return {
+            "frames_b64": frames_b64,
+            "n_time": int(mag.shape[1]),
+            "n_freq": int(mag.shape[0]),
+            "frequencies_hz": freqs[freq_mask].tolist(),
+            "times_s": result.times.tolist(),
+        }
+
+    mix_payload = _stft_to_payload(mix_audio, sample_rate)
+
+    # Attempt vocal stem
+    vocals_payload: Dict[str, Any] = {"available": False}
+    if (
+        vocal_cache_key
+        and _STEM_CACHE_DIR is not None
+        and _vocal_separation_available()
+    ):
+        try:
+            from analysis.dsp.vocal_separation import load_cached_stem
+
+            cached = load_cached_stem(_STEM_CACHE_DIR, vocal_cache_key)
+            if cached is not None:
+                vocal_audio, vocal_sr = cached
+                vocal_data = _stft_to_payload(vocal_audio, vocal_sr)
+                vocals_payload = {"available": True, **vocal_data}
+        except Exception as exc:
+            logger.debug(
+                "spectrogram_vocals_unavailable key=%s error=%s",
+                vocal_cache_key[:12] if vocal_cache_key else "",
+                exc,
+            )
+
+    return {"mix": mix_payload, "vocals": vocals_payload}
 
 
-@router.post("/analyze")
-async def analyze_audio(request: Request, audio: UploadFile = File(...)) -> Dict[str, Any]:
-    _rate_limit_check(request)
-    file_path = await _save_upload(audio)
-    job_id = job_manager.create_job(
-        str(file_path),
-        analysis_pipeline,
-        metadata={"filename": audio.filename, "content_type": audio.content_type, "source": "upload"},
-    )
-    return {
-        "job_id": job_id,
-        "status_url": f"/status/{job_id}",
-        "results_url": f"/results/{job_id}",
-    }
+@router.get("/spectrogram/{job_id}")
+def get_spectrogram(job_id: str) -> Dict[str, Any]:
+    """Return base64-encoded spectrogram data (mix + optional vocal stem) for a completed job.
 
+    File-path resolution order:
+        1. In-process ``_job_file_paths`` dict (populated at job-creation time).
+        2. ``result["metadata"]["_original_file_path"]`` stored in the job result
+        (survives server restarts because it is serialised with the analysis payload).
 
-@router.get("/status/{job_id}")
-def get_status(job_id: str) -> Dict[str, Any]:
+    Returns 404 if the job is unknown, 409 if the job is not yet complete,
+    and 503 only if the audio file is genuinely unavailable.
+    """
     job = job_manager.get_status(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found.")
-    logger.info(
-        "analysis_status_poll job_id=%s status=%s progress=%s stage=%s",
-        job_id,
-        job.status,
-        job.progress,
-        job.stage,
-    )
-    return _serialize_status(job)
 
-
-@router.get("/results/{job_id}")
-def get_results(
-    job_id: str,
-    format: str = Query("json", pattern="^(json|csv|pdf)$"),
-) -> Any:
-    job = job_manager.get_status(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found.")
     if job.status != "completed":
-        raise HTTPException(status_code=409, detail=f"Job not completed (status={job.status}).")
-    result = job_manager.get_result(job_id) or {}
-    if format == "json":
-        return result
-    if not isinstance(result, Mapping):
-        raise HTTPException(status_code=404, detail=f"No {format} result available.")
-    result_path = _extract_result_path(result, format)
-    if not result_path:
-        raise HTTPException(status_code=404, detail=f"No {format} result available.")
-    file_path = Path(result_path)
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail=f"{format.upper()} output not found.")
-    media_type = "text/csv" if format == "csv" else "application/pdf"
-    return FileResponse(
-        str(file_path),
-        media_type=media_type,
-        filename=file_path.name,
+        raise HTTPException(status_code=409, detail="Job analysis not yet complete.")
+
+    # Resolve file path: in-process dict first, then metadata fallback.
+    file_path: Optional[str] = _job_file_paths.get(job_id)
+    vocal_cache_key: Optional[str] = None
+
+    if not file_path or not Path(file_path).is_file():
+        result = job_manager.get_result(job_id)
+        if result is not None:
+            metadata = result.get("metadata", {}) if isinstance(result, dict) else {}
+            fallback = metadata.get("_original_file_path") if isinstance(metadata, dict) else None
+            if fallback and Path(str(fallback)).is_file():
+                file_path = str(fallback)
+            separation_info = metadata.get("vocal_separation") if isinstance(metadata, dict) else None
+            if isinstance(separation_info, dict) and separation_info.get("applied"):
+                try:
+                    from analysis.dsp.vocal_separation import cache_key as _voc_cache_key
+                    vocal_cache_key = _voc_cache_key(file_path) if file_path else None
+                except Exception:
+                    pass
+
+    if not file_path or not Path(file_path).is_file():
+        raise HTTPException(
+            status_code=503,
+            detail="Source audio file is no longer available for spectrogram generation.",
+        )
+
+    # If we resolved the path from in-process dict, still try to get vocal cache key
+    if vocal_cache_key is None and _job_file_paths.get(job_id):
+        result = job_manager.get_result(job_id)
+        if result is not None:
+            metadata = result.get("metadata", {}) if isinstance(result, dict) else {}
+            separation_info = metadata.get("vocal_separation") if isinstance(metadata, dict) else None
+            if isinstance(separation_info, dict) and separation_info.get("applied"):
+                try:
+                    from analysis.dsp.vocal_separation import cache_key as _voc_cache_key
+                    vocal_cache_key = _voc_cache_key(file_path)
+                except Exception:
+                    pass
+
+    logger.info(
+        "spectrogram_request job_id=%s file_path=%s vocal_cache_key=%s",
+        job_id,
+        file_path,
+        vocal_cache_key[:12] if vocal_cache_key else None,
     )
+
+    return _build_spectrogram_payload(file_path, vocal_cache_key=vocal_cache_key)
 
 
 # ---------------------------------------------------------------------------
 # Reference track management endpoints
 # ---------------------------------------------------------------------------
-
 
 @router.post("/reference/upload")
 async def upload_reference_track(
@@ -2195,3 +2378,4 @@ def get_reference_analysis(reference_id: str) -> Dict[str, Any]:
         "formant_summary": ref.formant_summary,
         "created_at": ref.created_at.isoformat(),
     }
+

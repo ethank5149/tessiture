@@ -8,6 +8,7 @@ import {
   fetchExampleTracks,
   fetchJobResults,
   fetchJobStatus,
+  fetchSpectrogram,
   normalizeJobStatus,
   submitAnalysisJob,
   submitExampleAnalysisJob,
@@ -19,12 +20,14 @@ import ComparisonMetricsPanel from "./ComparisonMetricsPanel";
 import ComparisonResults from "./ComparisonResults";
 import ExampleGallery from "./ExampleGallery";
 import ReferenceTrackSelector from "./ReferenceTrackSelector";
+import SpectrogramInspector from "./SpectrogramInspector";
 
 vi.mock("../api", () => ({
   downloadJobResults: vi.fn(),
   fetchExampleTracks: vi.fn(),
   fetchJobResults: vi.fn(),
   fetchJobStatus: vi.fn(),
+  fetchSpectrogram: vi.fn(),
   normalizeJobStatus: vi.fn((payload) => payload),
   submitAnalysisJob: vi.fn(),
   submitExampleAnalysisJob: vi.fn(),
@@ -32,6 +35,13 @@ vi.mock("../api", () => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default fetchSpectrogram to a resolved Promise so SpectrogramInspector
+  // (which now mounts immediately at isOpen=true) doesn't crash with .then()
+  // on undefined in tests that don't explicitly override the mock.
+  fetchSpectrogram.mockResolvedValue({
+    mix: { frames_b64: "", n_time: 0, n_freq: 0, frequencies_hz: [], times_s: [] },
+    vocals: { available: false },
+  });
 });
 
 afterEach(() => {
@@ -1400,5 +1410,152 @@ describe("api.js comparison function exports", () => {
   it("prepareReferenceFromUpload is exported", async () => {
     const actualApi = await vi.importActual("../api");
     expect(actualApi.prepareReferenceFromUpload).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SpectrogramInspector Ã¢ P2-B, P2-C, P2-D
+// ---------------------------------------------------------------------------
+describe("SpectrogramInspector", () => {
+  // Build a minimal valid base64 spectrogram payload
+  function makeSpectrogramData({ vocalsAvailable = true } = {}) {
+    const nFreq = 4;
+    const nTime = 8;
+    const bytes = new Uint8Array(nFreq * nTime);
+    for (let i = 0; i < bytes.length; i++) bytes[i] = i * 8;
+    const b64 = btoa(String.fromCharCode(...bytes));
+    const mix = {
+      frames_b64: b64,
+      n_freq: nFreq,
+      n_time: nTime,
+      frequencies_hz: [80, 200, 500, 2000],
+      times_s: [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7],
+    };
+    const vocals = vocalsAvailable
+      ? { ...mix, available: true }
+      : { available: false };
+    return { mix, vocals };
+  }
+
+  it("renders a <canvas> element after data loads", async () => {
+    fetchSpectrogram.mockResolvedValueOnce(makeSpectrogramData());
+
+    const audioRef = { current: { currentTime: 0 } };
+    render(
+      <SpectrogramInspector
+        jobId="test-job-1"
+        audioRef={audioRef}
+        evidenceEvents={[]}
+        durationSeconds={5}
+      />
+    );
+
+    // While loading the loading text should appear
+    expect(screen.getByText(/Loading spectrogram/i)).toBeInTheDocument();
+
+    // After resolving, canvas should appear
+    const canvas = await screen.findByRole("img", { name: /spectrogram inspector/i });
+    expect(canvas.tagName).toBe("CANVAS");
+  });
+
+  it("shows vocals unavailable note when vocals.available is false", async () => {
+    fetchSpectrogram.mockResolvedValueOnce(makeSpectrogramData({ vocalsAvailable: false }));
+
+    const audioRef = { current: { currentTime: 0 } };
+    render(
+      <SpectrogramInspector
+        jobId="test-job-2"
+        audioRef={audioRef}
+        evidenceEvents={[]}
+        durationSeconds={5}
+      />
+    );
+
+    await screen.findByRole("img", { name: /spectrogram inspector/i });
+    expect(screen.getByText(/Vocal overlay unavailable/i)).toBeInTheDocument();
+  });
+
+  it("shows error message when fetchSpectrogram rejects", async () => {
+    fetchSpectrogram.mockRejectedValueOnce(new Error("Spectrogram unavailable (503)"));
+
+    const audioRef = { current: { currentTime: 0 } };
+    render(
+      <SpectrogramInspector
+        jobId="test-job-3"
+        audioRef={audioRef}
+        evidenceEvents={[]}
+        durationSeconds={5}
+      />
+    );
+
+    const errorEl = await screen.findByRole("alert");
+    expect(errorEl).toBeInTheDocument();
+    expect(errorEl.textContent).toMatch(/unavailable/i);
+  });
+
+  it("inspector is open by default in AnalysisResults when jobId is provided", () => {
+    // SpectrogramInspector mounts immediately (isOpen defaults to true) so
+    // fetchSpectrogram IS called on first render when a jobId is present.
+    fetchSpectrogram.mockResolvedValue(makeSpectrogramData());
+
+    const results = {
+      metadata: { duration_seconds: 5 },
+      summary: { f0_min: 220, f0_max: 440 },
+      evidence: { events: [], guidance: [] },
+    };
+
+    render(
+      <AnalysisResults
+        results={results}
+        status={{ status: "completed" }}
+        isFetchingResults={false}
+        onDownloadCsv={vi.fn()}
+        onDownloadJson={vi.fn()}
+        onDownloadPdf={vi.fn()}
+        jobId="test-job-open"
+      />
+    );
+
+    // The details summary toggle should be present with the updated label
+    expect(screen.getByText("Audio inspector")).toBeInTheDocument();
+
+    // The inspector section should be visible (open=true by default)
+    const details = screen.getByText("Audio inspector").closest("details");
+    expect(details).toHaveAttribute("open");
+
+    // fetchSpectrogram should have been called immediately on mount
+    expect(fetchSpectrogram).toHaveBeenCalledWith("test-job-open");
+  });
+
+  it("does not break text-first guidance cards (no-graphs constraint)", () => {
+    // Standard AnalysisResults render without jobId must still show guidance
+    fetchSpectrogram.mockResolvedValue(makeSpectrogramData());
+
+    const results = {
+      metadata: { duration_seconds: 5 },
+      summary: { f0_min: 220, f0_max: 440 },
+      evidence: { events: [], guidance: [{ id: "g1", claim: "Test claim", why: "Test why", action: "Test action", evidence_refs: [] }] },
+    };
+
+    render(
+      <AnalysisResults
+        results={results}
+        status={{ status: "completed" }}
+        isFetchingResults={false}
+        onDownloadCsv={vi.fn()}
+        onDownloadJson={vi.fn()}
+        onDownloadPdf={vi.fn()}
+        // no jobId Ã¢ spectrogram toggle should be absent
+      />
+    );
+
+    // Guidance cards should still render
+    expect(screen.getByText("Test claim")).toBeInTheDocument();
+
+    // No inspector toggle without jobId
+    expect(screen.queryByText("Advanced audio inspector")).toBeNull();
+
+    // No canvas
+    expect(screen.queryByRole("img", { name: /spectrogram inspector/i })).toBeNull();
   });
 });
