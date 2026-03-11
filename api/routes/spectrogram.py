@@ -82,4 +82,20 @@ def get_spectrogram(job_id: str) -> Dict[str, Any]:
         vocal_cache_key[:12] if vocal_cache_key else None,
     )
 
-    return main_routes._build_spectrogram_payload(file_path, vocal_cache_key=vocal_cache_key)
+    # Debug: log separation_info from metadata
+    result = job_manager.get_result(job_id)
+    audio_type: Optional[str] = None
+    if result is not None:
+        metadata = result.get("metadata", {}) if isinstance(result, dict) else {}
+        separation_info = metadata.get("vocal_separation") if isinstance(metadata, dict) else None
+        # Get detected audio type if available
+        if isinstance(separation_info, dict):
+            audio_type = separation_info.get("audio_type_detected")
+        main_routes.logger.info(
+            "spectrogram_vocal_debug job_id=%s separation_info=%s audio_type=%s",
+            job_id,
+            separation_info,
+            audio_type,
+        )
+
+    return main_routes._build_spectrogram_payload(file_path, vocal_cache_key=vocal_cache_key, audio_type=audio_type)

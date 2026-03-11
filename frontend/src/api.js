@@ -243,13 +243,14 @@ export const normalizeAnalysisResult = (payload = {}) => {
   };
 };
 
-export const submitAnalysisJob = async (file, audioType = "isolated") => {
+export const submitAnalysisJob = async (file, audioType = "isolated", forceVocalSeparation = false) => {
   if (!file) {
     throw new Error("Audio file is required.");
   }
   const formData = new FormData();
   formData.append("audio", file);
   formData.append("audio_type", audioType);
+  formData.append("force_vocal_separation", String(forceVocalSeparation));
   const response = await ensureOk(
     await fetch(buildUrl("/analyze"), {
       method: "POST",

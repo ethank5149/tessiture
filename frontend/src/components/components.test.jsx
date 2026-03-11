@@ -1472,7 +1472,7 @@ describe("SpectrogramInspector", () => {
     );
 
     await screen.findByRole("img", { name: /spectrogram inspector/i });
-    expect(screen.getByText(/Vocal overlay unavailable/i)).toBeInTheDocument();
+    expect(screen.getByText(/Vocal stem unavailable/i)).toBeInTheDocument();
   });
 
   it("shows error message when fetchSpectrogram rejects", async () => {

@@ -109,6 +109,7 @@ function App() {
   const [selectedExampleId, setSelectedExampleId] = useState(null);
   const [acceptedFile, setAcceptedFile] = useState(null); // file accepted by uploader before intent
   const [audioType, setAudioType] = useState("isolated");
+  const [forceVocalSeparation, setForceVocalSeparation] = useState(false);
 
   // Comparison state
   const [referenceId, setReferenceId] = useState(null);
@@ -196,9 +197,9 @@ function App() {
   const submitUploadJob = useCallback(
     async (file) => {
       setSelectedExampleId(null);
-      return submitJob(() => submitAnalysisJob(file, audioType));
+      return submitJob(() => submitAnalysisJob(file, audioType, forceVocalSeparation));
     },
-    [submitJob, audioType]
+    [submitJob, audioType, forceVocalSeparation]
   );
 
   const submitExampleJob = useCallback(
@@ -485,6 +486,8 @@ function App() {
               error={acceptedFile ? null : error}
               audioType={audioType}
               onAudioTypeChange={(t) => setAudioType(t)}
+              forceVocalSeparation={forceVocalSeparation}
+              onForceVocalSeparationChange={(v) => setForceVocalSeparation(v)}
             />
 
             {acceptedFile && analysisMode === null ? (

@@ -7,7 +7,7 @@ Endpoints for uploading audio files and creating analysis jobs.
 
 from typing import Any, Dict
 
-from fastapi import APIRouter, File, Query, Request, UploadFile
+from fastapi import APIRouter, File, Form, Query, Request, UploadFile
 
 from api import job_manager
 from api import api_router as main_routes
@@ -49,7 +49,12 @@ async def analyze_example_audio(
 
 
 @router.post("/analyze")
-async def analyze_audio(request: Request, audio: UploadFile = File(...)) -> Dict[str, Any]:
+async def analyze_audio(
+    request: Request,
+    audio: UploadFile = File(...),
+    audio_type: str = Form("isolated"),
+    force_vocal_separation: bool = Form(false),
+) -> Dict[str, Any]:
     """Upload and analyse an audio file.
 
     Returns:
@@ -60,7 +65,13 @@ async def analyze_audio(request: Request, audio: UploadFile = File(...)) -> Dict
     job_id = job_manager.create_job(
         str(file_path),
         main_routes.analysis_pipeline,
-        metadata={"filename": audio.filename, "content_type": audio.content_type, "source": "upload"},
+        metadata={
+            "filename": audio.filename,
+            "content_type": audio.content_type,
+            "source": "upload",
+            "audio_type": audio_type,
+            "force_vocal_separation": force_vocal_separation,
+        },
     )
     main_routes._job_file_paths[job_id] = str(file_path)
     return {

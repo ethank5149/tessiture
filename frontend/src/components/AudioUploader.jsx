@@ -59,6 +59,8 @@ function AudioUploader({
   error = null,
   audioType = "isolated",
   onAudioTypeChange = null,
+  forceVocalSeparation = false,
+  onForceVocalSeparationChange = null,
 }) {
   const inputId = useId();
   const helperId = useId();
@@ -92,6 +94,10 @@ function AudioUploader({
 
   const handleAudioTypeChange = (event) => {
     onAudioTypeChange?.(event.target.value);
+  };
+
+  const handleForceVocalSeparationChange = (event) => {
+    onForceVocalSeparationChange?.(event.target.checked);
   };
 
   const isBusy = Boolean(isSubmitting);
@@ -155,6 +161,22 @@ function AudioUploader({
           </fieldset>
           <p className="uploader__helper">
             Best results with isolated vocal recordings (no backing track). If your file contains instruments, select Mixed Track.
+          </p>
+        </div>
+
+        <div className="uploader__field">
+          <label className="uploader__checkbox-label">
+            <input
+              type="checkbox"
+              checked={forceVocalSeparation}
+              onChange={handleForceVocalSeparationChange}
+              disabled={isBusy}
+              className="uploader__checkbox"
+            />
+            Force vocal separation
+          </label>
+          <p className="uploader__helper">
+            Run Demucs vocal separation even for isolated vocals. May help create a cleaner vocal stem for a cappella recordings.
           </p>
         </div>
 

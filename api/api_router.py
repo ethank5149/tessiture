@@ -1470,8 +1470,10 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
     # Optional vocal source separation — gated by audio_type
     # Determine audio_type from metadata
     _audio_type_requested = "isolated"
+    _force_vocal_separation = False
     if isinstance(metadata, Mapping):
         _audio_type_requested = str(metadata.get("audio_type") or "isolated").lower().strip()
+        _force_vocal_separation = bool(metadata.get("force_vocal_separation", False))
         # Example gallery tracks and reference uploads default to "mixed"
         _source = str(metadata.get("source") or "").lower()
         if _audio_type_requested == "isolated" and _source in ("example", "reference"):
@@ -1487,12 +1489,18 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
         _detected_audio_type = _audio_type_requested
 
     # Only apply separation when audio is identified as mixed and Demucs is available
+    # OR when force_vocal_separation is enabled
     _separation_enabled = _VOCAL_SEPARATION_MODE != "off"
-    _do_separate = _detected_audio_type == "mixed" and _separation_enabled and _vocal_separation_available()
+    _do_separate = (
+        (_detected_audio_type == "mixed" or _force_vocal_separation)
+        and _separation_enabled
+        and _vocal_separation_available()
+    )
 
     separation_info: dict = {
         "audio_type_requested": _audio_type_requested,
         "audio_type_detected": _detected_audio_type,
+        "force_vocal_separation": _force_vocal_separation,
         "applied": False,
     }
     if _do_separate:
@@ -2069,6 +2077,7 @@ def _build_spectrogram_payload(
     file_path: str,
     *,
     vocal_cache_key: Optional[str] = None,
+    audio_type: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Compute and return base64-encoded spectrogram data for the mix and optionally vocals.
 
@@ -2080,10 +2089,11 @@ def _build_spectrogram_payload(
         vocal_cache_key: SHA-256 cache key used to look up a pre-separated vocal
             stem.  If ``None`` or the stem is not cached, the vocals channel will
             report ``available=False``.
+        audio_type: The detected audio type ("isolated" or "mixed") from analysis.
 
     Returns:
         ``{"mix": {frames_b64, n_time, n_freq, frequencies_hz, times_s},
-           "vocals": {available, [same keys if available]}}``
+           "vocals": {available, detected, [same keys if available]}}``
     """
     import base64
 
@@ -2132,7 +2142,13 @@ def _build_spectrogram_payload(
     mix_payload = _stft_to_payload(mix_audio, sample_rate)
 
     # Attempt vocal stem
-    vocals_payload: Dict[str, Any] = {"available": False}
+    vocals_payload: Dict[str, Any] = {"available": False, "detected": audio_type}
+    logger.info(
+        "spectrogram_vocal_check vocal_cache_key=%s _STEM_CACHE_DIR=%s _vocal_separation_available=%s",
+        vocal_cache_key[:12] if vocal_cache_key else None,
+        str(_STEM_CACHE_DIR) if _STEM_CACHE_DIR else None,
+        _vocal_separation_available(),
+    )
     if (
         vocal_cache_key
         and _STEM_CACHE_DIR is not None

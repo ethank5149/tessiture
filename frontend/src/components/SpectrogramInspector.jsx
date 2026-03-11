@@ -402,7 +402,9 @@ export default function SpectrogramInspector({
       </div>
       {!spectrogramData.vocals?.available ? (
         <p className="spectrogram-inspector__vocals-note">
-          Vocal overlay unavailable (Demucs not installed or cache miss).
+          {spectrogramData.vocals?.detected === "isolated"
+            ? "Vocal stem not available: source is isolated vocals (a cappella)."
+            : "Vocal stem unavailable: vocal separation could not be performed."}
         </p>
       ) : null}
     </div>
