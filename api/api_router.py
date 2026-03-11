@@ -2143,28 +2143,49 @@ def _build_spectrogram_payload(
 
     # Attempt vocal stem
     vocals_payload: Dict[str, Any] = {"available": False, "detected": audio_type}
+    is_vocal_sep_available = _vocal_separation_available()
     logger.info(
-        "spectrogram_vocal_check vocal_cache_key=%s _STEM_CACHE_DIR=%s _vocal_separation_available=%s",
+        "spectrogram_vocal_check vocal_cache_key=%s _STEM_CACHE_DIR=%s _vocal_separation_available=%s audio_type=%s",
         vocal_cache_key[:12] if vocal_cache_key else None,
         str(_STEM_CACHE_DIR) if _STEM_CACHE_DIR else None,
-        _vocal_separation_available(),
+        is_vocal_sep_available,
+        audio_type,
     )
     if (
         vocal_cache_key
         and _STEM_CACHE_DIR is not None
-        and _vocal_separation_available()
+        and is_vocal_sep_available
     ):
         try:
             from analysis.dsp.vocal_separation import load_cached_stem
+
+            # Check if cache file exists before attempting load
+            from analysis.dsp.vocal_separation import _cache_path
+            cache_file_path = _cache_path(_STEM_CACHE_DIR, vocal_cache_key)
+            logger.info(
+                "spectrogram_vocal_cache_check key=%s path=%s exists=%s",
+                vocal_cache_key[:12],
+                str(cache_file_path),
+                cache_file_path.exists() if cache_file_path else False,
+            )
 
             cached = load_cached_stem(_STEM_CACHE_DIR, vocal_cache_key)
             if cached is not None:
                 vocal_audio, vocal_sr = cached
                 vocal_data = _stft_to_payload(vocal_audio, vocal_sr)
                 vocals_payload = {"available": True, **vocal_data}
+                logger.info(
+                    "spectrogram_vocal_success key=%s",
+                    vocal_cache_key[:12],
+                )
+            else:
+                logger.info(
+                    "spectrogram_vocal_cache_miss key=%s - no cached stem found",
+                    vocal_cache_key[:12],
+                )
         except Exception as exc:
-            logger.debug(
-                "spectrogram_vocals_unavailable key=%s error=%s",
+            logger.info(
+                "spectrogram_vocals_error key=%s error=%s",
                 vocal_cache_key[:12] if vocal_cache_key else "",
                 exc,
             )

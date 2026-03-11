@@ -53,7 +53,7 @@ async def analyze_audio(
     request: Request,
     audio: UploadFile = File(...),
     audio_type: str = Form("isolated"),
-    force_vocal_separation: bool = Form(false),
+    force_vocal_separation: bool = Form(False),
 ) -> Dict[str, Any]:
     """Upload and analyse an audio file.
 
