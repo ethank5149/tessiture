@@ -36,6 +36,8 @@ _SPECT_FREQ_MIN_HZ = config._SPECT_FREQ_MIN_HZ
 _SPECT_FREQ_MAX_HZ = config._SPECT_FREQ_MAX_HZ
 _job_file_paths = config._job_file_paths
 _FILENAME_DELIMITER = config._FILENAME_DELIMITER
+_VOCAL_SEPARATION_MODE = config._VOCAL_SEPARATION_MODE
+_STEM_CACHE_DIR = config._STEM_CACHE_DIR
 
 # Import utility functions from new modules
 from api.utils import (
@@ -86,6 +88,21 @@ from api.pitch_utils import (
     _build_note_events,
 )
 
+# Import serialization functions from new modules
+from api.serializers import (
+    _format_timestamp_label,
+    _serialize_tessitura_payload,
+    _summarize_formants,
+    _summarize_phrases,
+    _build_summary,
+)
+
+# Import evidence building functions from new modules
+from api.evidence import (
+    _build_evidence_payload,
+    _build_chord_timeline,
+)
+
 # Original imports
 import asyncio
 from functools import lru_cache
@@ -131,1257 +148,25 @@ logger = logging.getLogger(__name__)
 _RATE_LIMIT_BUCKETS: Dict[str, Dict[str, float]] = {}
 
 
-def _is_voiced_frame(frame: Mapping[str, Any]) -> bool:
-    """Return True only for frames that pass frequency-range and confidence checks.
-
-    Mirrors the logic in :func:`analysis.pitch.estimator.compute_voicing_mask`
-    so that voiced_f0 collections in the pipeline stay free of artifact extremes.
-    """
-    f0 = _safe_float(frame.get("f0_hz") or frame.get("f0"))
-    if f0 is None or not (_VOICED_MIN_HZ <= f0 <= _VOICED_MAX_HZ):
-        return False
-    confidence = _safe_float(frame.get("confidence") or frame.get("salience"))
-    return confidence is not None and confidence >= _VOICED_MIN_SALIENCE
-
-
-def _ensure_upload_dir() -> None:
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def _ensure_output_dir() -> None:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def _build_example_payload(example: Mapping[str, Any], file_path: Path) -> Dict[str, Any]:
-    return {
-        "id": str(example.get("id") or ""),
-        "display_name": str(example.get("display_name") or file_path.stem),
-        "title": str(example.get("title") or file_path.stem),
-        "artist": example.get("artist"),
-        "album": example.get("album"),
-        "filename": file_path.name,
-        "content_type": str(example.get("content_type") or "audio/*"),
-        "size_bytes": int(file_path.stat().st_size),
-    }
-
-
-def _slugify_example_id(file_path: Path) -> str:
-    base = re.sub(r"[^a-z0-9]+", "-", file_path.stem.lower()).strip("-")
-    return base or "example"
-
-
-def _guess_example_content_type(file_path: Path) -> str:
-    extension = file_path.suffix.lower()
-    if extension in EXAMPLE_CONTENT_TYPE_OVERRIDES:
-        return EXAMPLE_CONTENT_TYPE_OVERRIDES[extension]
-    guessed, _ = mimetypes.guess_type(file_path.name)
-    return guessed or "audio/*"
-
-
-_FILENAME_DELIMITER = " - "
-
-
-def _parse_example_stem(stem: str) -> Dict[str, Optional[str]]:
-    """Parse artist, optional album, and title from an example filename stem.
-
-    Filename schema (delimiter is ' - '):
-        Title                        → title only
-        Artist - Title               → artist + title
-        Artist - Album - Title       → artist + album + title
-        Artist - A - B - Title       → artist + album('A - B') + title
-    """
-    parts = stem.split(_FILENAME_DELIMITER)
-    if len(parts) == 1:
-        return {"artist": None, "album": None, "title": parts[0].strip()}
-    if len(parts) == 2:
-        return {"artist": parts[0].strip(), "album": None, "title": parts[1].strip()}
-    return {
-        "artist": parts[0].strip(),
-        "album": _FILENAME_DELIMITER.join(parts[1:-1]).strip(),
-        "title": parts[-1].strip(),
-    }
-
-
-def _discover_example_tracks() -> List[tuple[Dict[str, Any], Path]]:
-    discovered: List[tuple[Dict[str, Any], Path]] = []
-    used_ids: Set[str] = set()
-    examples_root = EXAMPLES_DIR.resolve()
-
-    if not examples_root.exists():
-        logger.warning("example_gallery.examples_root_missing examples_root=%s", examples_root)
-        return discovered
-
-    logger.info("example_gallery.discovery_start examples_root=%s", examples_root)
-
-    for candidate in sorted(examples_root.iterdir(), key=lambda path: path.name.lower()):
-        resolved = candidate.resolve()
-        if not candidate.is_file():
-            continue
-
-        try:
-            resolved.relative_to(examples_root)
-        except ValueError:
-            logger.warning(
-                "example_gallery.skipped_outside_root filename=%s candidate=%s root=%s",
-                candidate.name,
-                resolved,
-                examples_root,
-            )
-            continue
-
-        extension = candidate.suffix.lower()
-        if extension and extension not in ALLOWED_EXTENSIONS:
-            logger.info(
-                "example_gallery.skipped_unsupported_extension filename=%s extension=%s",
-                candidate.name,
-                extension,
-            )
-            continue
-
-        base_id = _slugify_example_id(candidate)
-        example_id = base_id
-        dedupe_index = 2
-        while example_id in used_ids:
-            example_id = f"{base_id}-{dedupe_index}"
-            dedupe_index += 1
-        used_ids.add(example_id)
-
-        parsed = _parse_example_stem(candidate.stem)
-        example_payload = {
-            "id": example_id,
-            "display_name": candidate.stem,
-            "title": parsed["title"],
-            "artist": parsed["artist"],
-            "album": parsed["album"],
-            "filename": candidate.name,
-            "content_type": _guess_example_content_type(candidate),
-        }
-
-        logger.info(
-            "example_gallery.inspect_candidate id=%s candidate=%s exists=%s",
-            example_id,
-            resolved,
-            resolved.is_file(),
-        )
-        discovered.append((_build_example_payload(example_payload, resolved), resolved))
-
-    logger.info("example_gallery.discovery_complete available_examples=%d", len(discovered))
-    return discovered
-
-
-def _list_available_example_tracks() -> List[Dict[str, Any]]:
-    return [example for example, _ in _discover_example_tracks()]
-
-
-def _resolve_example_track(example_id: str) -> tuple[Dict[str, Any], Path]:
-    normalized_id = (example_id or "").strip()
-    if not normalized_id:
-        raise HTTPException(status_code=400, detail="Example ID is required.")
-
-    logger.info("example_gallery.resolve_start requested_id=%s", normalized_id)
-
-    discovered = _discover_example_tracks()
-    discovered_ids = [example.get("id", "") for example, _ in discovered]
-
-    for example, file_path in discovered:
-        configured_id = str(example.get("id") or "").strip()
-        if configured_id != normalized_id:
-            continue
-
-        logger.info(
-            "example_gallery.resolve_success requested_id=%s filename=%s",
-            normalized_id,
-            example.get("filename"),
-        )
-        return example, file_path
-
-    logger.warning(
-        "example_gallery.resolve_not_found requested_id=%s discovered_ids=%s",
-        normalized_id,
-        discovered_ids,
-    )
-    raise HTTPException(status_code=404, detail="Example track not found.")
-
-
-async def _save_upload(upload: UploadFile) -> Path:
-    _ensure_upload_dir()
-    suffix = _validate_upload(upload)
-    file_path = UPLOAD_DIR / f"{uuid4().hex}{suffix}"
-    total_bytes = 0
-    try:
-        with file_path.open("wb") as buffer:
-            while True:
-                chunk = upload.file.read(1024 * 1024)
-                if not chunk:
-                    break
-                total_bytes += len(chunk)
-                if total_bytes > MAX_UPLOAD_BYTES:
-                    raise HTTPException(status_code=413, detail="Upload exceeds maximum size.")
-                buffer.write(chunk)
-    except HTTPException:
-        if file_path.exists():
-            file_path.unlink()
-        raise
-    finally:
-        await upload.close()
-    return file_path
-
-
-def _validate_upload(upload: UploadFile) -> str:
-    if not upload.filename:
-        raise HTTPException(status_code=400, detail="Audio filename is required.")
-    suffix = Path(upload.filename).suffix.lower()
-    if not suffix or suffix not in ALLOWED_EXTENSIONS:
-        raise HTTPException(status_code=415, detail="Unsupported audio file extension.")
-    content_type = (upload.content_type or "").lower()
-    if content_type not in ALLOWED_MIME_TYPES:
-        raise HTTPException(status_code=415, detail="Unsupported audio MIME type.")
-    return suffix
-
-
-def _rate_limit_check(request: Request) -> None:
-    if RATE_LIMIT_CAPACITY <= 0 or RATE_LIMIT_REFILL_PER_SEC <= 0:
-        return
-    client_ip = request.client.host if request.client else "unknown"
-    now = time.monotonic()
-    bucket = _RATE_LIMIT_BUCKETS.get(client_ip)
-    if bucket is None:
-        _RATE_LIMIT_BUCKETS[client_ip] = {"tokens": RATE_LIMIT_CAPACITY - 1, "last": now}
-        return
-    tokens = min(
-        RATE_LIMIT_CAPACITY,
-        bucket["tokens"] + (now - bucket["last"]) * RATE_LIMIT_REFILL_PER_SEC,
-    )
-    if tokens < 1:
-        raise HTTPException(status_code=429, detail="Rate limit exceeded.")
-    bucket["tokens"] = tokens - 1
-    bucket["last"] = now
-
-
-def _serialize_status(job: job_manager.JobStatus) -> Dict[str, Any]:
-    stage = job.stage or job.status
-    message = job.message
-    return {
-        "job_id": job.job_id,
-        "status": job.status,
-        "progress": job.progress,
-        "stage": stage,
-        "message": message,
-        "detail": message,
-        "created_at": job.created_at.isoformat(),
-        "updated_at": job.updated_at.isoformat(),
-        "result_path": job.result_path,
-        "error": _sanitize_error(job.error),
-    }
-
-
-def _sanitize_error(error: Optional[str]) -> Optional[str]:
-    if error is None:
-        return None
-    text = str(error).strip()
-    if not text:
-        return "Analysis failed."
-    if "Traceback (most recent call last):" in text:
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
-        if lines:
-            tail = lines[-1]
-            if ":" in tail:
-                _, detail = tail.split(":", 1)
-                detail = detail.strip()
-                if detail:
-                    return detail
-        return "Analysis failed."
-    if "\n" in text:
-        return text.splitlines()[0].strip() or "Analysis failed."
-    return text
-
-
-def _extract_result_path(result: Mapping[str, Any], fmt: str) -> Optional[str]:
-    if not isinstance(result, Mapping):
-        return None
-
-    search_spaces: List[Mapping[str, Any]] = [result]
-    nested_analysis = result.get("analysis")
-    if isinstance(nested_analysis, Mapping):
-        search_spaces.append(nested_analysis)
-
-    for payload in search_spaces:
-        files = payload.get("files")
-        if isinstance(files, Mapping) and files.get(fmt):
-            return str(files.get(fmt))
-        key = f"{fmt}_path"
-        if payload.get(key):
-            return str(payload.get(key))
-
-    if fmt == "json":
-        for payload in search_spaces:
-            if payload.get("result_path"):
-                return str(payload.get("result_path"))
-
-    return None
-
-
-def _safe_float(value: Any) -> Optional[float]:
-    if value is None:
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return number if np.isfinite(number) else None
-
-
-def _as_finite_array(values: Sequence[Any]) -> np.ndarray:
-    numeric: List[float] = []
-    for value in values:
-        number = _safe_float(value)
-        if number is None:
-            continue
-        numeric.append(float(number))
-    return np.asarray(numeric, dtype=float)
-@lru_cache(maxsize=1)
-def _build_reference_calibration_uncertainty() -> Dict[str, Any]:
-    try:
-        parameter_ranges = dict(get_default_parameter_ranges())
-        parameter_ranges["note_count"] = (1.0, 1.0)
-        parameter_ranges["duration_s"] = (0.1, 0.1)
-
-        sampled_params = lhs_sample(
-            max(1, REFERENCE_CALIBRATION_SAMPLE_COUNT),
-            parameter_ranges,
-            seed=REFERENCE_CALIBRATION_SEED,
-        )
-
-        reference_results: List[Dict[str, Any]] = []
-        for params in sampled_params:
-            f0_hz = _safe_float(params.get("f0_hz"))
-            detune_cents = _safe_float(params.get("detune_cents")) or 0.0
-            if f0_hz is None or f0_hz <= 0.0:
-                continue
-
-            note_frequency_hz = float(f0_hz * (2.0 ** (detune_cents / 1200.0)))
-            modeled_pitch_error_cents = float(0.9 * detune_cents)
-            reference_results.append(
-                {
-                    "metadata": {"note_frequencies_hz": [note_frequency_hz]},
-                    "pitch_error_cents": [modeled_pitch_error_cents],
-                }
-            )
-
-        uncertainty = summarize_uncertainty(reference_results)
-    except Exception:
-        logger.warning("reference_calibration_uncertainty_build_failed", exc_info=True)
-        uncertainty = summarize_uncertainty([])
-        reference_results = []
-
-    uncertainty["reference_source"] = "generated_ground_truth_reference"
-    uncertainty["reference_seed"] = REFERENCE_CALIBRATION_SEED
-    uncertainty["reference_dataset_size"] = len(reference_results)
-    uncertainty["reference_voiced_frame_count"] = len(reference_results)
-    return uncertainty
-
-
-def _resolve_inferential_preset(metadata: Optional[Mapping[str, Any]]) -> tuple[str, Dict[str, float]]:
-    requested = None
-    if isinstance(metadata, Mapping):
-        requested = metadata.get("inferential_preset")
-    preset = str(requested or DEFAULT_INFERENTIAL_PRESET).strip().lower()
-    if preset not in INFERENTIAL_NULL_PRESETS:
-        logger.warning("inferential_preset_unknown preset=%s fallback=%s", preset, DEFAULT_INFERENTIAL_PRESET)
-        preset = DEFAULT_INFERENTIAL_PRESET if DEFAULT_INFERENTIAL_PRESET in INFERENTIAL_NULL_PRESETS else "casual"
-    return preset, dict(INFERENTIAL_NULL_PRESETS[preset])
-
-
-def _bootstrap_two_sided_p_value(replicates: np.ndarray, null_value: Optional[float]) -> Optional[float]:
-    if null_value is None or replicates.size == 0:
-        return None
-    left_tail = float(np.mean(replicates <= float(null_value)))
-    right_tail = float(np.mean(replicates >= float(null_value)))
-    return float(np.clip(2.0 * min(left_tail, right_tail), 0.0, 1.0))
-
-
-def _build_metric_inference(
-    metric_name: str,
-    values: np.ndarray,
-    reducer: Callable[[np.ndarray], float],
-    null_value: Optional[float],
-    unit: str,
-    confidence_level: float,
-    bootstrap_samples: int,
-    rng: np.random.Generator,
-) -> Dict[str, Any]:
-    logger.debug(
-        "analysis_metric_inference_build_start metric=%s n_values=%d confidence_level=%.3f bootstrap_samples=%d unit=%s null_value=%s",
-        metric_name,
-        int(values.size),
-        float(confidence_level),
-        int(bootstrap_samples),
-        unit,
-        null_value,
-    )
-
-    if values.size == 0:
-        payload: Dict[str, Any] = {
-            "estimate": None,
-            "confidence_interval": {
-                "level": confidence_level,
-                "low": None,
-                "high": None,
-            },
-            "p_value": None,
-            "null_hypothesis": {
-                "value": null_value,
-                "description": f"{metric_name} equals {null_value}",
-            },
-            "n_samples": 0,
-            "unit": unit,
-        }
-        logger.debug("analysis_metric_inference_build_empty metric=%s", metric_name)
-        return payload
-
-    samples = np.asarray(values, dtype=float)
-    sample_size = int(samples.size)
-    estimate = float(reducer(samples))
-
-    replicates = np.empty(int(bootstrap_samples), dtype=float)
-    for idx in range(int(bootstrap_samples)):
-        sampled = rng.choice(samples, size=sample_size, replace=True)
-        replicates[idx] = float(reducer(sampled))
-
-    tail = (1.0 - float(confidence_level)) / 2.0
-    ci_low = float(np.quantile(replicates, tail))
-    ci_high = float(np.quantile(replicates, 1.0 - tail))
-
-    payload: Dict[str, Any] = {
-        "estimate": estimate,
-        "confidence_interval": {
-            "level": confidence_level,
-            "low": ci_low,
-            "high": ci_high,
-        },
-        "p_value": _bootstrap_two_sided_p_value(replicates, null_value),
-        "null_hypothesis": {
-            "value": null_value,
-            "description": f"{metric_name} equals {null_value}",
-        },
-        "n_samples": sample_size,
-        "unit": unit,
-    }
-
-    logger.debug(
-        "analysis_metric_inference_build_done metric=%s estimate=%s ci_low=%s ci_high=%s p_value=%s n_sample=%s",
-        metric_name,
-        payload.get("estimate") if isinstance(payload, Mapping) else None,
-        payload.get("confidence_interval", {}).get("low") if isinstance(payload, Mapping) else None,
-        payload.get("confidence_interval", {}).get("high") if isinstance(payload, Mapping) else None,
-        payload.get("p_value") if isinstance(payload, Mapping) else None,
-        sample_size,
-    )
-    return payload
-
-
-def _build_inferential_statistics(
-    voiced_f0: Sequence[float],
-    voiced_midi: Sequence[float],
-    pitch_errors: Sequence[float],
-    metadata: Optional[Mapping[str, Any]] = None,
-) -> Dict[str, Any]:
-    preset_name, nulls = _resolve_inferential_preset(metadata)
-    confidence_level = float(np.clip(BOOTSTRAP_CONFIDENCE_LEVEL, 0.5, 0.999))
-    bootstrap_samples = max(200, int(BOOTSTRAP_SAMPLES))
-    rng = np.random.default_rng(20260302)
-
-    voiced_f0_arr = _as_finite_array(voiced_f0)
-    voiced_midi_arr = _as_finite_array(voiced_midi)
-    pitch_error_arr = _as_finite_array(pitch_errors)
-
-    metrics = {
-        "f0_mean_hz": _build_metric_inference(
-            "f0_mean_hz",
-            voiced_f0_arr,
-            lambda data: float(np.mean(data)),
-            nulls.get("f0_mean_hz"),
-            "Hz",
-            confidence_level,
-            bootstrap_samples,
-            rng,
-        ),
-        "f0_min_hz": _build_metric_inference(
-            "f0_min_hz",
-            voiced_f0_arr,
-            lambda data: float(np.min(data)),
-            nulls.get("f0_min_hz"),
-            "Hz",
-            confidence_level,
-            bootstrap_samples,
-            rng,
-        ),
-        "f0_max_hz": _build_metric_inference(
-            "f0_max_hz",
-            voiced_f0_arr,
-            lambda data: float(np.max(data)),
-            nulls.get("f0_max_hz"),
-            "Hz",
-            confidence_level,
-            bootstrap_samples,
-            rng,
-        ),
-        "tessitura_center_midi": _build_metric_inference(
-            "tessitura_center_midi",
-            voiced_midi_arr,
-            lambda data: float(np.mean(data)),
-            nulls.get("tessitura_center_midi"),
-            "MIDI",
-            confidence_level,
-            bootstrap_samples,
-            rng,
-        ),
-        "pitch_error_mean_cents": _build_metric_inference(
-            "pitch_error_mean_cents",
-            pitch_error_arr,
-            lambda data: float(np.mean(data)),
-            nulls.get("pitch_error_mean_cents"),
-            "cents",
-            confidence_level,
-            bootstrap_samples,
-            rng,
-        ),
-    }
-
-    # Add note-name annotations for pitch-unit metrics (Hz, MIDI).
-    for payload in metrics.values():
-        if not isinstance(payload, Mapping):
-            continue
-        unit = payload.get("unit")
-        if not _unit_supports_pitch_note_names(unit):
-            continue
-
-        estimate_note = _pitch_value_to_note_name(payload.get("estimate"), unit)
-        if estimate_note is not None:
-            payload["estimate_note"] = estimate_note
-
-        confidence_interval = payload.get("confidence_interval")
-        if isinstance(confidence_interval, Mapping):
-            low_note = _pitch_value_to_note_name(confidence_interval.get("low"), unit)
-            high_note = _pitch_value_to_note_name(confidence_interval.get("high"), unit)
-            if low_note is not None:
-                confidence_interval["low_note"] = low_note
-            if high_note is not None:
-                confidence_interval["high_note"] = high_note
-
-        null_hypothesis = payload.get("null_hypothesis")
-        if isinstance(null_hypothesis, Mapping):
-            value_note = _pitch_value_to_note_name(null_hypothesis.get("value"), unit)
-            if value_note is not None:
-                null_hypothesis["value_note"] = value_note
-
-    for metric_name, payload in metrics.items():
-        ci = payload.get("confidence_interval") if isinstance(payload, Mapping) else None
-        logger.info(
-            "analysis_metric_inference metric=%s preset=%s estimate=%s ci_low=%s ci_high=%s p_value=%s n_sample=%s",
-            metric_name,
-            preset_name,
-            payload.get("estimate") if isinstance(payload, Mapping) else None,
-            ci.get("low") if isinstance(ci, Mapping) else None,
-            ci.get("high") if isinstance(ci, Mapping) else None,
-            payload.get("p_value") if isinstance(payload, Mapping) else None,
-            payload.get("n_samples") if isinstance(payload, Mapping) else None,
-        )
-
-    return {
-        "preset": preset_name,
-        "confidence_level": confidence_level,
-        "bootstrap_samples": bootstrap_samples,
-        "metrics": metrics,
-    }
-
-
-def _build_calibration_summary(
-    uncertainty: Mapping[str, Any],
-) -> Dict[str, Any]:
-    uncertainty_payload = uncertainty if isinstance(uncertainty, Mapping) else {}
-
-    frequency_bins = _as_finite_array(uncertainty_payload.get("frequency_bins_hz") or [])
-    sample_counts = _as_finite_array(uncertainty_payload.get("sample_counts") or [])
-    pitch_bias = _as_finite_array(uncertainty_payload.get("pitch_bias_cents") or [])
-    pitch_variance = _as_finite_array(uncertainty_payload.get("pitch_variance_cents2") or [])
-
-    def _weighted_mean(values: np.ndarray, weights: np.ndarray) -> Optional[float]:
-        size = min(values.size, weights.size)
-        if size <= 0:
-            return None
-        safe_weights = np.clip(weights[:size], 0.0, None)
-        total = float(np.sum(safe_weights))
-        if total <= 0.0:
-            return None
-        return float(np.sum(values[:size] * safe_weights) / total)
-
-    paired_bias_size = min(pitch_bias.size, sample_counts.size)
-    paired_variance_size = min(pitch_variance.size, sample_counts.size)
-    paired_moment_size = min(pitch_bias.size, pitch_variance.size, sample_counts.size)
-
-    bias_values = pitch_bias[:paired_bias_size]
-    bias_counts = sample_counts[:paired_bias_size]
-    variance_values = pitch_variance[:paired_variance_size]
-    variance_counts = sample_counts[:paired_variance_size]
-    moment_bias_values = pitch_bias[:paired_moment_size]
-    moment_variance_values = pitch_variance[:paired_moment_size]
-    moment_counts = sample_counts[:paired_moment_size]
-
-    populated_bins = sample_counts[sample_counts > 0.0]
-    populated_bias_mask = bias_counts > 0.0
-
-    mean_pitch_bias = _weighted_mean(bias_values, bias_counts)
-    mean_pitch_variance = _weighted_mean(variance_values, variance_counts)
-    max_abs_pitch_bias = (
-        float(np.max(np.abs(bias_values[populated_bias_mask])))
-        if bias_values.size and np.any(populated_bias_mask)
-        else None
-    )
-
-    pitch_error_std: Optional[float] = None
-    populated_moment_mask = moment_counts > 0.0
-    if moment_bias_values.size and np.any(populated_moment_mask):
-        weights = np.clip(moment_counts[populated_moment_mask], 0.0, None)
-        total = float(np.sum(weights))
-        if total > 0.0 and mean_pitch_bias is not None:
-            centered = moment_bias_values[populated_moment_mask] - float(mean_pitch_bias)
-            second_moment = np.sum(
-                weights * (moment_variance_values[populated_moment_mask] + np.square(centered))
-            ) / total
-            pitch_error_std = float(np.sqrt(max(float(second_moment), 0.0)))
-
-    reference_sample_count = (
-        int(round(float(np.sum(np.clip(sample_counts, 0.0, None))))) if sample_counts.size else 0
-    )
-
-    mean_frame_uncertainty = _safe_float(uncertainty_payload.get("reference_mean_frame_uncertainty_midi"))
-
-    voiced_frame_count_value = _safe_float(uncertainty_payload.get("reference_voiced_frame_count"))
-    voiced_frame_count = (
-        int(round(voiced_frame_count_value)) if voiced_frame_count_value is not None else reference_sample_count
-    )
-
-    return {
-        "source": str(uncertainty_payload.get("reference_source") or "generated_ground_truth_reference"),
-        "reference_sample_count": reference_sample_count,
-        "reference_frequency_min_hz": float(np.min(frequency_bins)) if frequency_bins.size else None,
-        "reference_frequency_max_hz": float(np.max(frequency_bins)) if frequency_bins.size else None,
-        "frequency_bin_count": int(max(frequency_bins.size - 1, 0)),
-        "populated_frequency_bin_count": int(populated_bins.size),
-        "mean_pitch_bias_cents": mean_pitch_bias,
-        "max_abs_pitch_bias_cents": max_abs_pitch_bias,
-        "mean_pitch_variance_cents2": mean_pitch_variance,
-        "pitch_error_mean_cents": mean_pitch_bias,
-        "pitch_error_std_cents": pitch_error_std,
-        "mean_frame_uncertainty_midi": mean_frame_uncertainty,
-        "voiced_frame_count": voiced_frame_count,
-    }
-
-
-def _midi_to_note_name(midi_value: float) -> str:
-    rounded = int(round(float(midi_value)))
-    note_index = rounded % 12
-    octave = rounded // 12 - 1
-    return f"{NOTE_NAMES[note_index]}{octave}"
-
-
-def _hz_to_note_name(frequency_hz: Any) -> Optional[str]:
-    frequency = _safe_float(frequency_hz)
-    if frequency is None or frequency <= 0.0:
-        return None
-    midi_value = 69.0 + 12.0 * float(np.log2(frequency / 440.0))
-    return _midi_to_note_name(midi_value)
-
-
-def _unit_supports_pitch_note_names(unit: Any) -> bool:
-    return str(unit or "").strip().upper() in {"HZ", "MIDI"}
-
-
-def _pitch_value_to_note_name(value: Any, unit: Any) -> Optional[str]:
-    unit_upper = str(unit or "").strip().upper()
-    if unit_upper == "MIDI":
-        midi_value = _safe_float(value)
-        return _midi_to_note_name(midi_value) if midi_value is not None else None
-    if unit_upper == "HZ":
-        return _hz_to_note_name(value)
-    return None
-
-
-def _midi_values_to_note_names(values: Sequence[Any]) -> List[Optional[str]]:
-    notes: List[Optional[str]] = []
-    for value in values:
-        midi_value = _safe_float(value)
-        notes.append(_midi_to_note_name(midi_value) if midi_value is not None else None)
-    return notes
-
-
-def _normalize_analysis_diagnostics(payload: Any) -> Optional[Dict[str, Any]]:
-    if not isinstance(payload, Mapping):
-        return None
-
-    attempted_raw = payload.get("attempted_methods")
-    attempted_methods = (
-        [str(item) for item in attempted_raw if isinstance(item, (str, int, float))]
-        if isinstance(attempted_raw, Sequence) and not isinstance(attempted_raw, (str, bytes))
-        else []
-    )
-
-    strategy_path = payload.get("strategy_path")
-    fallback_reason = payload.get("fallback_reason")
-
-    return {
-        "primary_method_used": str(payload.get("primary_method_used") or "unknown"),
-        "attempted_methods": attempted_methods,
-        "strategy_path": str(strategy_path) if strategy_path is not None else None,
-        "fallback_reason": str(fallback_reason) if fallback_reason is not None else None,
-    }
-
-
-def _extract_pitch_frame_diagnostics(pitch_candidates: Sequence[Any]) -> List[Optional[Dict[str, Any]]]:
-    diagnostics: List[Optional[Dict[str, Any]]] = []
-    for frame in pitch_candidates:
-        components = getattr(frame, "components", None)
-        diag_payload = components.get("analysis_diagnostics") if isinstance(components, Mapping) else None
-        diagnostics.append(_normalize_analysis_diagnostics(diag_payload))
-    return diagnostics
-
-
-def _summarize_pitch_method_diagnostics(
-    frame_diagnostics: Sequence[Optional[Mapping[str, Any]]],
-) -> Dict[str, Any]:
-    method_counts: Dict[str, int] = {}
-    fallback_reasons: Dict[str, int] = {}
-    attempted_methods: List[str] = []
-    strategy_path: Optional[str] = None
-
-    for diag in frame_diagnostics:
-        if not isinstance(diag, Mapping):
-            continue
-
-        method = str(diag.get("primary_method_used") or "unknown")
-        method_counts[method] = method_counts.get(method, 0) + 1
-
-        fallback_reason = diag.get("fallback_reason")
-        if fallback_reason:
-            reason = str(fallback_reason)
-            fallback_reasons[reason] = fallback_reasons.get(reason, 0) + 1
-
-        if not attempted_methods:
-            attempted = diag.get("attempted_methods")
-            if isinstance(attempted, Sequence) and not isinstance(attempted, (str, bytes)):
-                attempted_methods = [str(item) for item in attempted if isinstance(item, (str, int, float))]
-
-        if strategy_path is None:
-            strategy = diag.get("strategy_path")
-            if strategy is not None:
-                strategy_path = str(strategy)
-
-    primary_method_used = max(method_counts, key=method_counts.get) if method_counts else None
-    fallback_reason = max(fallback_reasons, key=fallback_reasons.get) if fallback_reasons else None
-
-    return {
-        "primary_method_used": primary_method_used,
-        "attempted_methods": attempted_methods,
-        "strategy_path": strategy_path,
-        "fallback_reason": fallback_reason,
-        "method_counts": method_counts,
-        "fallback_reasons": fallback_reasons,
-        "frames_with_diagnostics": int(sum(1 for diag in frame_diagnostics if isinstance(diag, Mapping))),
-    }
-
-
-def _build_pitch_payload(
-    f0_hz: np.ndarray,
-    salience: np.ndarray,
-    midi_values: np.ndarray,
-    midi_sigma: np.ndarray,
-    *,
-    sample_rate: int,
-    hop_length: int,
-    frame_diagnostics: Optional[Sequence[Optional[Mapping[str, Any]]]] = None,
-) -> List[Dict[str, Any]]:
-    f0_values = np.asarray(f0_hz, dtype=float)
-    salience_values = np.asarray(salience, dtype=float)
-    midi = np.asarray(midi_values, dtype=float)
-    midi_uncertainty = np.asarray(midi_sigma, dtype=float)
-
-    frame_count = int(max(f0_values.size, salience_values.size, midi.size, midi_uncertainty.size))
-    frames: List[Dict[str, Any]] = []
-    seconds_per_frame = float(hop_length) / float(max(sample_rate, 1))
-
-    for idx in range(frame_count):
-        f0_value = _safe_float(f0_values[idx] if idx < f0_values.size else None)
-        salience_value = _safe_float(salience_values[idx] if idx < salience_values.size else None)
-        midi_value = _safe_float(midi[idx] if idx < midi.size else None)
-        uncertainty_value = _safe_float(midi_uncertainty[idx] if idx < midi_uncertainty.size else None)
-
-        if midi_value is not None and midi_value <= 0.0:
-            midi_value = None
-
-        confidence = float(np.clip(salience_value if salience_value is not None else 0.0, 0.0, 1.0))
-        cents = float((midi_value - round(midi_value)) * 100.0) if midi_value is not None else None
-        note_name = _midi_to_note_name(midi_value) if midi_value is not None else None
-
-        frame_payload: Dict[str, Any] = {
-            "index": idx,
-            "time": float(idx) * seconds_per_frame,
-            "f0_hz": f0_value,
-            "f0": f0_value,
-            "midi": midi_value,
-            "note": note_name,
-            "note_name": note_name,
-            "cents": cents,
-            "confidence": confidence,
-            "uncertainty": float(max(uncertainty_value, 0.0)) if uncertainty_value is not None else 0.0,
-            "salience": salience_value,
-        }
-        if frame_diagnostics is not None and idx < len(frame_diagnostics):
-            normalized_diag = _normalize_analysis_diagnostics(frame_diagnostics[idx])
-            if normalized_diag is not None:
-                frame_payload["analysis_diagnostics"] = normalized_diag
-
-        frames.append(frame_payload)
-
-    return frames
-
-
-def _build_note_events(frames: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
-    events: List[Dict[str, Any]] = []
-    start_idx: Optional[int] = None
-    active_values: List[float] = []
-    active_confidence: List[float] = []
-    min_event_frames = max(int(NOTE_EVENT_MIN_FRAMES), 1)
-
-    def _reset_active() -> None:
-        nonlocal start_idx, active_values, active_confidence
-        start_idx = None
-        active_values = []
-        active_confidence = []
-
-    def _close_event(end_idx: int) -> None:
-        if start_idx is None or not active_values:
-            _reset_active()
-            return
-
-        start_time = _safe_float(frames[start_idx].get("time")) or 0.0
-        end_time = _safe_float(frames[end_idx].get("time")) or start_time
-        midi_mean = float(np.mean(np.asarray(active_values, dtype=float)))
-        confidence = (
-            float(np.mean(np.asarray(active_confidence, dtype=float))) if active_confidence else 0.0
-        )
-        events.append(
-            {
-                "start": float(start_time),
-                "end": float(end_time),
-                "duration": float(max(end_time - start_time, 0.0)),
-                "pitch": midi_mean,
-                "midi": midi_mean,
-                "note": _midi_to_note_name(midi_mean),
-                "note_name": _midi_to_note_name(midi_mean),
-                "confidence": confidence,
-            }
-        )
-        _reset_active()
-
-    for idx, frame in enumerate(frames):
-        midi_value = _safe_float(frame.get("midi"))
-        confidence_value = _safe_float(frame.get("confidence")) or 0.0
-
-        if midi_value is None or confidence_value < NOTE_EVENT_MIN_CONFIDENCE:
-            if start_idx is not None:
-                _close_event(idx - 1)
-            continue
-
-        if start_idx is None:
-            start_idx = idx
-            active_values.append(midi_value)
-            active_confidence.append(confidence_value)
-            continue
-
-        lookback_count = min(len(active_values), min_event_frames)
-        active_center = float(np.mean(np.asarray(active_values[-lookback_count:], dtype=float)))
-        active_note = int(round(active_center))
-        current_note = int(round(midi_value))
-        should_split = (
-            current_note != active_note
-            and abs(midi_value - active_center) >= NOTE_EVENT_SPLIT_HYSTERESIS_MIDI
-            and len(active_values) >= min_event_frames
-        )
-
-        if should_split:
-            _close_event(idx - 1)
-            start_idx = idx
-            active_values.append(midi_value)
-            active_confidence.append(confidence_value)
-            continue
-
-        active_values.append(midi_value)
-        active_confidence.append(confidence_value)
-
-    if start_idx is not None:
-        _close_event(len(frames) - 1)
-
-    return events
-
-
-def _format_timestamp_label(seconds: Any) -> str:
-    """Format seconds as MM:SS timestamp label."""
-    timestamp = _safe_float(seconds)
-    if timestamp is None or timestamp < 0.0:
-        return "00:00"
-    rounded_seconds = int(float(np.floor(float(timestamp))))
-    minutes = rounded_seconds // 60
-    remainder = rounded_seconds % 60
-    return f"{minutes:02d}:{remainder:02d}"
-
-
-def _build_evidence_payload(
-    pitch_frames: Sequence[Mapping[str, Any]],
-    *,
-    note_events: Sequence[Mapping[str, Any]],
-    duration_seconds: float,
-) -> Dict[str, Any]:
-    """Build additive evidence payload with low/high note references and guidance items."""
-    evidence: Dict[str, Any] = {
-        "events": [],
-        "guidance": [],
-        "lowest_voiced_note_ref": None,
-        "highest_voiced_note_ref": None,
-        "note_event_count": int(len(note_events)),
-    }
-
-    # Calculate seconds per frame for timestamp fallback
-    seconds_per_frame = float(duration_seconds) / float(max(len(pitch_frames), 1))
-
-    voiced_frames_data: List[Dict[str, float]] = []
-    for idx, frame in enumerate(pitch_frames):
-        if not isinstance(frame, Mapping) or not _is_voiced_frame(frame):
-            continue
-
-        time_s = _safe_float(frame.get("time"))
-        if time_s is None:
-            time_s = float(idx) * seconds_per_frame
-
-        midi_value = _safe_float(frame.get("midi"))
-        f0_hz = _safe_float(frame.get("f0_hz") or frame.get("f0"))
-        if midi_value is None and f0_hz is not None and f0_hz > 0.0:
-            midi_value = 69.0 + 12.0 * float(np.log2(f0_hz / 440.0))
-        if midi_value is None:
-            continue
-
-        voiced_frames_data.append(
-            {
-                "time": float(max(time_s, 0.0)),
-                "midi": float(midi_value),
-                "f0_hz": float(f0_hz) if f0_hz is not None else 0.0,
-                "confidence": float(_safe_float(frame.get("confidence")) or 0.0),
-            }
-        )
-
-    if not voiced_frames_data:
-        return evidence
-
-    appended_events: List[Dict[str, Any]] = []
-
-    def _add_event(event_id: str, label: str, timestamp_s: float, **extra: Any) -> Dict[str, Any]:
-        safe_timestamp = float(max(_safe_float(timestamp_s) or 0.0, 0.0))
-        payload: Dict[str, Any] = {
-            "id": event_id,
-            "label": label,
-            "timestamp_s": safe_timestamp,
-            "timestamp_label": _format_timestamp_label(safe_timestamp),
-        }
-        payload.update(extra)
-        appended_events.append(payload)
-        return payload
-
-    lowest_frame = min(voiced_frames_data, key=lambda f: f["midi"])
-    highest_frame = max(voiced_frames_data, key=lambda f: f["midi"])
-
-    lowest_event = _add_event(
-        "lowest_voiced_note",
-        "Lowest voiced note",
-        lowest_frame["time"],
-        note=_midi_to_note_name(lowest_frame["midi"]),
-        midi=lowest_frame["midi"],
-        f0_hz=lowest_frame["f0_hz"],
-        confidence=lowest_frame["confidence"],
-    )
-    highest_event = _add_event(
-        "highest_voiced_note",
-        "Highest voiced note",
-        highest_frame["time"],
-        note=_midi_to_note_name(highest_frame["midi"]),
-        midi=highest_frame["midi"],
-        f0_hz=highest_frame["f0_hz"],
-        confidence=highest_frame["confidence"],
-    )
-
-    evidence["lowest_voiced_note_ref"] = lowest_event["id"]
-    evidence["highest_voiced_note_ref"] = highest_event["id"]
-
-    safe_duration = _safe_float(duration_seconds)
-    if safe_duration is None or safe_duration <= 0.0:
-        safe_duration = max(f["time"] for f in voiced_frames_data)
-    safe_duration = max(float(safe_duration), 1e-6)
-
-    segment_labels = ("Start", "Middle", "End")
-    segment_stats: List[Dict[str, Any]] = [
-        {"label": lbl, "count": 0, "weight": 0.0, "first_time": None}
-        for lbl in segment_labels
-    ]
-    for vf in voiced_frames_data:
-        normalized = float(np.clip(vf["time"] / safe_duration, 0.0, 0.999999))
-        seg_idx = int(normalized * len(segment_labels))
-        seg_idx = min(seg_idx, len(segment_labels) - 1)
-        seg = segment_stats[seg_idx]
-        seg["count"] += 1
-        seg["weight"] += vf["confidence"] if vf["confidence"] > 0.0 else 1.0
-        if seg["first_time"] is None:
-            seg["first_time"] = vf["time"]
-
-    peak_segment = max(segment_stats, key=lambda s: (s["count"], s["weight"]))
-    peak_segment_event = _add_event(
-        "segment_peak_voiced_activity",
-        "Peak voiced activity segment",
-        float(peak_segment["first_time"] if peak_segment["first_time"] is not None else 0.0),
-        segment=peak_segment["label"],
-        voiced_frame_count=int(peak_segment["count"]),
-    )
-
-    largest_jump_event: Optional[Dict[str, Any]] = None
-    if len(voiced_frames_data) >= 2:
-        ordered_frames = sorted(voiced_frames_data, key=lambda f: f["time"])
-        best_jump: Optional[Dict[str, Any]] = None
-        for prev, curr in zip(ordered_frames, ordered_frames[1:]):
-            jump_midi = abs(curr["midi"] - prev["midi"])
-            if best_jump is None or jump_midi > float(best_jump["delta_midi"]):
-                best_jump = {
-                    "delta_midi": float(jump_midi),
-                    "start_s": float(prev["time"]),
-                    "end_s": float(curr["time"]),
-                    "from_note": _midi_to_note_name(prev["midi"]),
-                    "to_note": _midi_to_note_name(curr["midi"]),
-                }
-        if best_jump is not None:
-            largest_jump_event = _add_event(
-                "largest_pitch_jump",
-                "Largest pitch jump",
-                best_jump["end_s"],
-                start_s=best_jump["start_s"],
-                end_s=best_jump["end_s"],
-                delta_midi=best_jump["delta_midi"],
-                from_note=best_jump["from_note"],
-                to_note=best_jump["to_note"],
-            )
-
-    evidence["events"] = appended_events
-
-    event_by_id = {e["id"]: e for e in appended_events}
-
-    evidence["guidance"].append(
-        {
-            "id": "guidance_range_edges",
-            "claim": "Your lowest and highest voiced notes define the current edges of this take.",
-            "why": (
-                f"Lowest note {lowest_event.get('note')} appears near {lowest_event.get('timestamp_label')}, "
-                f"and highest note {highest_event.get('note')} appears near {highest_event.get('timestamp_label')}."
-            ),
-            "action": "Jump to each edge and practice smooth, relaxed transitions into and out of those notes.",
-            "evidence_refs": [lowest_event["id"], highest_event["id"]],
-        }
-    )
-
-    evidence["guidance"].append(
-        {
-            "id": "guidance_peak_segment",
-            "claim": "Most voiced activity is concentrated in one section of the recording.",
-            "why": (
-                f"The {peak_segment_event.get('segment', 'session')} segment contains the highest concentration "
-                "of voiced frames."
-            ),
-            "action": "Start focused practice in that segment, then repeat once after a short recovery breath.",
-            "evidence_refs": [peak_segment_event["id"]],
-        }
-    )
-
-    if largest_jump_event is not None:
-        evidence["guidance"].append(
-            {
-                "id": "guidance_large_transition_control",
-                "claim": "One transition has the largest pitch jump and needs extra control.",
-                "why": (
-                    f"A jump of about {float(largest_jump_event.get('delta_midi') or 0.0):.1f} MIDI steps occurs near "
-                    f"{largest_jump_event.get('timestamp_label')}."
-                ),
-                "action": "Loop this transition slowly before returning to full-tempo phrasing.",
-                "evidence_refs": [largest_jump_event["id"]],
-            }
-        )
-
-    return evidence
-
-
-def _build_chord_timeline(note_events: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
-    timeline: List[Dict[str, Any]] = []
-    for event in note_events:
-        midi_value = _safe_float(event.get("midi"))
-        if midi_value is None:
-            continue
-        detected = detect_chord([midi_value], input_unit="midi", max_notes=4, top_k=3)
-        label = detected.best_chord or str(event.get("note") or "Unknown")
-        probability = float(detected.probabilities.get(label, 0.0)) if detected.probabilities else 0.0
-        timeline.append(
-            {
-                "start": _safe_float(event.get("start")) or 0.0,
-                "end": _safe_float(event.get("end")),
-                "label": label,
-                "confidence": probability,
-            }
-        )
-    return timeline
-
-
-def _serialize_tessitura_payload(payload: Any) -> Dict[str, Any]:
-    if payload is None:
-        return {}
-    metrics = getattr(payload, "metrics", None)
-    pdf = getattr(payload, "pdf", None)
-    if metrics is None:
-        return {}
-
-    strain_zones = []
-    for zone in getattr(metrics, "strain_zones", ()):
-        strain_zones.append(
-            {
-                "label": getattr(zone, "label", None),
-                "low": _safe_float(getattr(zone, "low", None)),
-                "high": _safe_float(getattr(zone, "high", None)),
-                "reason": getattr(zone, "reason", None),
-            }
-        )
-
-    range_min = _safe_float(getattr(metrics, "range_min", None))
-    range_max = _safe_float(getattr(metrics, "range_max", None))
-    tessitura_band = list(getattr(metrics, "tessitura_band", ()))
-    comfort_band = list(getattr(metrics, "comfort_band", ()))
-    comfort_center = _safe_float(getattr(metrics, "comfort_center", None))
-
-    serialized: Dict[str, Any] = {
-        "metrics": {
-            "count": int(getattr(metrics, "count", 0)),
-            "weight_sum": _safe_float(getattr(metrics, "weight_sum", None)),
-            "range_min": range_min,
-            "range_max": range_max,
-            "range_min_note": _midi_to_note_name(range_min) if range_min is not None else None,
-            "range_max_note": _midi_to_note_name(range_max) if range_max is not None else None,
-            "tessitura_band": tessitura_band,
-            "tessitura_band_notes": _midi_values_to_note_names(tessitura_band),
-            "comfort_band": comfort_band,
-            "comfort_band_notes": _midi_values_to_note_names(comfort_band),
-            "comfort_center": comfort_center,
-            "comfort_center_note": _midi_to_note_name(comfort_center) if comfort_center is not None else None,
-            "variance": _safe_float(getattr(metrics, "variance", None)),
-            "std_dev": _safe_float(getattr(metrics, "std_dev", None)),
-            "mean_variance": _safe_float(getattr(metrics, "mean_variance", None)),
-            "strain_zones": strain_zones,
-        }
-    }
-
-    if pdf is not None:
-        density = np.asarray(getattr(pdf, "density", []), dtype=float).tolist()
-        serialized["pdf"] = {
-            "bin_edges": np.asarray(getattr(pdf, "bin_edges", []), dtype=float).tolist(),
-            "density": density,
-            "bin_centers": np.asarray(getattr(pdf, "bin_centers", []), dtype=float).tolist(),
-            "bin_size": _safe_float(getattr(pdf, "bin_size", None)),
-            "total_weight": _safe_float(getattr(pdf, "total_weight", None)),
-        }
-        # Backward-compatible aliases expected by some clients.
-        serialized["histogram"] = density
-        serialized["heatmap"] = density
-    return serialized
-
-
-def _summarize_formants(track: Any) -> Dict[str, Any]:
-    if track is None:
-        return {}
-    f1 = np.asarray(getattr(track, "f1_hz", []), dtype=float)
-    f2 = np.asarray(getattr(track, "f2_hz", []), dtype=float)
-    f3 = np.asarray(getattr(track, "f3_hz", []), dtype=float)
-    return {
-        "n_frames": int(f1.size),
-        "f1_hz_mean": _safe_float(np.mean(f1) if f1.size else None),
-        "f2_hz_mean": _safe_float(np.mean(f2) if f2.size else None),
-        "f3_hz_mean": _safe_float(np.mean(f3) if f3.size else None),
-    }
-
-
-def _summarize_phrases(phrase_result: Any) -> Dict[str, Any]:
-    boundaries = []
-    for boundary in getattr(phrase_result, "boundaries", []):
-        boundaries.append(
-            {
-                "time_s": _safe_float(getattr(boundary, "time_s", None)),
-                "confidence": _safe_float(getattr(boundary, "confidence", None)),
-                "index": int(getattr(boundary, "index", 0)),
-                "kind": getattr(boundary, "kind", None),
-            }
-        )
-    return {
-        "threshold_db": _safe_float(getattr(phrase_result, "threshold_db", None)),
-        "boundary_count": len(boundaries),
-        "boundaries": boundaries,
-    }
-
-
-def _build_summary(result: Mapping[str, Any], duration_seconds: float) -> Dict[str, Any]:
-    pitch_frames = result.get("pitch", {}).get("frames", []) if isinstance(result, Mapping) else []
-    voiced_frames = [item for item in pitch_frames if _is_voiced_frame(item)]
-    voiced_f0 = [float(item["f0_hz"]) for item in voiced_frames]
-    confidences = [
-        float(item["confidence"])
-        for item in voiced_frames
-        if _safe_float(item.get("confidence")) is not None
-    ]
-    mean_confidence = float(np.mean(confidences)) if confidences else 0.0
-
-    tessitura_metrics = result.get("tessitura", {}).get("metrics", {}) if isinstance(result, Mapping) else {}
-    tessitura_band = tessitura_metrics.get("tessitura_band") if isinstance(tessitura_metrics, Mapping) else []
-    tessitura_range_notes: Optional[List[str]] = None
-    if isinstance(tessitura_band, Sequence) and not isinstance(tessitura_band, (str, bytes)):
-        candidate_notes = [note for note in _midi_values_to_note_names(list(tessitura_band)[:2]) if note is not None]
-        if len(candidate_notes) == 2:
-            tessitura_range_notes = candidate_notes
-    key_trajectory = result.get("keys", {}).get("trajectory", []) if isinstance(result, Mapping) else []
-    key_confidence = 0.0
-    if isinstance(key_trajectory, Sequence) and key_trajectory:
-        key_confidence = _safe_float(key_trajectory[0].get("confidence")) or 0.0
-
-    logger.info(
-        "analysis_confidence_summary duration=%.3fs total_frames=%d voiced_frames=%d confidence_min=%.4f confidence_max=%.4f confidence_mean=%.4f key_confidence=%.4f",
-        float(duration_seconds),
-        len(pitch_frames),
-        len(voiced_f0),
-        float(np.min(confidences)) if confidences else 0.0,
-        float(np.max(confidences)) if confidences else 0.0,
-        mean_confidence,
-        key_confidence,
-    )
-
-    return {
-        "duration_seconds": float(duration_seconds),
-        "f0_min": float(np.min(voiced_f0)) if voiced_f0 else None,
-        "f0_max": float(np.max(voiced_f0)) if voiced_f0 else None,
-        "f0_min_note": _hz_to_note_name(np.min(voiced_f0)) if voiced_f0 else None,
-        "f0_max_note": _hz_to_note_name(np.max(voiced_f0)) if voiced_f0 else None,
-        "tessitura_range": tessitura_band,
-        "tessitura_range_notes": tessitura_range_notes,
-        "confidence": mean_confidence,
-        "pitch_confidence": mean_confidence,
-        "key_confidence": key_confidence,
-    }
+# Duplicate utility functions removed - imported from api.utils above
+# Functions imported at lines 41-63 are now the source of truth
+
+# Duplicate statistical functions removed - imported from api.stats above
+# Functions imported at lines 66-73 are now the source of truth
+
+# Duplicate pitch utility functions removed - imported from api.pitch_utils above
+# Functions imported at lines 76-87 are now the source of truth
+# _build_note_events reconciled - production implementation now in api/pitch_utils
+
+# Evidence building functions moved to api/evidence.py
+# - _build_evidence_payload
+# - _build_chord_timeline
+
+# Serialization functions moved to api/serializers.py
+# - _serialize_tessitura_payload
+# - _summarize_formants
+# - _summarize_phrases
+# - _build_summary
 
 
 def _decode_audio_file(file_path: str) -> tuple[np.ndarray, int]:
@@ -1922,24 +707,98 @@ def _get_results(job_id: str, format: str = "json") -> Any:
     )
 
 
-def _list_available_example_tracks() -> List[Dict[str, Any]]:
-    """List all available example tracks in the gallery.
-    
+# _list_available_example_tracks already imported from api.utils above
+
+
+def _build_spectrogram_payload(
+    file_path: str,
+    *,
+    vocal_cache_key: Optional[str] = None,
+    audio_type: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build spectrogram payload with base64-encoded mix and optional vocal stem data.
+   
+    Args:
+        file_path: Path to the audio file
+        vocal_cache_key: Optional cache key for vocal-separated stem
+        audio_type: Optional audio type hint (isolated/mixed/auto)
+        
     Returns:
-        List of example tracks with metadata.
+        Dictionary with mix.frames_b64, n_time, n_freq and vocals.available
     """
-    if not EXAMPLES_DIR.exists():
-        return []
-    examples: List[Dict[str, Any]] = []
-    for audio_file in sorted(EXAMPLES_DIR.iterdir()):
-        if audio_file.is_file() and audio_file.suffix.lower() in ALLOWED_EXTENSIONS:
-            examples.append({
-                "id": audio_file.stem,
-                "filename": audio_file.name,
-                "display_name": _parse_example_stem(audio_file.stem),
-                "content_type": mimetypes.guess_type(audio_file.name)[0] or "audio/*",
-            })
-    return examples
+    import base64
+    from pathlib import Path
+    
+    # Load audio
+    audio, sample_rate = _decode_audio_file(file_path)
+    
+    # Ensure mono
+    if audio.ndim > 1:
+        audio = np.mean(audio, axis=0)
+    
+    # Compute STFT for mix
+    stft_result = compute_stft(
+        audio,
+        sample_rate=sample_rate,
+        n_fft=STFT_NFFT,
+        hop_length=STFT_HOP,
+    )
+    
+    # Convert spectrum to dB and clip for visualization
+    S_db = 20 * np.log10(np.maximum(stft_result.spectrum, 1e-10))
+    S_db_clipped = np.clip(S_db, -80, 0)
+    
+    # Normalize for uint8 encoding
+    S_normalized = ((S_db_clipped + 80) / 80 * 255).astype(np.uint8)
+    
+    # Encode as base64
+    mix_b64 = base64.b64encode(S_normalized.tobytes()).decode('ascii')   
+    
+    payload = {
+        "mix": {
+            "frames_b64": mix_b64,
+            "n_time": int(S_normalized.shape[1]),
+            "n_freq": int(S_normalized.shape[0]),
+            "sample_rate": int(sample_rate),
+            "hop_length": int(STFT_HOP),
+            "n_fft": int(STFT_NFFT),
+            "freq_min_hz": float(_SPECT_FREQ_MIN_HZ),
+            "freq_max_hz": float(_SPECT_FREQ_MAX_HZ),
+        },
+        "vocals": {
+            "available": False,
+        }
+    }
+    
+    # Try to load cached vocal stem if available
+    if vocal_cache_key and _vocal_separation_available() and _STEM_CACHE_DIR:
+        try:
+            from analysis.dsp.vocal_separation import load_cached_vocals
+            cached = load_cached_vocals(vocal_cache_key, _STEM_CACHE_DIR)
+            if cached is not None:
+                vocals_audio, vocals_sr = cached
+                if vocals_audio.ndim > 1:
+                    vocals_audio = np.mean(vocals_audio, axis=0)
+                vocals_stft = compute_stft(
+                    vocals_audio,
+                    sample_rate=vocals_sr,
+                    n_fft=STFT_NFFT,
+                    hop_length=STFT_HOP,
+                )
+                S_v_db = 20 * np.log10(np.maximum(vocals_stft.spectrum, 1e-10))
+                S_v_db_clipped = np.clip(S_v_db, -80, 0)
+                S_v_normalized = ((S_v_db_clipped + 80) / 80 * 255).astype(np.uint8)
+                vocals_b64 = base64.b64encode(S_v_normalized.tobytes()).decode('ascii')
+                payload["vocals"] = {
+                    "available": True,
+                    "frames_b64": vocals_b64,
+                    "n_time": int(S_v_normalized.shape[1]),
+                    "n_freq": int(S_v_normalized.shape[0]),
+                }
+        except Exception as exc:
+            logger.debug("spectrogram_vocals_load_failed vocal_cache_key=%s error=%s", vocal_cache_key, exc)
+    
+    return payload
 
 
 # ---------------------------------------------------------------------------

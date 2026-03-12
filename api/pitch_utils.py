@@ -264,13 +264,17 @@ def _build_pitch_payload(
 
 
 def _build_note_events(frames: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
-    """Build note events from pitch frames.
+    """Build note events from pitch frames with lookback-based note splitting.
+    
+    Uses lookback averaging and hysteresis-based splitting logic to segment
+    contiguous voiced frames into discrete musical note events. This is the
+    production implementation with improved note transition detection.
     
     Args:
-        frames: Sequence of pitch frames.
+        frames: Sequence of pitch frames with midi, time, and confidence fields.
         
     Returns:
-        List of note events.
+        List of note events with start/end times, midi pitch, and confidence.
     """
     events: List[Dict[str, Any]] = []
     start_idx: Optional[int] = None
@@ -309,38 +313,43 @@ def _build_note_events(frames: Sequence[Mapping[str, Any]]) -> List[Dict[str, An
         )
         _reset_active()
 
-    last_voiced_idx: Optional[int] = None
     for idx, frame in enumerate(frames):
-        midi = _safe_float(frame.get("midi"))
-        confidence = _safe_float(frame.get("confidence")) or 0.0
+        midi_value = _safe_float(frame.get("midi"))
+        confidence_value = _safe_float(frame.get("confidence")) or 0.0
 
-        is_voiced = midi is not None and confidence >= config.NOTE_EVENT_MIN_CONFIDENCE
-
-        if is_voiced:
-            if start_idx is None:
-                start_idx = idx
-                active_values.append(midi)
-                active_confidence.append(confidence)
-            else:
-                # Check for note split using hysteresis
-                current_midi = active_values[-1]
-                if midi is not None and abs(midi - current_midi) >= config.NOTE_EVENT_SPLIT_HYSTERESIS_MIDI:
-                    _close_event(idx)
-                    start_idx = idx
-                    active_values = [midi]
-                    active_confidence = [confidence]
-                else:
-                    active_values.append(midi)
-                    active_confidence.append(confidence)
-            last_voiced_idx = idx
-        else:
-            # Check if we should close an event
+        if midi_value is None or confidence_value < config.NOTE_EVENT_MIN_CONFIDENCE:
             if start_idx is not None:
-                if last_voiced_idx is not None and idx - last_voiced_idx >= min_event_frames:
-                    _close_event(idx)
+                _close_event(idx - 1)
+            continue
 
-    # Close any remaining event
-    if start_idx is not None and last_voiced_idx is not None:
+        if start_idx is None:
+            start_idx = idx
+            active_values.append(midi_value)
+            active_confidence.append(confidence_value)
+            continue
+
+        # Use lookback averaging for more stable note transition detection
+        lookback_count = min(len(active_values), min_event_frames)
+        active_center = float(np.mean(np.asarray(active_values[-lookback_count:], dtype=float)))
+        active_note = int(round(active_center))
+        current_note = int(round(midi_value))
+        should_split = (
+            current_note != active_note
+            and abs(midi_value - active_center) >= config.NOTE_EVENT_SPLIT_HYSTERESIS_MIDI
+            and len(active_values) >= min_event_frames
+        )
+
+        if should_split:
+            _close_event(idx - 1)
+            start_idx = idx
+            active_values.append(midi_value)
+            active_confidence.append(confidence_value)
+            continue
+
+        active_values.append(midi_value)
+        active_confidence.append(confidence_value)
+
+    if start_idx is not None:
         _close_event(len(frames) - 1)
 
     return events

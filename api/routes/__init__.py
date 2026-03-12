@@ -33,6 +33,8 @@ from api.api_router import (
     OUTPUT_DIR,
     EXAMPLES_DIR,
     analysis_pipeline,
+    _VOCAL_SEPARATION_MODE,
+    _vocal_separation_available,
     # Helper functions
     _extract_result_path,
     _serialize_status,
