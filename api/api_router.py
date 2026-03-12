@@ -1878,63 +1878,19 @@ def _get_analysis_pipeline():
         return analysis_pipeline
 
 
-@router.post("/analyze/example")
-async def analyze_example_audio(
-    request: Request,
-    example_id: str = Query(..., min_length=1),
-) -> Dict[str, Any]:
-    """Start an analysis job for a gallery example track.
+# ---------------------------------------------------------------------------
+# Helper functions used by modular route handlers
+# ---------------------------------------------------------------------------
 
+def _get_status(job_id: str) -> Dict[str, Any]:
+    """Get the current status of an analysis job.
+    
+    Args:
+        job_id: The unique identifier of the job.
+        
     Returns:
-        ``{ job_id, status_url, results_url }``
+        Job status information including state, progress, and timestamps.
     """
-    _rate_limit_check(request)
-    example, file_path = _resolve_example_track(example_id)
-    job_id = job_manager.create_job(
-        str(file_path),
-        _get_analysis_pipeline(),
-        metadata={
-            "filename": example["display_name"],
-            "content_type": example["content_type"],
-            "source": "example",
-            "example_id": example["id"],
-            "original_filename": example["filename"],
-            "audio_type_requested": "analytical",
-            "audio_type_detected": "analytical",
-        },
-    )
-    _job_file_paths[job_id] = str(file_path)
-    return {
-        "job_id": job_id,
-        "status_url": f"/status/{job_id}",
-        "results_url": f"/results/{job_id}",
-    }
-
-
-@router.post("/analyze")
-async def analyze_audio(request: Request, audio: UploadFile = File(...)) -> Dict[str, Any]:
-    """Upload and analyse an audio file.
-
-    Returns:
-        ``{ job_id, status_url, results_url }``
-    """
-    _rate_limit_check(request)
-    file_path = await _save_upload(audio)
-    job_id = job_manager.create_job(
-        str(file_path),
-        _get_analysis_pipeline(),
-        metadata={"filename": audio.filename, "content_type": audio.content_type, "source": "upload"},
-    )
-    _job_file_paths[job_id] = str(file_path)
-    return {
-        "job_id": job_id,
-        "status_url": f"/status/{job_id}",
-        "results_url": f"/results/{job_id}",
-    }
-
-
-@router.get("/status/{job_id}")
-def get_status(job_id: str) -> Dict[str, Any]:
     job = job_manager.get_status(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found.")
@@ -1948,11 +1904,16 @@ def get_status(job_id: str) -> Dict[str, Any]:
     return _serialize_status(job)
 
 
-@router.get("/results/{job_id}")
-def get_results(
-    job_id: str,
-    format: str = Query("json", pattern="^(json|csv|pdf)$"),
-) -> Any:
+def _get_results(job_id: str, format: str = "json") -> Any:
+    """Get the results of a completed analysis job.
+    
+    Args:
+        job_id: The unique identifier of the job.
+        format: Output format - json, json_report, csv, or pdf.
+        
+    Returns:
+        Analysis results in the requested format.
+    """
     job = job_manager.get_status(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found.")
@@ -1977,499 +1938,24 @@ def get_results(
     )
 
 
-@router.get("/examples")
-def list_example_tracks() -> Dict[str, Any]:
-    examples = _list_available_example_tracks()
-    logger.info("example_gallery.endpoint_response available_examples=%d", len(examples))
-    return {"examples": examples}
-
-
-def _resolve_example_file(filename: str) -> Path:
-    """Resolve and validate an example filename to an absolute path within EXAMPLES_DIR."""
-    examples_root = EXAMPLES_DIR.resolve()
-    if not examples_root.exists():
-        raise HTTPException(status_code=404, detail="Examples directory not found.")
-    if "/" in filename or "\\" in filename or filename.startswith("."):
-        raise HTTPException(status_code=400, detail="Invalid filename.")
-    candidate = (examples_root / filename).resolve()
-    try:
-        candidate.relative_to(examples_root)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid filename.")
-    if not candidate.is_file():
-        raise HTTPException(status_code=404, detail="Example file not found.")
-    return candidate
-
-
-@router.get("/examples/{filename}/thumbnail")
-def serve_example_thumbnail(filename: str) -> Any:
-    """Extract and return embedded artwork from an example audio file via mutagen.
-
-    Supports FLAC (native PICTURE blocks), Ogg/Opus (VorbisComment METADATA_BLOCK_PICTURE),
-    MP3 (ID3 APIC frame), and MP4/M4A (covr atom).
-    Returns 404 when no embedded artwork is present.
-    """
-    import base64
-    import struct
-
-    from mutagen.flac import FLAC
-    from mutagen.id3 import ID3NoHeaderError
-    from mutagen.mp4 import MP4, MP4Cover
-    from mutagen.oggopus import OggOpus
-    from mutagen.oggvorbis import OggVorbis
-
-    candidate = _resolve_example_file(filename)
-    extension = candidate.suffix.lower()
-    if extension not in ALLOWED_EXTENSIONS:
-        raise HTTPException(status_code=404, detail="Example file not found.")
-
-    picture_data: Optional[bytes] = None
-    picture_mime: str = "image/jpeg"
-
-    try:
-        if extension == ".flac":
-            audio = FLAC(str(candidate))
-            if audio.pictures:
-                pic = audio.pictures[0]
-                picture_data = pic.data
-                picture_mime = pic.mime or "image/jpeg"
-
-        elif extension in (".opus", ".ogg"):
-            audio = OggOpus(str(candidate)) if extension == ".opus" else OggVorbis(str(candidate))
-            raw_list = audio.get("metadata_block_picture", [])
-            if raw_list:
-                raw = base64.b64decode(raw_list[0])
-                offset = 0
-                offset += 4  # picture type
-                mime_len = struct.unpack_from(">I", raw, offset)[0]; offset += 4
-                mime_bytes = raw[offset: offset + mime_len]; offset += mime_len
-                desc_len = struct.unpack_from(">I", raw, offset)[0]; offset += 4
-                offset += desc_len  # description
-                offset += 16  # width, height, color depth, colors used
-                data_len = struct.unpack_from(">I", raw, offset)[0]; offset += 4
-                picture_data = raw[offset: offset + data_len]
-                picture_mime = mime_bytes.decode("utf-8", errors="replace") or "image/jpeg"
-
-        elif extension == ".mp3":
-            try:
-                from mutagen.id3 import ID3, APIC
-                tags = ID3(str(candidate))
-                apic_keys = [k for k in tags.keys() if k.startswith("APIC")]
-                if apic_keys:
-                    apic = tags[apic_keys[0]]
-                    picture_data = apic.data
-                    picture_mime = apic.mime or "image/jpeg"
-            except ID3NoHeaderError:
-                pass
-
-        elif extension in (".m4a", ".mp4", ".aac"):
-            audio = MP4(str(candidate))
-            covr = audio.tags.get("covr") if audio.tags else None
-            if covr:
-                img = covr[0]
-                picture_data = bytes(img)
-                picture_mime = (
-                    "image/png"
-                    if getattr(img, "imageformat", None) == MP4Cover.FORMAT_PNG
-                    else "image/jpeg"
-                )
-
-    except Exception:
-        pass  # Mutagen parse failure — no artwork available.
-
-    if not picture_data:
-        raise HTTPException(status_code=404, detail="No embedded artwork found.")
-
-    logger.info(
-        "example_gallery.serve_thumbnail filename=%s mime=%s size=%d",
-        filename,
-        picture_mime,
-        len(picture_data),
-    )
-    return Response(content=picture_data, media_type=picture_mime)
-
-
-@router.get("/examples/{filename}")
-def serve_example_file(filename: str) -> Any:
-    """Serve an example audio file or image sidecar from EXAMPLES_DIR."""
-    candidate = _resolve_example_file(filename)
-    extension = candidate.suffix.lower()
-    if extension not in ALLOWED_EXTENSIONS and extension not in EXAMPLE_IMAGE_EXTENSIONS:
-        raise HTTPException(status_code=404, detail="Example file not found.")
-
-    if extension in EXAMPLE_IMAGE_EXTENSIONS:
-        media_type, _ = mimetypes.guess_type(candidate.name)
-        media_type = media_type or "application/octet-stream"
-    elif extension in EXAMPLE_CONTENT_TYPE_OVERRIDES:
-        media_type = EXAMPLE_CONTENT_TYPE_OVERRIDES[extension]
-    else:
-        media_type, _ = mimetypes.guess_type(candidate.name)
-        media_type = media_type or "audio/*"
-
-    logger.info(
-        "example_gallery.serve_file filename=%s extension=%s media_type=%s",
-        filename,
-        extension,
-        media_type,
-    )
-    return FileResponse(str(candidate), media_type=media_type, filename=filename)
-
-
-def _build_spectrogram_payload(
-    file_path: str,
-    *,
-    vocal_cache_key: Optional[str] = None,
-    audio_type: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Compute and return base64-encoded spectrogram data for the mix and optionally vocals.
-
-    Loads the audio, computes STFT, filters to [_SPECT_FREQ_MIN_HZ, _SPECT_FREQ_MAX_HZ],
-    normalises to dB, scales to uint8 and base64-encodes for JSON transport.
-
-    Args:
-        file_path: Path to the original audio file.
-        vocal_cache_key: SHA-256 cache key used to look up a pre-separated vocal
-            stem.  If ``None`` or the stem is not cached, the vocals channel will
-            report ``available=False``.
-        audio_type: The detected audio type ("isolated" or "mixed") from analysis.
-
+def _list_available_example_tracks() -> List[Dict[str, Any]]:
+    """List all available example tracks in the gallery.
+    
     Returns:
-        ``{"mix": {frames_b64, n_time, n_freq, frequencies_hz, times_s},
-           "vocals": {available, detected, [same keys if available]}}``
+        List of example tracks with metadata.
     """
-    import base64
-
-    # Load the mix audio using the same two-step decode+preprocess as the main pipeline.
-    try:
-        _raw_audio, _raw_sr = _decode_audio_file(file_path)
-        _preprocessed = preprocess_audio(
-            _raw_audio,
-            sample_rate=int(_raw_sr),
-            target_sr=TARGET_SAMPLE_RATE,
-            mono=True,
-            normalize=True,
-        )
-        mix_audio = _preprocessed.audio
-        sample_rate = int(_preprocessed.sample_rate)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Could not load audio for spectrogram: {exc}",
-        )
-
-    def _stft_to_payload(audio: np.ndarray, sr: int) -> Dict[str, Any]:
-        result = compute_stft(audio, sample_rate=sr, n_fft=STFT_NFFT, hop_length=STFT_HOP)
-        freqs = result.frequencies
-        freq_mask = (freqs >= _SPECT_FREQ_MIN_HZ) & (freqs <= _SPECT_FREQ_MAX_HZ)
-        # compute_stft returns spectrum as (n_freq, n_time); select freq bands → (n_filtered_freq, n_time)
-        mag = result.spectrum[freq_mask, :]  # shape: (n_freq_filtered, n_time)
-
-        # Convert to dB, clamp, normalise to [0, 1], scale to uint8
-        db_floor = -80.0
-        ref_val = float(np.max(mag)) if mag.size > 0 else 1.0
-        ref_val = max(ref_val, 1e-10)
-        mag_db = 20.0 * np.log10(mag / ref_val + 1e-10)
-        mag_db = np.clip(mag_db, db_floor, 0.0)
-        mag_norm = ((mag_db - db_floor) / (-db_floor))
-        mag_uint8 = (mag_norm * 255.0).astype(np.uint8)
-        frames_b64 = base64.b64encode(mag_uint8.tobytes()).decode("ascii")
-        return {
-            "frames_b64": frames_b64,
-            "n_time": int(mag.shape[1]),
-            "n_freq": int(mag.shape[0]),
-            "frequencies_hz": freqs[freq_mask].tolist(),
-            "times_s": result.times.tolist(),
-        }
-
-    mix_payload = _stft_to_payload(mix_audio, sample_rate)
-
-    # Attempt vocal stem
-    vocals_payload: Dict[str, Any] = {"available": False, "detected": audio_type}
-    is_vocal_sep_available = _vocal_separation_available()
-    logger.info(
-        "spectrogram_vocal_check vocal_cache_key=%s _STEM_CACHE_DIR=%s _vocal_separation_available=%s audio_type=%s",
-        vocal_cache_key[:12] if vocal_cache_key else None,
-        str(_STEM_CACHE_DIR) if _STEM_CACHE_DIR else None,
-        is_vocal_sep_available,
-        audio_type,
-    )
-    if (
-        vocal_cache_key
-        and _STEM_CACHE_DIR is not None
-        and is_vocal_sep_available
-    ):
-        try:
-            from analysis.dsp.vocal_separation import load_cached_stem
-
-            # Check if cache file exists before attempting load
-            from analysis.dsp.vocal_separation import _cache_path
-            cache_file_path = _cache_path(_STEM_CACHE_DIR, vocal_cache_key)
-            logger.info(
-                "spectrogram_vocal_cache_check key=%s path=%s exists=%s",
-                vocal_cache_key[:12],
-                str(cache_file_path),
-                cache_file_path.exists() if cache_file_path else False,
-            )
-
-            cached = load_cached_stem(_STEM_CACHE_DIR, vocal_cache_key)
-            if cached is not None:
-                vocal_audio, vocal_sr = cached
-                vocal_data = _stft_to_payload(vocal_audio, vocal_sr)
-                vocals_payload = {"available": True, **vocal_data}
-                logger.info(
-                    "spectrogram_vocal_success key=%s",
-                    vocal_cache_key[:12],
-                )
-            else:
-                logger.info(
-                    "spectrogram_vocal_cache_miss key=%s - no cached stem found",
-                    vocal_cache_key[:12],
-                )
-        except Exception as exc:
-            logger.info(
-                "spectrogram_vocals_error key=%s error=%s",
-                vocal_cache_key[:12] if vocal_cache_key else "",
-                exc,
-            )
-
-    return {"mix": mix_payload, "vocals": vocals_payload}
-
-
-@router.get("/spectrogram/{job_id}")
-def get_spectrogram(job_id: str) -> Dict[str, Any]:
-    """Return base64-encoded spectrogram data (mix + optional vocal stem) for a completed job.
-
-    File-path resolution order:
-        1. In-process ``_job_file_paths`` dict (populated at job-creation time).
-        2. ``result["metadata"]["_original_file_path"]`` stored in the job result
-        (survives server restarts because it is serialised with the analysis payload).
-
-    Returns 404 if the job is unknown, 409 if the job is not yet complete,
-    and 503 only if the audio file is genuinely unavailable.
-    """
-    job = job_manager.get_status(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found.")
-
-    if job.status != "completed":
-        raise HTTPException(status_code=409, detail="Job analysis not yet complete.")
-
-    # Resolve file path: in-process dict first, then metadata fallback.
-    file_path: Optional[str] = _job_file_paths.get(job_id)
-    vocal_cache_key: Optional[str] = None
-
-    if not file_path or not Path(file_path).is_file():
-        result = job_manager.get_result(job_id)
-        if result is not None:
-            metadata = result.get("metadata", {}) if isinstance(result, dict) else {}
-            fallback = metadata.get("_original_file_path") if isinstance(metadata, dict) else None
-            if fallback and Path(str(fallback)).is_file():
-                file_path = str(fallback)
-            separation_info = metadata.get("vocal_separation") if isinstance(metadata, dict) else None
-            if isinstance(separation_info, dict) and separation_info.get("applied"):
-                try:
-                    from analysis.dsp.vocal_separation import cache_key as _voc_cache_key
-                    vocal_cache_key = _voc_cache_key(file_path) if file_path else None
-                except Exception:
-                    pass
-
-    if not file_path or not Path(file_path).is_file():
-        raise HTTPException(
-            status_code=503,
-            detail="Source audio file is no longer available for spectrogram generation.",
-        )
-
-    # If we resolved the path from in-process dict, still try to get vocal cache key
-    if vocal_cache_key is None and _job_file_paths.get(job_id):
-        result = job_manager.get_result(job_id)
-        if result is not None:
-            metadata = result.get("metadata", {}) if isinstance(result, dict) else {}
-            separation_info = metadata.get("vocal_separation") if isinstance(metadata, dict) else None
-            if isinstance(separation_info, dict) and separation_info.get("applied"):
-                try:
-                    from analysis.dsp.vocal_separation import cache_key as _voc_cache_key
-                    vocal_cache_key = _voc_cache_key(file_path)
-                except Exception:
-                    pass
-
-    logger.info(
-        "spectrogram_request job_id=%s file_path=%s vocal_cache_key=%s",
-        job_id,
-        file_path,
-        vocal_cache_key[:12] if vocal_cache_key else None,
-    )
-
-    return _build_spectrogram_payload(file_path, vocal_cache_key=vocal_cache_key)
-
-
-# ---------------------------------------------------------------------------
-# Reference track management endpoints
-# ---------------------------------------------------------------------------
-
-@router.post("/reference/upload")
-async def upload_reference_track(
-    request: Request,
-    audio: UploadFile = File(...),
-) -> Dict[str, Any]:
-    """Upload an audio file as a reference track.
-
-    Analyzes the file synchronously and caches the result.
-
-    Returns:
-        ``{ reference_id, duration_s, key, pitch_frame_count, note_event_count }``
-    """
-    _rate_limit_check(request)
-    file_path = await _save_upload(audio)
-    try:
-        result = await asyncio.to_thread(
-            _get_analysis_pipeline(),
-            file_path=str(file_path),
-            metadata={
-                "filename": audio.filename,
-                "content_type": audio.content_type,
-                "source": "upload",
-            },
-        )
-    except Exception as exc:
-        logger.error("reference_upload.pipeline_error filename=%s error=%s", audio.filename, exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {_sanitize_error(str(exc))}")
-    finally:
-        # Clean up the temporary upload file.
-        try:
-            file_path.unlink(missing_ok=True)
-        except Exception:
-            pass
-
-    ref_analysis = _ref_cache.build_reference_analysis(
-        source="upload",
-        source_id=audio.filename or file_path.name,
-        pipeline_result=result.get("analysis", {}),
-    )
-    _ref_cache.store(ref_analysis)
-
-    logger.info(
-        "reference_upload.stored reference_id=%s source_id=%s duration_s=%.2f pitch_frames=%d note_events=%d",
-        ref_analysis.reference_id,
-        ref_analysis.source_id,
-        ref_analysis.duration_s,
-        len(ref_analysis.pitch_track),
-        len(ref_analysis.note_events),
-    )
-
-    return {
-        "reference_id": ref_analysis.reference_id,
-        "duration_s": ref_analysis.duration_s,
-        "key": ref_analysis.key,
-        "pitch_frame_count": len(ref_analysis.pitch_track),
-        "note_event_count": len(ref_analysis.note_events),
-    }
-
-
-@router.post("/reference/from-example/{example_id}")
-async def reference_from_example(
-    example_id: str,
-    request: Request,
-) -> Dict[str, Any]:
-    """Use a gallery example track as a reference.
-
-    Checks the cache first; analyzes if not already cached.
-
-    Returns:
-        ``{ reference_id, duration_s, key, pitch_frame_count, note_event_count, cached: bool }``
-    """
-    # Check cache by source_id to avoid re-analyzing the same example.
-    for cached in _ref_cache.list_all():
-        if cached.source == "example" and cached.source_id == example_id:
-            logger.info(
-                "reference_from_example.cache_hit reference_id=%s example_id=%s",
-                cached.reference_id,
-                example_id,
-            )
-            return {
-                "reference_id": cached.reference_id,
-                "duration_s": cached.duration_s,
-                "key": cached.key,
-                "pitch_frame_count": len(cached.pitch_track),
-                "note_event_count": len(cached.note_events),
-                "cached": True,
-            }
-
-    example, file_path = _resolve_example_track(example_id)
-    try:
-        result = await asyncio.to_thread(
-            _get_analysis_pipeline(),
-            file_path=str(file_path),
-            metadata={
-                "filename": example.get("filename", example_id),
-                "content_type": example.get("content_type", "audio/*"),
-                "source": "example",
-                "example_id": example_id,
-            },
-        )
-    except Exception as exc:
-        logger.error(
-            "reference_from_example.pipeline_error example_id=%s error=%s", example_id, exc, exc_info=True
-        )
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {_sanitize_error(str(exc))}")
-
-    ref_analysis = _ref_cache.build_reference_analysis(
-        source="example",
-        source_id=example_id,
-        pipeline_result=result.get("analysis", {}),
-    )
-    _ref_cache.store(ref_analysis)
-
-    logger.info(
-        "reference_from_example.stored reference_id=%s example_id=%s duration_s=%.2f",
-        ref_analysis.reference_id,
-        example_id,
-        ref_analysis.duration_s,
-    )
-
-    return {
-        "reference_id": ref_analysis.reference_id,
-        "duration_s": ref_analysis.duration_s,
-        "key": ref_analysis.key,
-        "pitch_frame_count": len(ref_analysis.pitch_track),
-        "note_event_count": len(ref_analysis.note_events),
-        "cached": False,
-    }
-
-
-@router.get("/reference/{reference_id}")
-def get_reference_analysis(reference_id: str) -> Dict[str, Any]:
-    """Retrieve the full cached reference analysis for a *reference_id*.
-
-    Returns:
-        ``{ reference_id, source, source_id, duration_s, key, pitch_track_summary, note_events,
-        tessitura_center_midi, formant_summary }``
-
-    Raises:
-        404 if the *reference_id* is not found in the cache.
-    """
-    ref = _ref_cache.get(reference_id)
-    if ref is None:
-        raise HTTPException(status_code=404, detail="Reference not found.")
-
-    # Summarise pitch track to avoid sending all frames in every call.
-    pitch_summary: Dict[str, Any] = {
-        "frame_count": len(ref.pitch_track),
-        "first_frame": ref.pitch_track[0] if ref.pitch_track else None,
-        "last_frame": ref.pitch_track[-1] if ref.pitch_track else None,
-    }
-
-    return {
-        "reference_id": ref.reference_id,
-        "source": ref.source,
-        "source_id": ref.source_id,
-        "duration_s": ref.duration_s,
-        "key": ref.key,
-        "pitch_track_summary": pitch_summary,
-        "note_events": ref.note_events,
-        "tessitura_center_midi": ref.tessitura_center_midi,
-        "formant_summary": ref.formant_summary,
-        "created_at": ref.created_at.isoformat(),
-    }
+    if not EXAMPLES_DIR.exists():
+        return []
+    examples: List[Dict[str, Any]] = []
+    for audio_file in sorted(EXAMPLES_DIR.iterdir()):
+        if audio_file.is_file() and audio_file.suffix.lower() in ALLOWED_EXTENSIONS:
+            examples.append({
+                "id": audio_file.stem,
+                "filename": audio_file.name,
+                "display_name": _parse_example_stem(audio_file.stem),
+                "content_type": mimetypes.guess_type(audio_file.name)[0] or "audio/*",
+            })
+    return examples
 
 
 # ---------------------------------------------------------------------------
