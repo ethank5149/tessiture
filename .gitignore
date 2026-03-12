@@ -40,6 +40,8 @@ frontend/dist/
 # Runtime data and generated outputs
 uploads/
 outputs/
+jobs/
+logs/
 /tmp/tessiture_uploads/
 /data/uploads/
 /data/outputs/
