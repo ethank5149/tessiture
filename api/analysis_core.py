@@ -565,6 +565,7 @@ def _build_spectrogram_payload(
     mix_b64 = base64.b64encode(S_normalized.tobytes()).decode('ascii')   
     
     payload = {
+        "audio_type": audio_type,
         "mix": {
             "frames_b64": mix_b64,
             "n_time": int(S_normalized.shape[1]),
