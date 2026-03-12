@@ -1,5 +1,92 @@
 from __future__ import annotations
 
+# Re-export configuration from new modules for backward compatibility
+from api import config
+
+# Re-export configuration constants for backward compatibility
+UPLOAD_DIR = config.UPLOAD_DIR
+OUTPUT_DIR = config.OUTPUT_DIR
+EXAMPLES_DIR = config.EXAMPLES_DIR
+ALLOWED_EXTENSIONS = config.ALLOWED_EXTENSIONS
+ALLOWED_MIME_TYPES = config.ALLOWED_MIME_TYPES
+MAX_UPLOAD_BYTES = config.MAX_UPLOAD_BYTES
+TARGET_SAMPLE_RATE = config.TARGET_SAMPLE_RATE
+STFT_NFFT = config.STFT_NFFT
+STFT_HOP = config.STFT_HOP
+NOTE_EVENT_MIN_CONFIDENCE = config.NOTE_EVENT_MIN_CONFIDENCE
+NOTE_EVENT_MIN_FRAMES = config.NOTE_EVENT_MIN_FRAMES
+NOTE_EVENT_SPLIT_HYSTERESIS_MIDI = config.NOTE_EVENT_SPLIT_HYSTERESIS_MIDI
+BOOTSTRAP_SAMPLES = config.BOOTSTRAP_SAMPLES
+BOOTSTRAP_CONFIDENCE_LEVEL = config.BOOTSTRAP_CONFIDENCE_LEVEL
+REFERENCE_CALIBRATION_SAMPLE_COUNT = config.REFERENCE_CALIBRATION_SAMPLE_COUNT
+REFERENCE_CALIBRATION_SEED = config.REFERENCE_CALIBRATION_SEED
+DEFAULT_INFERENTIAL_PRESET = config.DEFAULT_INFERENTIAL_PRESET
+INFERENTIAL_NULL_PRESETS = config.INFERENTIAL_NULL_PRESETS
+RATE_LIMIT_CAPACITY = config.RATE_LIMIT_CAPACITY
+RATE_LIMIT_REFILL_PER_SEC = config.RATE_LIMIT_REFILL_PER_SEC
+NOTE_NAMES = config.NOTE_NAMES
+EXAMPLE_CONTENT_TYPE_OVERRIDES = config.EXAMPLE_CONTENT_TYPE_OVERRIDES
+EXAMPLE_IMAGE_EXTENSIONS = config.EXAMPLE_IMAGE_EXTENSIONS
+
+# Re-export internal config for backward compatibility
+_VOICED_MIN_HZ = config._VOICED_MIN_HZ
+_VOICED_MAX_HZ = config._VOICED_MAX_HZ
+_VOICED_MIN_SALIENCE = config._VOICED_MIN_SALIENCE
+_SPECT_FREQ_MIN_HZ = config._SPECT_FREQ_MIN_HZ
+_SPECT_FREQ_MAX_HZ = config._SPECT_FREQ_MAX_HZ
+_job_file_paths = config._job_file_paths
+_FILENAME_DELIMITER = config._FILENAME_DELIMITER
+
+# Import utility functions from new modules
+from api.utils import (
+    _safe_float,
+    _as_finite_array,
+    _ensure_upload_dir,
+    _ensure_output_dir,
+    _save_upload,
+    _validate_upload,
+    _rate_limit_check,
+    _serialize_status,
+    _sanitize_error,
+    _extract_result_path,
+    _is_voiced_frame,
+    _build_example_payload,
+    _slugify_example_id,
+    _guess_example_content_type,
+    _parse_example_stem,
+    _discover_example_tracks,
+    _list_available_example_tracks,
+    _resolve_example_track,
+    get_job_file_paths,
+    register_job_file_path,
+    clear_job_file_path,
+)
+
+# Import statistical functions from new modules
+from api.stats import (
+    _build_reference_calibration_uncertainty,
+    _resolve_inferential_preset,
+    _bootstrap_two_sided_p_value,
+    _build_metric_inference,
+    _build_inferential_statistics,
+    _build_calibration_summary,
+)
+
+# Import pitch utilities from new modules
+from api.pitch_utils import (
+    _midi_to_note_name,
+    _hz_to_note_name,
+    _unit_supports_pitch_note_names,
+    _pitch_value_to_note_name,
+    _midi_values_to_note_names,
+    _normalize_analysis_diagnostics,
+    _extract_pitch_frame_diagnostics,
+    _summarize_pitch_method_diagnostics,
+    _build_pitch_payload,
+    _build_note_events,
+)
+
+# Original imports
 import asyncio
 from functools import lru_cache
 import logging
@@ -40,111 +127,8 @@ from reporting import generate_csv_report, generate_json_report, generate_pdf_re
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# Upload and output configuration
-UPLOAD_DIR = Path(os.getenv("TESSITURE_UPLOAD_DIR", "/tmp/tessiture_uploads"))
-OUTPUT_DIR = Path(os.getenv("TESSITURE_OUTPUT_DIR", "/tmp/tessiture_outputs"))
-EXAMPLES_DIR = Path(
-    os.getenv(
-        "TESSITURE_EXAMPLES_DIR",
-        str(Path(__file__).resolve().parents[1] / "examples" / "tracks"),
-    )
-)
-DEFAULT_UPLOAD_EXTENSIONS = ".wav,.mp3,.flac,.m4a,.opus"
-DEFAULT_UPLOAD_MIME_TYPES = (
-    "audio/wav,audio/x-wav,audio/mpeg,audio/flac,audio/x-flac,audio/mp4,"
-    "audio/opus,audio/x-opus,audio/ogg,application/ogg"
-)
-ALLOWED_EXTENSIONS: Set[str] = {
-    (ext if ext.startswith(".") else f".{ext}")
-    for ext in (
-        part.strip().lower()
-        for part in os.getenv("TESSITURE_UPLOAD_EXTENSIONS", DEFAULT_UPLOAD_EXTENSIONS).split(",")
-    )
-    if ext
-}
-ALLOWED_MIME_TYPES: Set[str] = {
-    mime
-    for mime in (
-        part.strip().lower()
-        for part in os.getenv("TESSITURE_UPLOAD_MIME_TYPES", DEFAULT_UPLOAD_MIME_TYPES).split(",")
-    )
-    if mime
-}
-MAX_UPLOAD_BYTES = int(os.getenv("TESSITURE_UPLOAD_MAX_BYTES", str(25 * 1024 * 1024)))
-
-# Analysis defaults
-TARGET_SAMPLE_RATE = int(os.getenv("TESSITURE_TARGET_SAMPLE_RATE", "44100"))
-STFT_NFFT = int(os.getenv("TESSITURE_STFT_NFFT", "4096"))
-STFT_HOP = int(os.getenv("TESSITURE_STFT_HOP", "512"))
-NOTE_EVENT_MIN_CONFIDENCE = float(os.getenv("TESSITURE_NOTE_EVENT_MIN_CONFIDENCE", "0.15"))
-NOTE_EVENT_MIN_FRAMES = int(os.getenv("TESSITURE_NOTE_EVENT_MIN_FRAMES", "3"))
-NOTE_EVENT_SPLIT_HYSTERESIS_MIDI = float(os.getenv("TESSITURE_NOTE_EVENT_SPLIT_HYSTERESIS_MIDI", "0.45"))
-BOOTSTRAP_SAMPLES = int(os.getenv("TESSITURE_BOOTSTRAP_SAMPLES", "1000"))
-BOOTSTRAP_CONFIDENCE_LEVEL = float(os.getenv("TESSITURE_BOOTSTRAP_CONFIDENCE_LEVEL", "0.95"))
-REFERENCE_CALIBRATION_SAMPLE_COUNT = int(os.getenv("TESSITURE_REFERENCE_CALIBRATION_SAMPLES", "24"))
-REFERENCE_CALIBRATION_SEED = int(os.getenv("TESSITURE_REFERENCE_CALIBRATION_SEED", "20260303"))
-DEFAULT_INFERENTIAL_PRESET = os.getenv("TESSITURE_INFERENTIAL_PRESET", "casual").strip().lower()
-INFERENTIAL_NULL_PRESETS: Dict[str, Dict[str, float]] = {
-    "casual": {
-        "f0_mean_hz": 196.0,
-        "f0_min_hz": 130.81,
-        "f0_max_hz": 440.0,
-        "tessitura_center_midi": 57.0,
-        "pitch_error_mean_cents": 0.0,
-    },
-    "intermediate": {
-        "f0_mean_hz": 220.0,
-        "f0_min_hz": 130.81,
-        "f0_max_hz": 523.25,
-        "tessitura_center_midi": 60.0,
-        "pitch_error_mean_cents": 0.0,
-    },
-    "vocalist": {
-        "f0_mean_hz": 246.94,
-        "f0_min_hz": 146.83,
-        "f0_max_hz": 659.25,
-        "tessitura_center_midi": 64.0,
-        "pitch_error_mean_cents": 0.0,
-    },
-}
-
-# Rate limiting placeholder (token bucket per client IP).
-RATE_LIMIT_CAPACITY = int(os.getenv("TESSITURE_RATE_LIMIT_CAPACITY", "10"))
-RATE_LIMIT_REFILL_PER_SEC = float(os.getenv("TESSITURE_RATE_LIMIT_REFILL_PER_SEC", "0.5"))
+# Keep _RATE_LIMIT_BUCKETS in local scope for backward compatibility
 _RATE_LIMIT_BUCKETS: Dict[str, Dict[str, float]] = {}
-
-NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
-
-EXAMPLE_CONTENT_TYPE_OVERRIDES: Dict[str, str] = {
-    ".opus": "audio/opus",
-    ".m4a": "audio/mp4",
-}
-EXAMPLE_IMAGE_EXTENSIONS: Set[str] = {".jpg", ".jpeg", ".png", ".webp"}
-
-
-# Voiced-frame filter thresholds — aligned with compute_voicing_mask defaults.
-# Frames outside these bounds are noise/artifact detections, not genuine pitch.
-_VOICED_MIN_HZ: float = float(os.getenv("TESSITURE_VOICED_MIN_HZ", "80.0"))
-_VOICED_MAX_HZ: float = float(os.getenv("TESSITURE_VOICED_MAX_HZ", "1200.0"))
-_VOICED_MIN_SALIENCE: float = float(os.getenv("TESSITURE_VOICED_MIN_SALIENCE", "0.3"))
-
-# Vocal separation configuration
-_VOCAL_SEPARATION_MODE: str = os.getenv("TESSITURE_VOCAL_SEPARATION", "auto").lower()
-_STEM_CACHE_DIR: Optional[Path] = (
-    Path(os.getenv("TESSITURE_STEM_CACHE_DIR", "/data/stem_cache"))
-    if os.getenv("TESSITURE_STEM_CACHE_DIR") or _VOCAL_SEPARATION_MODE != "off"
-    else None
-)
-
-# Spectrogram frequency display bounds (Hz)
-_SPECT_FREQ_MIN_HZ: float = 80.0
-_SPECT_FREQ_MAX_HZ: float = 8000.0
-
-# Volatile in-process file-path registry.  Populated by the analyze endpoints
-# at job-creation time so that /spectrogram/{job_id} can find the source file
-# without re-loading the full result.  Falls back to metadata._original_file_path
-# stored in the analysis result when the dict is empty after a server restart.
-_job_file_paths: Dict[str, str] = {}
 
 
 def _is_voiced_frame(frame: Mapping[str, Any]) -> bool:
