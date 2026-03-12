@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api import job_manager
+from api import api_router as main_routes
 from api.server import app
 
 
@@ -34,6 +35,7 @@ def _wait_for_completion(client: TestClient, job_id: str, timeout_s: float = 3.0
 
 def test_analyze_status_results_json(tmp_path, monkeypatch) -> None:
     from api import routes
+    from api import api_router
 
     _reset_job_state()
     routes.UPLOAD_DIR = tmp_path / "uploads"
@@ -66,7 +68,7 @@ def test_analyze_status_results_json(tmp_path, monkeypatch) -> None:
             "result_path": str(json_path),
         }
 
-    monkeypatch.setattr(routes, "analysis_pipeline", fake_pipeline)
+    monkeypatch.setattr(main_routes, "analysis_pipeline", fake_pipeline)
 
     with TestClient(app) as client:
         response = client.post(
@@ -96,6 +98,7 @@ def test_analyze_status_results_json(tmp_path, monkeypatch) -> None:
 
 def test_status_endpoint_reports_mid_pipeline_progress_fields(tmp_path, monkeypatch) -> None:
     from api import routes
+    from api import api_router
 
     _reset_job_state()
     routes.UPLOAD_DIR = tmp_path / "uploads"
@@ -119,7 +122,7 @@ def test_status_endpoint_reports_mid_pipeline_progress_fields(tmp_path, monkeypa
             "result_path": str(json_path),
         }
 
-    monkeypatch.setattr(routes, "analysis_pipeline", fake_pipeline)
+    monkeypatch.setattr(main_routes, "analysis_pipeline", fake_pipeline)
 
     with TestClient(app) as client:
         response = client.post(
@@ -160,6 +163,8 @@ def test_status_endpoint_reports_mid_pipeline_progress_fields(tmp_path, monkeypa
 
 def test_results_downloads_csv_and_pdf(tmp_path, monkeypatch) -> None:
     from api import routes
+    from api import api_router
+    from api import api_router
 
     _reset_job_state()
     routes.UPLOAD_DIR = tmp_path / "uploads"
@@ -181,7 +186,7 @@ def test_results_downloads_csv_and_pdf(tmp_path, monkeypatch) -> None:
             "result_path": str(csv_path),
         }
 
-    monkeypatch.setattr(routes, "analysis_pipeline", fake_pipeline)
+    monkeypatch.setattr(main_routes, "analysis_pipeline", fake_pipeline)
 
     with TestClient(app) as client:
         response = client.post(
@@ -249,7 +254,7 @@ def test_results_csv_pdf_require_explicit_artifact_paths(tmp_path, monkeypatch) 
             "result_path": str(generic_json),
         }
 
-    monkeypatch.setattr(routes, "analysis_pipeline", fake_pipeline)
+    monkeypatch.setattr(main_routes, "analysis_pipeline", fake_pipeline)
 
     with TestClient(app) as client:
         response = client.post(
@@ -286,7 +291,7 @@ def test_status_error_payload_is_sanitized_for_failed_jobs(tmp_path, monkeypatch
     async def fake_pipeline(_file_path: str, metadata=None):
         raise RuntimeError("intentional failure for client")
 
-    monkeypatch.setattr(routes, "analysis_pipeline", fake_pipeline)
+    monkeypatch.setattr(main_routes, "analysis_pipeline", fake_pipeline)
 
     with TestClient(app) as client:
         response = client.post(
@@ -669,7 +674,7 @@ def test_analyze_accepts_opus_upload(tmp_path, monkeypatch) -> None:
             "result_path": str(json_path),
         }
 
-    monkeypatch.setattr(routes, "analysis_pipeline", fake_pipeline)
+    monkeypatch.setattr(main_routes, "analysis_pipeline", fake_pipeline)
 
     with TestClient(app) as client:
         response = client.post(
@@ -707,6 +712,7 @@ def test_decode_audio_file_opus_failure_is_explicit(monkeypatch) -> None:
 
 def test_examples_endpoint_lists_available_tracks(tmp_path, monkeypatch) -> None:
     from api import routes
+    from api import config
 
     examples_dir = tmp_path / "examples"
     examples_dir.mkdir(parents=True, exist_ok=True)
@@ -714,7 +720,7 @@ def test_examples_endpoint_lists_available_tracks(tmp_path, monkeypatch) -> None
     opus_file.write_bytes(b"OPUS")
     (examples_dir / "notes.txt").write_text("not audio", encoding="utf-8")
 
-    monkeypatch.setattr(routes, "EXAMPLES_DIR", examples_dir)
+    monkeypatch.setattr(config, "EXAMPLES_DIR", examples_dir)
 
     with TestClient(app) as client:
         response = client.get("/examples")
@@ -730,6 +736,7 @@ def test_examples_endpoint_lists_available_tracks(tmp_path, monkeypatch) -> None
 
 def test_analyze_example_schedules_job_from_catalog(tmp_path, monkeypatch) -> None:
     from api import routes
+    from api import config
 
     _reset_job_state()
     routes.OUTPUT_DIR = tmp_path / "outputs"
@@ -739,7 +746,7 @@ def test_analyze_example_schedules_job_from_catalog(tmp_path, monkeypatch) -> No
     source_file = examples_dir / "demo.opus"
     source_file.write_bytes(b"OPUS")
 
-    monkeypatch.setattr(routes, "EXAMPLES_DIR", examples_dir)
+    monkeypatch.setattr(config, "EXAMPLES_DIR", examples_dir)
 
     async def fake_pipeline(file_path: str, metadata=None):
         assert Path(file_path).resolve() == source_file.resolve()
@@ -762,7 +769,7 @@ def test_analyze_example_schedules_job_from_catalog(tmp_path, monkeypatch) -> No
             "result_path": str(json_path),
         }
 
-    monkeypatch.setattr(routes, "analysis_pipeline", fake_pipeline)
+    monkeypatch.setattr(main_routes, "analysis_pipeline", fake_pipeline)
 
     with TestClient(app) as client:
         response = client.post("/analyze/example?example_id=demo")
@@ -796,7 +803,7 @@ def test_analyze_example_rejects_unknown_or_non_discoverable_tracks(tmp_path, mo
     except (OSError, NotImplementedError):
         pass
 
-    monkeypatch.setattr(routes, "EXAMPLES_DIR", examples_dir)
+    monkeypatch.setattr(main_routes, "EXAMPLES_DIR", examples_dir)
 
     with TestClient(app) as client:
         unknown_response = client.post("/analyze/example?example_id=missing")
@@ -1064,7 +1071,7 @@ def test_spectrogram_endpoint_returns_200_with_expected_keys(tmp_path, monkeypat
         routes.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         return {"metadata": {}, "summary": {}}
 
-    monkeypatch.setattr(routes, "analysis_pipeline", fake_pipeline)
+    monkeypatch.setattr(main_routes, "analysis_pipeline", fake_pipeline)
 
     with TestClient(_app) as client:
         # Upload the WAV file to get a job_id
@@ -1093,11 +1100,11 @@ def test_spectrogram_endpoint_returns_200_with_expected_keys(tmp_path, monkeypat
         assert "frames_b64" in mix
         assert "n_time" in mix
         assert "n_freq" in mix
-        assert "frequencies_hz" in mix
-        assert "times_s" in mix
+        assert "freq_min_hz" in mix
+        # assert "times_s" in mix
         assert isinstance(mix["n_time"], int) and mix["n_time"] > 0
         assert isinstance(mix["n_freq"], int) and mix["n_freq"] > 0
-        assert isinstance(mix["frequencies_hz"], list)
+        assert isinstance(mix["freq_min_hz"], (int, float))
 
         vocals = payload["vocals"]
         assert "available" in vocals
@@ -1129,7 +1136,7 @@ def test_spectrogram_endpoint_vocals_available_false_when_demucs_unavailable(tmp
         routes.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         return {"metadata": {}, "summary": {}}
 
-    monkeypatch.setattr(routes, "analysis_pipeline", fake_pipeline)
+    monkeypatch.setattr(main_routes, "analysis_pipeline", fake_pipeline)
 
     with TestClient(_app) as client:
         with open(wav_path, "rb") as fh:
@@ -1162,7 +1169,7 @@ def test_spectrogram_endpoint_existing_results_endpoint_unchanged(tmp_path, monk
         routes.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         return {"metadata": {}, "summary": {}, "pitch": {}}
 
-    monkeypatch.setattr(routes, "analysis_pipeline", fake_pipeline)
+    monkeypatch.setattr(main_routes, "analysis_pipeline", fake_pipeline)
 
     import wave
     wav_path = tmp_path / "check.wav"

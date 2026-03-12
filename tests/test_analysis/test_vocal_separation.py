@@ -195,7 +195,7 @@ def test_separate_vocals_cache_path_integration(tmp_path):
     try:
         with (
             patch("analysis.dsp.vocal_separation._load_model", return_value=(mock_model, "htdemucs")),
-            patch("analysis.dsp.vocal_separation.apply_model", return_value=fake_sources),
+            patch("demucs.apply.apply_model", return_value=fake_sources),
             patch("torch.cuda.is_available", return_value=False),
         ):
             result = separate_vocals(
@@ -211,7 +211,7 @@ def test_separate_vocals_cache_path_integration(tmp_path):
         # Second call should hit cache
         with (
             patch("analysis.dsp.vocal_separation._load_model", return_value=(mock_model, "htdemucs")),
-            patch("analysis.dsp.vocal_separation.apply_model", return_value=fake_sources),
+            patch("demucs.apply.apply_model", return_value=fake_sources),
         ):
             result2 = separate_vocals(
                 audio, sr,

@@ -50,6 +50,9 @@ from api.api_router import (
     _build_example_payload,
 )
 
+# Also re-export api_router for tests that need to patch analysis_pipeline
+from api import api_router
+
 # Also export the main router for convenience
 from api.api_router import router
 
