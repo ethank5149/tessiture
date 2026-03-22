@@ -29,10 +29,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+      - name: Install Python 3.12
+        shell: bash
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq python3.12 python3.12-venv python3-pip
+          ln -sf /usr/bin/python3.12 /usr/local/bin/python
+          ln -sf /usr/bin/python3.12 /usr/local/bin/python3
+          python --version
 
       - name: Install Python dependencies
         shell: bash
@@ -41,11 +45,6 @@ jobs:
       - name: Run backend tests
         shell: bash
         run: python -m pytest tests/ -q --tb=short
-
-      - name: Set up Node.js 20
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
 
       - name: Install frontend dependencies
         shell: bash
