@@ -129,8 +129,25 @@ jobs:
           mkdir -p /etc/docker
           printf '{"insecure-registries":["%s"]}\n' "${REGISTRY}" > /etc/docker/daemon.json
           cat /etc/docker/daemon.json
-          kill -HUP "$(cat /var/run/docker.pid 2>/dev/null || pgrep dockerd)" 2>/dev/null || true
-          sleep 2
+          # Restart Docker daemon to pick up insecure-registries change
+          if command -v service >/dev/null 2>&1; then
+            service docker restart || true
+          elif command -v systemctl >/dev/null 2>&1; then
+            systemctl restart docker || true
+          else
+            # Fallback: kill and re-exec dockerd in background
+            DOCKERD_PID=$(pgrep dockerd || true)
+            if [ -n "${DOCKERD_PID}" ]; then
+              kill "${DOCKERD_PID}" 2>/dev/null || true
+              sleep 2
+              dockerd &>/var/log/dockerd.log &
+            fi
+          fi
+          # Wait for Docker to be ready
+          for i in $(seq 1 15); do
+            docker info >/dev/null 2>&1 && break
+            sleep 1
+          done
 
       - name: Log in to Forgejo container registry
         env:
