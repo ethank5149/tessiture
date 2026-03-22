@@ -72,11 +72,11 @@ function EvidenceReferences({
   };
 
   return (
-    <section className="results__section results__section--evidence" aria-label="Evidence references">
+    <section className="results__section results__section--evidence" aria-label="Key moments in your recording">
       <div className="results__section-header">
-        <h3 className="results__section-title">Evidence references</h3>
+        <h3 className="results__section-title">Key moments in your recording</h3>
         <p className="results__section-meta">
-          Each diagnostic is linked to timestamped track moments so you can jump and listen without using charts.
+          These are the most important moments in your recording — your highest and lowest notes. Click to jump to them or listen to a short clip.
         </p>
       </div>
 
@@ -95,7 +95,7 @@ function EvidenceReferences({
         />
       ) : (
         <p className="evidence-actions__fallback">
-          Audio playback is unavailable for this result. Use timestamp references to locate moments manually.
+          Audio playback is not available for this result. The timestamps below show when these moments occur in your recording.
         </p>
       )}
 

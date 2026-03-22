@@ -31,16 +31,24 @@ function AdvancedInspectorToggle({ jobId, audioRef, results, duration }) {
       onToggle={(e) => setIsOpen(e.currentTarget.open)}
     >
       <summary className="spectrogram-inspector-toggle__summary">
-        Audio inspector
+        🔍 Audio spectrogram (advanced)
       </summary>
       {isOpen ? (
-        <SpectrogramInspector
-          jobId={jobId}
-          audioRef={audioRef}
-          evidenceEvents={results?.evidence?.events ?? []}
-          durationSeconds={duration ?? 0}
-          pitchFrames={results?.pitch?.frames ?? results?.pitch_frames ?? []}
-        />
+        <>
+          <p className="spectrogram-inspector-toggle__description">
+            This shows the frequency content of your recording over time. 
+            The horizontal axis is time, the vertical axis is frequency (pitch), 
+            and the white line is your detected pitch. Colored markers show key moments.
+            Brighter colors mean louder frequencies.
+          </p>
+          <SpectrogramInspector
+            jobId={jobId}
+            audioRef={audioRef}
+            evidenceEvents={results?.evidence?.events ?? []}
+            durationSeconds={duration ?? 0}
+            pitchFrames={results?.pitch?.frames ?? results?.pitch_frames ?? []}
+          />
+        </>
       ) : null}
     </details>
   );

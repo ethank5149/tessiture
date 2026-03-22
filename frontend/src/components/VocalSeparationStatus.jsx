@@ -2,6 +2,8 @@
  * VocalSeparationStatus - Displays the status of vocal separation processing
  */
 
+import GlossaryTerm from "./GlossaryTerm";
+
 function VocalSeparationStatus({ vocalSeparation }) {
   if (!vocalSeparation || typeof vocalSeparation !== "object") {
     return null;
@@ -12,7 +14,7 @@ function VocalSeparationStatus({ vocalSeparation }) {
   if (applied === true) {
     return (
       <p className="vocal-separation-status vocal-separation-status--applied" role="status">
-        <span className="vocal-separation-status__badge">AI vocal extraction applied</span>
+        <span className="vocal-separation-status__badge"><GlossaryTerm term="vocal_separation">AI vocal extraction applied</GlossaryTerm></span>
         <span className="vocal-separation-status__detail">
           Vocals were separated from the mix using {model ?? "htdemucs"} before analysis
         </span>

@@ -3,6 +3,7 @@
  * Shows consistency metrics with confidence intervals and p-values
  */
 
+import GlossaryTerm from "./GlossaryTerm";
 import {
   formatValue,
   formatPitchWithNote,
@@ -19,14 +20,14 @@ function InferentialStatistics({ inferentialStatistics, inferentialMetrics }) {
   return (
     <section className="results__section results__inferential" aria-label="Inferential statistics">
       <div className="results__section-header">
-        <h3 className="results__section-title">How consistent each metric is (inferential statistics)</h3>
+        <h3 className="results__section-title">How consistent each metric is (<GlossaryTerm term="inferential_statistics">inferential statistics</GlossaryTerm>)</h3>
         <p className="results__inferential-meta">
           Analysis preset: {inferentialStatistics?.preset ?? "unknown"} · Confidence interval level: {formatValue(inferentialStatistics?.confidence_level)}
         </p>
       </div>
       <p className="results__section-copy">
-        In the table below, "Estimate" is the best single value, "Confidence interval" is a likely range,
-        "p-value" helps indicate whether a difference is meaningful, and "Samples (N)" is how many data points were used.
+        In the table below, "Estimate" is the best single value, "<GlossaryTerm term="confidence_interval">Confidence interval</GlossaryTerm>" is a likely range,
+        "<GlossaryTerm term="p_value">p-value</GlossaryTerm>" helps indicate whether a difference is meaningful, and "Samples (N)" is how many data points were used.
       </p>
       <div className="results__inferential-table-wrap">
         <table className="results__inferential-table">

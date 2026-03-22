@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AudioUploader from "./components/AudioUploader";
 import AnalysisStatus from "./components/AnalysisStatus";
 import AnalysisResults from "./components/AnalysisResults";
@@ -6,6 +6,8 @@ import ExampleGallery from "./components/ExampleGallery";
 import ReferenceTrackSelector from "./components/ReferenceTrackSelector";
 import LiveComparisonView from "./components/LiveComparisonView";
 import ComparisonResults from "./components/ComparisonResults";
+import StepIndicator from "./components/StepIndicator";
+import WelcomePanel from "./components/WelcomePanel";
 import {
   downloadJobResults,
   fetchExampleTracks,
@@ -85,7 +87,7 @@ const normalizeReleaseVersion = (value) => {
 // Source card definitions
 const SOURCE_CARDS = [
   { id: "upload",  emoji: "📁", label: "Upload a File",    desc: "Analyze your own recording" },
-  { id: "example", emoji: "🎵", label: "Example Library",  desc: "Pick a demo track" },
+  { id: "example", emoji: "🎵", label: "Example Library",  desc: "Pick a demo track — no upload needed, great for first-time users" },
   { id: "live",    emoji: "🎤", label: "Record Live",       desc: "Mic comparison session" },
 ];
 
@@ -119,6 +121,21 @@ function App() {
   const appReleaseVersion = normalizeReleaseVersion(import.meta?.env?.VITE_APP_VERSION);
 
   const pollingRef = useRef(null);
+
+  // Create object URL for uploaded file for audio playback
+  const uploadedFileUrl = useMemo(() => {
+    if (!acceptedFile) return null;
+    return URL.createObjectURL(acceptedFile);
+  }, [acceptedFile]);
+
+  // Cleanup object URL on unmount or when file changes
+  useEffect(() => {
+    return () => {
+      if (uploadedFileUrl) {
+        URL.revokeObjectURL(uploadedFileUrl);
+      }
+    };
+  }, [uploadedFileUrl]);
 
   const liveStatusMessage = error
     ? `Error: ${error}`
@@ -450,6 +467,10 @@ function App() {
         ) : null}
       </header>
 
+      <WelcomePanel onDismiss={() => {}} />
+
+      <StepIndicator currentStep={audioSource ? (analysisMode ? 3 : 2) : 1} />
+
       {/* ── Step 1: Audio Source Selector ──────────────────────────────────── */}
       <section className="source-selector" aria-label="Step 1: Choose audio source">
         <div className="source-selector__grid" role="group" aria-label="Audio source">
@@ -638,8 +659,8 @@ function App() {
               onDownloadCsv={() => downloadResults("csv")}
               onDownloadJson={() => downloadResults("json")}
               onDownloadPdf={() => downloadResults("pdf")}
-              audioSourceUrl={analysisAudioSourceUrl}
-              audioSourceLabel={analysisAudioSourceLabel}
+              audioSourceUrl={audioSource === "upload" ? uploadedFileUrl : analysisAudioSourceUrl}
+              audioSourceLabel={audioSource === "upload" ? acceptedFile?.name : analysisAudioSourceLabel}
               jobId={jobId}
             />
             <div className="step-panel__actions">

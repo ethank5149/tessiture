@@ -1,0 +1,384 @@
+/* ============================================================================
+   BEGINNER UX IMPROVEMENTS - CSS ADDITIONS
+   Add these styles to frontend/src/styles.css
+   ============================================================================ */
+
+/* Light mode support */
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg-canvas: #f0f4ff;
+    --bg-gradient: #dce6ff;
+    --surface-1: #ffffff;
+    --surface-2: #f5f8ff;
+    --surface-3: #edf1ff;
+    --border-subtle: #c5d0e8;
+    --text-primary: #0f1728;
+    --text-muted: #3a4a6b;
+    --text-soft: #5a6a8b;
+    --brand: #2563eb;
+    --brand-strong: #1d4ed8;
+    --brand-contrast: #ffffff;
+    color-scheme: light;
+  }
+}
+
+/* Step Indicator */
+.step-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+  padding: 1rem;
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  flex-wrap: wrap;
+}
+
+.step-indicator__step-group {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.step-indicator__step {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  font-weight: 600;
+  transition: all 160ms ease;
+}
+
+.step-indicator__step--active {
+  background: var(--brand);
+  color: #ffffff;
+}
+
+.step-indicator__step--completed {
+  background: var(--success);
+  color: #ffffff;
+}
+
+.step-indicator__step-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.2);
+  font-weight: 700;
+  font-size: 0.85rem;
+}
+
+.step-indicator__connector {
+  width: 2rem;
+  height: 2px;
+  background: var(--border-subtle);
+}
+
+@media (max-width: 599px) {
+  .step-indicator {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .step-indicator__step-group {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .step-indicator__connector {
+    display: none;
+  }
+}
+
+/* Welcome Panel */
+.welcome-panel {
+  margin-bottom: 1.5rem;
+  border-left: 4px solid var(--brand);
+}
+
+.welcome-panel__content {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.welcome-panel__intro {
+  margin: 0;
+  color: var(--text-primary);
+  line-height: 1.6;
+}
+
+.welcome-panel__features {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+}
+
+.welcome-panel__feature {
+  padding: 0.75rem;
+  border-radius: 8px;
+  background: var(--surface-2);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.welcome-panel__feature-icon {
+  font-size: 1.5rem;
+}
+
+.welcome-panel__feature-title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.welcome-panel__feature-desc {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.welcome-panel__actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+/* Glossary Term */
+.glossary-term {
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--brand);
+  cursor: help;
+  text-decoration: underline dotted;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  font-weight: inherit;
+  font-size: inherit;
+  font-family: inherit;
+  transition: color 160ms ease;
+}
+
+.glossary-term:hover {
+  color: var(--brand-strong);
+}
+
+.glossary-term:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.glossary-tooltip {
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 0.75rem;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
+  max-width: 280px;
+  animation: fadeIn 160ms ease;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.glossary-tooltip__label {
+  margin: 0;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 0.9rem;
+}
+
+.glossary-tooltip__definition {
+  margin: 0.5rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+/* Vocal Range Bar */
+.vocal-range-bar {
+  margin-top: 1.5rem;
+  padding: 1rem;
+  background: var(--surface-2);
+  border-radius: 8px;
+}
+
+.vocal-range-bar__svg {
+  width: 100%;
+  height: 120px;
+  margin-bottom: 0.75rem;
+}
+
+.vocal-range-bar__legend {
+  display: flex;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+  font-size: 0.85rem;
+}
+
+.vocal-range-bar__legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.vocal-range-bar__legend-swatch {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.vocal-range-bar__legend-label {
+  color: var(--text-muted);
+}
+
+.vocal-range-bar__error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 0.9rem;
+}
+
+/* Summary Metrics - Voice Type */
+.summary-list__item--voice-type {
+  border-left: 3px solid var(--brand);
+  padding-left: 0.75rem;
+  background: color-mix(in oklab, var(--surface-2) 50%, var(--brand) 5%);
+  border-radius: 4px;
+  padding: 0.75rem;
+}
+
+.summary-list__item-detail {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  font-weight: normal;
+}
+
+/* Analysis Status - Human Readable */
+.status__message {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  background: var(--surface-2);
+  border-radius: 8px;
+  margin-bottom: 0.5rem;
+}
+
+.status__message-icon {
+  font-size: 1.25rem;
+  flex-shrink: 0;
+}
+
+.status__message-text {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.status__message-text--completed {
+  color: var(--success);
+}
+
+.status__message-text--error,
+.status__message-text--failed {
+  color: var(--danger);
+}
+
+.status__technical {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.status__technical-summary {
+  cursor: pointer;
+  color: var(--text-soft);
+  font-size: 0.85rem;
+  font-weight: 600;
+  user-select: none;
+}
+
+.status__technical-summary:hover {
+  color: var(--text-muted);
+}
+
+.status__technical-content {
+  margin: 0.5rem 0 0;
+  padding: 0.5rem;
+  background: var(--surface-2);
+  border-radius: 4px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  font-family: monospace;
+  word-break: break-all;
+}
+
+/* Spectrogram Inspector */
+.spectrogram-inspector-toggle__summary::before {
+  content: "\25B6\00A0";
+  font-size: 0.75rem;
+}
+
+.spectrogram-inspector-toggle[open] .spectrogram-inspector-toggle__summary::before {
+  content: "\25BC\00A0";
+}
+
+.spectrogram-inspector-toggle__description {
+  margin: 0.5rem 0 1rem;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+/* Export Button Fixes */
+.exporter__actions {
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
+@media (max-width: 480px) {
+  .exporter__actions {
+    flex-direction: column;
+  }
+
+  .exporter__actions .button {
+    width: 100%;
+  }
+}
+
+/* Font Size Fixes */
+.metric-card__label {
+  font-size: 0.75rem;
+}
+
+.note-display__ref-note,
+.note-display__status {
+  font-size: 0.75rem;
+}
