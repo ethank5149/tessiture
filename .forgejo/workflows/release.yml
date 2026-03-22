@@ -1,0 +1,174 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      version_bump:
+        description: "Version bump strategy"
+        required: false
+        default: "auto"
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+          - none
+
+jobs:
+  test:
+    name: Test
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        shell: bash
+        run: pip install -r requirements.txt
+
+      - name: Run backend tests
+        shell: bash
+        run: python -m pytest tests/ -q --tb=short
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install frontend dependencies
+        shell: bash
+        run: cd frontend && npm ci
+
+      - name: Run frontend tests
+        shell: bash
+        run: cd frontend && npm run test -- --run
+
+      - name: Build frontend
+        shell: bash
+        run: cd frontend && npm run build
+
+  build-and-deploy:
+    name: Build and Deploy
+    runs-on: self-hosted
+    needs: test
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity for tagging
+        shell: bash
+        run: |
+          git config user.name "Forgejo Actions"
+          git config user.email "actions@forgejo"
+
+      - name: Write deploy/.env from secret
+        shell: bash
+        run: |
+          mkdir -p deploy
+          echo "${{ secrets.TESSITURE_ENV }}" > deploy/.env
+
+      - name: Build Docker image
+        shell: bash
+        run: |
+          deploy/scripts/build.sh \
+            --version-bump ${{ inputs.version_bump || 'auto' }} \
+            --env-file deploy/.env \
+            --no-git-tag
+
+      - name: Deploy stack
+        shell: bash
+        run: |
+          deploy/scripts/deploy.sh \
+            --env-file deploy/.env \
+            --compose-file deploy/docker-compose.yml
+
+      - name: Verify deployment
+        shell: bash
+        run: |
+          CONTAINER_ID="$(docker ps -q --filter "name=^/tessiture$" | head -n1 || true)"
+          if [[ -z "${CONTAINER_ID}" ]]; then
+            echo "ERROR: Container 'tessiture' is not running after deploy" >&2
+            exit 1
+          fi
+
+          STATUS="$(docker inspect --format '{{.State.Status}}' "${CONTAINER_ID}")"
+          if [[ "${STATUS}" != "running" ]]; then
+            echo "ERROR: Container is not running (status=${STATUS})" >&2
+            exit 1
+          fi
+
+          HEALTH_STATUS="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "${CONTAINER_ID}")"
+          if [[ "${HEALTH_STATUS}" == "none" ]]; then
+            echo "Healthcheck not configured; running-state verification passed"
+          else
+            TIMEOUT=120
+            START_TIME="$(date +%s)"
+            while [[ "${HEALTH_STATUS}" == "starting" ]]; do
+              NOW="$(date +%s)"
+              if (( NOW - START_TIME > TIMEOUT )); then
+                echo "ERROR: Timed out waiting for healthy status after ${TIMEOUT}s" >&2
+                exit 1
+              fi
+              sleep 2
+              HEALTH_STATUS="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "${CONTAINER_ID}")"
+            done
+            if [[ "${HEALTH_STATUS}" != "healthy" ]]; then
+              echo "ERROR: Healthcheck status is '${HEALTH_STATUS}'" >&2
+              exit 1
+            fi
+            echo "Container healthcheck reports healthy"
+          fi
+
+      - name: Read release version
+        id: version
+        shell: bash
+        run: |
+          if [[ ! -f .release-version ]]; then
+            echo "ERROR: .release-version not found after build" >&2
+            exit 1
+          fi
+          VERSION="$(tr -d '[:space:]' < .release-version)"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "Release version: ${VERSION}"
+
+      - name: Create and push git tag
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="v${VERSION}"
+          if git rev-parse "${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists; skipping tag creation"
+          else
+            git tag -a "${TAG}" -m "Release ${TAG}"
+            git push origin "${TAG}"
+            echo "Pushed tag ${TAG} to Forgejo"
+          fi
+
+      - name: Deployment summary
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          echo "========================================"
+          echo "  Tessiture Release Summary"
+          echo "========================================"
+          echo "  Version : v${VERSION}"
+          echo "  Branch  : ${{ github.ref_name }}"
+          echo "  Commit  : ${{ github.sha }}"
+          echo "  Trigger : ${{ github.event_name }}"
+          echo "========================================"

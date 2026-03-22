@@ -14,16 +14,17 @@ For system architecture, see [ARCHITECTURE.md](ARCHITECTURE.md).
 1. [Deployment Overview](#1-deployment-overview)
 2. [Prerequisites](#2-prerequisites)
 3. [Development from a VSCode Dev Container](#3-development-from-a-vscode-dev-container)
-4. [First-Time Setup](#4-first-time-setup)
-5. [Environment File Reference](#5-environment-file-reference)
-6. [Build System](#6-build-system)
-7. [Deploy Script](#7-deploy-script)
-8. [One-Shot Script (Primary Release)](#8-one-shot-script-primary-release)
-9. [Makefile Reference](#9-makefile-reference)
-10. [Networking](#10-networking)
-11. [Updating / Re-deploying](#11-updating--re-deploying)
-12. [Deployment Checklist](#12-deployment-checklist)
-13. [Troubleshooting](#13-troubleshooting)
+4. [CI/CD with Forgejo Actions](#4-cicd-with-forgejo-actions)
+5. [First-Time Setup](#5-first-time-setup)
+6. [Environment File Reference](#6-environment-file-reference)
+7. [Build System](#7-build-system)
+8. [Deploy Script](#8-deploy-script)
+9. [One-Shot Script (Primary Release)](#9-one-shot-script-primary-release)
+10. [Makefile Reference](#10-makefile-reference)
+11. [Networking](#11-networking)
+12. [Updating / Re-deploying](#12-updating--re-deploying)
+13. [Deployment Checklist](#13-deployment-checklist)
+14. [Troubleshooting](#14-troubleshooting)
 
 ---
 
@@ -69,7 +70,23 @@ The project [`Dockerfile`](../Dockerfile) installs `ffmpeg` and `libsndfile1` in
 
 Tessiture is developed from within a **VSCode Dev Container** running on the Unraid host. The workspace (`/mnt/user/public/tessiture`) is bind-mounted into the container, giving the container full access to the source tree, `.git/` history, and `deploy/` scripts. All `make` targets — including `make release` — work from inside the container when the container is configured correctly.
 
-### Architecture
+Two dev container configurations are supported:
+
+| | Option A: Socket Mount | Option B: Docker-in-Docker (DinD) |
+|---|---|---|
+| Docker daemon | Host's daemon | Separate daemon inside container |
+| Built images | Appear on Unraid host | Isolated inside dev container |
+| Deployed containers | Run on Unraid host | Run inside dev container (isolated) |
+| Host path mounts in compose | Work correctly | **Do NOT work** — paths are inside DinD, not on Unraid host |
+| Privileged mode required | No | Yes (handled by devcontainers feature) |
+| `make deploy` / `make release` | ✅ Deploys to Unraid host | ❌ Does NOT deploy to Unraid host |
+| Use case | Production deployment workflow | Local dev and testing only |
+
+### Option A: Docker Socket Mount (Required for Production Deployment)
+
+The dev container mounts the host's Docker socket (`/var/run/docker.sock`). All Docker operations — `docker build`, `docker compose up` — execute against the **host Docker daemon**, so built images and running containers appear on the Unraid host.
+
+#### Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -103,7 +120,7 @@ Tessiture is developed from within a **VSCode Dev Container** running on the Unr
 
 All Docker operations (`docker build`, `docker compose up`, directory creation) execute against the **host Docker daemon** via the socket. The resulting image and running container appear on the Unraid host — not inside the dev container.
 
-### Dev Container Requirements
+#### Dev Container Requirements
 
 | Requirement | Details |
 |-------------|---------|
@@ -113,7 +130,7 @@ All Docker operations (`docker build`, `docker compose up`, directory creation) 
 | **Python 3.12 + venv** | Required for `make install-dev`, `make test`, `make run-api`. The `.venv/` directory is created inside the bind-mounted workspace. |
 | **Node.js 20+** | Required for `make run-frontend`, `make build-frontend`, and frontend tests. |
 
-### Example `.devcontainer/devcontainer.json`
+#### Example `.devcontainer/devcontainer.json`
 
 Create `.devcontainer/devcontainer.json` in the repository root:
 
@@ -145,7 +162,7 @@ Create `.devcontainer/devcontainer.json` in the repository root:
 
 > **Note:** The `.devcontainer/` directory does not exist in the repository by default. Create it when setting up your dev container environment. Do not commit the Docker socket mount path if it is environment-specific.
 
-### Alternative: `.devcontainer/docker-compose.yml`
+#### Alternative: `.devcontainer/docker-compose.yml`
 
 If you prefer a Docker Compose-based dev container, create `.devcontainer/docker-compose.yml`:
 
@@ -171,7 +188,7 @@ And reference it from `.devcontainer/devcontainer.json`:
 }
 ```
 
-### `deploy/.env` Path Considerations
+#### `deploy/.env` Path Considerations
 
 The host path variables in `deploy/.env` are resolved on the **Unraid host filesystem**, not inside the dev container. When `deploy.sh` auto-creates these directories and Docker bind-mounts them into the Tessiture container, it does so via the host Docker daemon.
 
@@ -185,7 +202,7 @@ The host path variables in `deploy/.env` are resolved on the **Unraid host files
 
 Do **not** use paths that are only valid inside the dev container (e.g., `/workspaces/tessiture/...`). Those paths do not exist on the host and the Tessiture container will fail to mount them.
 
-### Git Tagging from Inside the Container
+#### Git Tagging from Inside the Container
 
 Git operations work correctly from inside the dev container because the workspace — including `.git/` — is bind-mounted from the host. When `build.sh` runs `git tag -a v1.3.0 -m "Release v1.3.0"`, the tag is written to the repository's git history on the host filesystem. Push tags to your remote as usual:
 
@@ -193,7 +210,7 @@ Git operations work correctly from inside the dev container because the workspac
 git push --tags
 ```
 
-### `make release` Flow from Inside the Container
+#### `make release` Flow from Inside the Container
 
 When you run `make release` from inside the dev container, the following sequence executes:
 
@@ -209,20 +226,217 @@ When you run `make release` from inside the dev container, the following sequenc
 10. **`docker compose up -d`** — deploys the Tessiture container on the Unraid host; the container is visible in Unraid's Docker tab
 11. **Health verification** — polls the container's Docker healthcheck for up to 120 seconds
 
+---
+
+### Option B: Docker-in-Docker (DinD) — Local Dev/Test Only
+
+DinD runs a **separate Docker daemon inside the dev container**. This provides a fully isolated Docker environment without requiring access to the host socket.
+
+> ⚠️ **DinD is for local development and testing only.** `make deploy` and `make release` will create directories and run containers **inside the DinD container**, not on the Unraid host. The `*_HOST_PATH` variables in `deploy/.env` are resolved inside the DinD container's filesystem — they do not map to Unraid host paths. Use DinD to run `make test`, `make build`, and verify the image builds correctly. For production deployment, use Option A (socket mount).
+
+#### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Unraid host                                                    │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  Dev Container (Docker, privileged)                      │  │
+│  │                                                          │  │
+│  │  /mnt/user/public/tessiture  ◄── bind mount             │  │
+│  │                                                          │  │
+│  │  DinD daemon (dockerd inside container)                  │  │
+│  │      └─► docker build  ──► image (isolated here)        │  │
+│  │      └─► docker compose up ──► container (isolated here)│  │
+│  │                                                          │  │
+│  │  $ make test   ✅  (runs pytest, npm test)               │  │
+│  │  $ make build  ✅  (builds image inside DinD)            │  │
+│  │  $ make deploy ❌  (deploys inside DinD, not Unraid)     │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│  Host Docker daemon  (unaffected — DinD is isolated)           │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### `.devcontainer/devcontainer.json` for DinD
+
+```json
+{
+  "name": "Tessiture Dev (DinD)",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers/features/python:1": { "version": "3.12" },
+    "ghcr.io/devcontainers/features/node:1": { "version": "20" }
+  },
+  "postCreateCommand": "pip install -r requirements.txt && cd frontend && npm ci"
+}
+```
+
+The `docker-in-docker` devcontainers feature starts a Docker daemon inside the container automatically and handles the required `--privileged` mode. No manual `runArgs` configuration is needed.
+
+#### What Works with DinD
+
+| Operation | Works? | Notes |
+|-----------|--------|-------|
+| `make test` | ✅ | Runs pytest and frontend tests |
+| `make build` | ✅ | Builds Docker image (isolated inside DinD) |
+| `make lint`, `make typecheck`, `make format` | ✅ | No Docker required |
+| `make run-api`, `make run-frontend` | ✅ | Local dev servers |
+| `make deploy` | ❌ | Deploys inside DinD, not on Unraid host |
+| `make release` | ❌ | Same as above; host paths in `deploy/.env` do not exist inside DinD |
+| Volume mounts using Unraid host paths | ❌ | Paths like `/mnt/user/appdata/...` do not exist inside DinD |
+
 ### Troubleshooting (Dev Container)
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `Docker socket /var/run/docker.sock is not available in this container` | Socket not mounted | Add `"source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"` to `mounts` in `devcontainer.json` and rebuild the container |
+| `Docker socket /var/run/docker.sock is not available in this container` | Socket not mounted (Option A) | Add `"source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"` to `mounts` in `devcontainer.json` and rebuild the container |
 | `Docker CLI is missing in this container` | `docker` binary not installed | Run `apt-get update && apt-get install -y docker.io` inside the container, or add it to `postCreateCommand` |
 | `permission denied while trying to connect to the Docker daemon socket` | Dev container user is not in the `docker` group | Run `sudo usermod -aG docker $USER` inside the container and restart, or prefix Docker commands with `sudo` |
 | `git: command not found` | Git not installed in container | Run `apt-get install -y git` or add it to `postCreateCommand` |
-| Host paths not found / Tessiture container fails to mount volumes | `deploy/.env` contains container-internal paths | Replace all `*_HOST_PATH` values with absolute Unraid host paths (e.g., `/mnt/user/appdata/tessiture/...`) |
+| Host paths not found / Tessiture container fails to mount volumes | `deploy/.env` contains container-internal paths, or using DinD for deployment | Replace all `*_HOST_PATH` values with absolute Unraid host paths (e.g., `/mnt/user/appdata/tessiture/...`); use Option A (socket mount) for production deployment |
 | `caddy_proxy` network not found | Network does not exist on the host | Run `docker network create caddy_proxy` on the host, or deploy your Caddy stack first |
+| DinD: `make deploy` deploys inside container, not on Unraid | Using DinD for production deployment | Switch to Option A (socket mount) for production deployment |
 
 ---
 
-## 4. First-Time Setup
+## 4. CI/CD with Forgejo Actions
+
+Tessiture includes two Forgejo Actions workflow files that automate testing and deployment via a self-hosted runner on the Unraid host.
+
+### Overview
+
+```
+Developer pushes to main
+        │
+        ▼
+Forgejo Actions (self-hosted runner on Unraid host)
+        │
+        ├─► test job: pytest + npm test + npm build
+        │
+        └─► build-and-deploy job (on success):
+                │
+                ├─► build.sh  ──► Docker image on Unraid host
+                ├─► deploy.sh ──► Tessiture container on Unraid host
+                ├─► health verification (120 s timeout)
+                └─► git tag v{version} pushed back to Forgejo
+```
+
+| Workflow | File | Trigger | Jobs |
+|----------|------|---------|------|
+| **Test** | [`.forgejo/workflows/test.yml`](../.forgejo/workflows/test.yml) | Push to non-`main` branches; PRs targeting `main` | `test` only |
+| **Release** | [`.forgejo/workflows/release.yml`](../.forgejo/workflows/release.yml) | Push to `main`; manual `workflow_dispatch` | `test` → `build-and-deploy` |
+
+### Workflow Details
+
+#### `test.yml` — Branch and PR Testing
+
+Triggers on every push to a non-`main` branch and on every pull request targeting `main`. Runs the full test suite:
+
+1. Checkout with `fetch-depth: 0` (full history)
+2. Set up Python 3.12 → `pip install -r requirements.txt` → `python -m pytest tests/ -q --tb=short`
+3. Set up Node.js 20 → `cd frontend && npm ci` → `npm run test -- --run` → `npm run build`
+
+No Docker build or deployment occurs in this workflow.
+
+#### `release.yml` — Main Branch Release
+
+Triggers on push to `main` and supports manual `workflow_dispatch` with a `version_bump` input.
+
+**`test` job** — same steps as `test.yml`.
+
+**`build-and-deploy` job** (runs only on `main`, requires `test` to pass):
+
+1. Checkout with `fetch-depth: 0`
+2. Configure git identity (`Forgejo Actions` / `actions@forgejo`)
+3. Write `deploy/.env` from the `TESSITURE_ENV` secret
+4. Run `deploy/scripts/build.sh --version-bump {input|auto} --env-file deploy/.env --no-git-tag`
+5. Run `deploy/scripts/deploy.sh --env-file deploy/.env --compose-file deploy/docker-compose.yml`
+6. Inline health verification: poll container status for up to 120 s
+7. Read `.release-version` → create annotated tag `v{version}` → push tag to Forgejo
+
+### Runner Setup
+
+Both workflows use `runs-on: self-hosted`. You must register a **self-hosted Forgejo Actions runner** (`act_runner`) on the Unraid host.
+
+**Steps:**
+
+1. Download `act_runner` from your Forgejo instance: **Settings → Actions → Runners** (or from the [Forgejo releases page](https://forgejo.org/releases/))
+2. Generate a registration token from your repository: **Settings → Actions → Runners → New Runner**
+3. Register the runner:
+   ```bash
+   ./act_runner register --instance https://your-forgejo.example.com --token <TOKEN> --name unraid-runner --labels self-hosted
+   ```
+4. Ensure Docker is available on the runner host — the runner executes `docker build` and `docker compose` directly against the host daemon
+5. Start the runner as a persistent service (e.g., via Unraid's User Scripts plugin or a systemd unit)
+
+> **Important:** The runner must run directly on the Unraid host (or with access to the host Docker socket). Do **not** run the runner inside a DinD container — the `build-and-deploy` job requires access to the host Docker daemon to deploy the Tessiture container.
+
+### Required Secret: `TESSITURE_ENV`
+
+The `release.yml` workflow writes `deploy/.env` from a Forgejo repository secret named `TESSITURE_ENV`. This secret must contain the **full contents** of your `deploy/.env` file (the same file you use for manual `make release` runs).
+
+**To create the secret:**
+
+1. Copy the full contents of your local `deploy/.env`
+2. In Forgejo, navigate to your repository → **Settings** → **Secrets** → **Actions**
+3. Click **New Secret**
+4. **Name:** `TESSITURE_ENV`
+5. **Value:** paste the full `deploy/.env` contents
+6. Click **Save**
+
+> **Keep this secret synchronized.** Whenever you update `TESSITURE_IMAGE`, `TESSITURE_CORS_ORIGINS`, host paths, or any other variable in your local `deploy/.env`, update the Forgejo secret to match. A stale secret will cause the CI deploy to use outdated configuration.
+
+### `fetch-depth: 0` Requirement
+
+Both workflows check out with `fetch-depth: 0` (full git history). This is required because [`deploy/scripts/build.sh`](../deploy/scripts/build.sh) uses `detect_auto_bump()`, which scans `git log` since the last `v*.*.*` tag to determine the appropriate version bump. A shallow clone (the default `fetch-depth: 1`) would produce an incomplete commit history, causing the auto-bump to always fall back to `patch` regardless of actual commit content.
+
+### `--no-git-tag` in the Build Step
+
+The `build-and-deploy` job calls `build.sh` with `--no-git-tag`. This prevents `build.sh` from creating a local git tag that would only exist on the runner's ephemeral workspace. Instead, the workflow reads `.release-version` after the build and explicitly creates and pushes the annotated tag to Forgejo in a dedicated step. This ensures the tag is visible in the Forgejo repository.
+
+### Manual Release Trigger
+
+`release.yml` supports `workflow_dispatch` with a `version_bump` input (`auto`, `patch`, `minor`, `major`, `none`). To trigger a manual release:
+
+1. In Forgejo, navigate to your repository → **Actions** → **Release** workflow
+2. Click **Run workflow**
+3. Select the desired `version_bump` strategy (default: `auto`)
+4. Click **Run workflow**
+
+> A `major` version bump should only be used when the release contains breaking changes. See [AGENTS.md](../AGENTS.md) for the versioning policy.
+
+### Tag Push and Verification
+
+After a successful deploy, the workflow creates an annotated tag `v{version}` and pushes it to Forgejo. To verify in your local clone:
+
+```bash
+# Fetch tags from Forgejo
+git fetch --tags
+
+# List recent version tags
+git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname | head -5
+```
+
+You can also view tags in the Forgejo UI under **Repository → Tags**.
+
+### Troubleshooting (Forgejo Actions)
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Job stays in "waiting" state | No self-hosted runner registered or runner is offline | Verify `act_runner` is running on the Unraid host; check runner status in Forgejo Settings → Actions → Runners |
+| `TESSITURE_ENV secret not found` or empty `deploy/.env` | Secret not created or named incorrectly | Create the `TESSITURE_ENV` secret in Forgejo repository Settings → Secrets → Actions |
+| Auto version bump always produces `patch` | Shallow clone — `fetch-depth` not set to `0` | Both workflow files already set `fetch-depth: 0`; verify the workflow files have not been modified |
+| `docker: command not found` on runner | Docker not installed or not on PATH for the runner user | Install Docker on the Unraid host and ensure the runner user has access to the Docker socket |
+| `caddy_proxy` network not found during deploy | Network does not exist on the Unraid host | Run `docker network create caddy_proxy` on the host, or deploy your Caddy stack first |
+| Tag already exists error | A previous run created the tag; re-running the workflow | The workflow skips tag creation if the tag already exists — this is safe to ignore |
+| Deploy succeeds but container is not healthy | Application startup error | Check container logs: `docker logs tessiture`; check `deploy/.env` for misconfigured paths or CORS origins |
+
+---
+
+## 5. First-Time Setup
 
 ```bash
 # 1. Copy the environment template
@@ -249,7 +463,7 @@ After `make release` completes, the container is running, healthy, and the versi
 
 ---
 
-## 5. Environment File Reference
+## 6. Environment File Reference
 
 `deploy/.env` (copied from [`deploy/.env.example`](../deploy/.env.example)) is the single source of truth for all runtime configuration. The build and deploy scripts read from and write to this file.
 
@@ -330,7 +544,7 @@ These paths are bind-mounted from the Unraid host into the container. They are *
 
 ---
 
-## 6. Build System
+## 7. Build System
 
 ### Overview
 
@@ -429,7 +643,7 @@ When the current image tag is not a valid semver string (e.g., `latest`, `local`
 
 ---
 
-## 7. Deploy Script
+## 8. Deploy Script
 
 [`deploy/scripts/deploy.sh`](../deploy/scripts/deploy.sh) runs `docker compose up -d` using the image and configuration in `deploy/.env`.
 
@@ -456,7 +670,7 @@ deploy/scripts/deploy.sh --no-detach
 
 ---
 
-## 8. One-Shot Script (Primary Release)
+## 9. One-Shot Script (Primary Release)
 
 [`deploy/scripts/one-shot.sh`](../deploy/scripts/one-shot.sh) orchestrates the full release pipeline:
 
@@ -494,7 +708,7 @@ deploy/scripts/one-shot.sh --verify-timeout 180
 
 ---
 
-## 9. Makefile Reference
+## 10. Makefile Reference
 
 The `Makefile` is the primary interface for all build and deploy operations. Run `make help` to see all targets.
 
@@ -566,7 +780,7 @@ make tag
 
 ---
 
-## 10. Networking
+## 11. Networking
 
 ### Container Networks
 
@@ -616,7 +830,7 @@ Cloudflare Tunnel is external and shared — it is not deployed by this stack. P
 
 ---
 
-## 11. Updating / Re-deploying
+## 12. Updating / Re-deploying
 
 ### Day-to-Day Release
 
@@ -648,7 +862,7 @@ make deploy
 
 ---
 
-## 12. Deployment Checklist
+## 13. Deployment Checklist
 
 ### Pre-Flight
 
@@ -690,7 +904,7 @@ make deploy
 
 ---
 
-## 13. Troubleshooting
+## 14. Troubleshooting
 
 ### Container not starting or not healthy
 

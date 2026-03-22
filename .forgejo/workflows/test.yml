@@ -1,0 +1,50 @@
+name: Test
+
+on:
+  push:
+    branches-ignore:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    name: Test
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        shell: bash
+        run: pip install -r requirements.txt
+
+      - name: Run backend tests
+        shell: bash
+        run: python -m pytest tests/ -q --tb=short
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install frontend dependencies
+        shell: bash
+        run: cd frontend && npm ci
+
+      - name: Run frontend tests
+        shell: bash
+        run: cd frontend && npm run test -- --run
+
+      - name: Build frontend
+        shell: bash
+        run: cd frontend && npm run build

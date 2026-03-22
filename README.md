@@ -15,11 +15,12 @@ Tessiture is a browser-based vocal analysis toolkit for analyzing acoustic recor
 3. [Development Workflow](#development-workflow)
 4. [Development Environment (VSCode Dev Container)](#development-environment-vscode-dev-container)
 5. [Build & Release](#build--release)
-6. [Configuration](#configuration)
-7. [Deployment](#deployment)
-8. [Project Structure](#project-structure)
-9. [Version Info](#version-info)
-10. [Documentation](#documentation)
+6. [CI/CD with Forgejo Actions](#cicd-with-forgejo-actions)
+7. [Configuration](#configuration)
+8. [Deployment](#deployment)
+9. [Project Structure](#project-structure)
+10. [Version Info](#version-info)
+11. [Documentation](#documentation)
 
 ---
 
@@ -110,9 +111,23 @@ make build-frontend
 
 Tessiture is developed from within a **VSCode Dev Container** running on the Unraid host. The workspace (`/mnt/user/public/tessiture`) is bind-mounted into the container, so all `make` commands — including `make release` — work from inside the container as long as the container is configured correctly.
 
-### Requirements
+Two dev container configurations are supported:
 
-The dev container needs three things to support the full build/deploy workflow:
+| | Option A: Socket Mount | Option B: Docker-in-Docker (DinD) |
+|---|---|---|
+| Docker daemon | Host's daemon | Separate daemon inside container |
+| Built images | Appear on Unraid host | Isolated inside dev container |
+| Deployed containers | Run on Unraid host | Run inside dev container (isolated) |
+| Host path mounts in compose | Work correctly | **Do NOT work** — paths are inside DinD, not on Unraid host |
+| Privileged mode required | No | Yes |
+| `make deploy` / `make release` | ✅ Deploys to Unraid host | ❌ Does NOT deploy to Unraid host |
+| Use case | Production deployment workflow | Local dev and testing only |
+
+### Option A: Docker Socket Mount (Required for Production Deployment)
+
+The dev container mounts the host's Docker socket (`/var/run/docker.sock`). All Docker operations — `docker build`, `docker compose up` — execute against the **host Docker daemon**, so built images and running containers appear on the Unraid host.
+
+**Requirements:**
 
 | Requirement | Why |
 |-------------|-----|
@@ -120,9 +135,7 @@ The dev container needs three things to support the full build/deploy workflow:
 | Docker CLI installed inside the container | The CLI binary must be present; the daemon itself runs on the Unraid host |
 | Git installed inside the container | `build.sh` reads commit history for `auto` version bumping and creates annotated git tags |
 
-### Minimal `.devcontainer/devcontainer.json`
-
-Create `.devcontainer/devcontainer.json` in the repository root with at minimum the Docker socket mount:
+**Minimal `.devcontainer/devcontainer.json`:**
 
 ```json
 {
@@ -147,11 +160,46 @@ Create `.devcontainer/devcontainer.json` in the repository root with at minimum 
 
 > **Note:** The `.devcontainer/` directory does not exist in the repository by default. Create it when setting up your dev container environment.
 
+### Option B: Docker-in-Docker (DinD) — Local Dev/Test Only
+
+DinD runs a **separate Docker daemon inside the dev container**. This provides a fully isolated Docker environment without requiring access to the host socket.
+
+> ⚠️ **DinD is for local development and testing only.** `make deploy` and `make release` will create directories and run containers **inside the DinD container**, not on the Unraid host. The `*_HOST_PATH` variables in `deploy/.env` are resolved inside the DinD container's filesystem — they do not map to Unraid host paths. Use DinD to run `make test`, `make build`, and verify the image builds correctly. For production deployment, use Option A (socket mount).
+
+**`.devcontainer/devcontainer.json` for DinD:**
+
+```json
+{
+  "name": "Tessiture Dev (DinD)",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers/features/python:1": { "version": "3.12" },
+    "ghcr.io/devcontainers/features/node:1": { "version": "20" }
+  },
+  "postCreateCommand": "pip install -r requirements.txt && cd frontend && npm ci"
+}
+```
+
+The `docker-in-docker` feature starts a Docker daemon inside the container automatically. No `--privileged` flag needs to be set manually when using the devcontainers feature — the feature handles it.
+
+**What works with DinD:**
+
+- `make test` — runs pytest and frontend tests
+- `make build` — builds the Docker image (image is isolated inside DinD)
+- `make lint`, `make typecheck`, `make format`
+- `make run-api`, `make run-frontend` — local dev servers
+
+**What does NOT work with DinD:**
+
+- `make deploy` / `make release` — containers run inside DinD, not on the Unraid host
+- Volume mounts using Unraid host paths — those paths do not exist inside DinD
+
 ### Host Paths in `deploy/.env`
 
 The variables `TESSITURE_UPLOAD_HOST_PATH`, `TESSITURE_OUTPUT_HOST_PATH`, `TESSITURE_JOBS_HOST_PATH`, `TESSITURE_LOG_HOST_PATH`, and `TESSITURE_STEM_CACHE_HOST_PATH` must be **Unraid host absolute paths** (e.g., `/mnt/user/appdata/tessiture/uploads`), not paths inside the dev container.
 
-When `deploy.sh` creates these directories and Docker mounts them into the Tessiture container, it does so via the host Docker daemon — so the paths are resolved on the Unraid host filesystem, not inside the dev container.
+When `deploy.sh` creates these directories and Docker mounts them into the Tessiture container, it does so via the host Docker daemon — so the paths are resolved on the Unraid host filesystem, not inside the dev container. This only applies when using Option A (socket mount).
 
 ### What Happens When You Run `make release` from Inside the Container
 
@@ -166,7 +214,7 @@ When `deploy.sh` creates these directories and Docker mounts them into the Tessi
 
 **"Docker socket /var/run/docker.sock is not available in this container"**
 
-The Docker socket is not mounted into the dev container. Add the socket mount to `.devcontainer/devcontainer.json` (see example above) and rebuild the container.
+The Docker socket is not mounted into the dev container. Add the socket mount to `.devcontainer/devcontainer.json` (see Option A above) and rebuild the container.
 
 **"Docker CLI is missing in this container"**
 
@@ -269,6 +317,78 @@ make deploy
 | `ENV_FILE` | `deploy/.env` | Path to environment file |
 | `COMPOSE_FILE` | `deploy/docker-compose.yml` | Path to compose file |
 | `NO_GIT_TAG` | _(unset)_ | Set to `1` to skip git tagging |
+
+---
+
+## CI/CD with Forgejo Actions
+
+Tessiture includes two Forgejo Actions workflow files in [`.forgejo/workflows/`](.forgejo/workflows/):
+
+| Workflow | File | Trigger |
+|----------|------|---------|
+| **Test** | [`.forgejo/workflows/test.yml`](.forgejo/workflows/test.yml) | Push to any non-`main` branch; PRs targeting `main` |
+| **Release** | [`.forgejo/workflows/release.yml`](.forgejo/workflows/release.yml) | Push to `main`; manual `workflow_dispatch` |
+
+### Workflow Overview
+
+**`test.yml`** — runs the full test suite (backend pytest + frontend Vitest + frontend build) on every branch push and pull request. No Docker build or deployment.
+
+**`release.yml`** — on push to `main`:
+1. Runs the same test suite (`test` job)
+2. On success, runs `build-and-deploy` job:
+   - Writes `deploy/.env` from the `TESSITURE_ENV` secret
+   - Calls [`deploy/scripts/build.sh`](deploy/scripts/build.sh) with `--no-git-tag` (so the runner can push the tag to Forgejo)
+   - Calls [`deploy/scripts/deploy.sh`](deploy/scripts/deploy.sh) to bring up the compose stack
+   - Verifies the container reaches `healthy` state (120 s timeout)
+   - Creates and pushes annotated git tag `v{version}` to Forgejo
+
+### Runner Setup
+
+Both workflows use `runs-on: self-hosted`. You must register a **self-hosted Forgejo Actions runner** on the Unraid host:
+
+1. Download `act_runner` from your Forgejo instance (Settings → Actions → Runners, or from the Forgejo releases page)
+2. Register the runner against your Forgejo instance with a registration token
+3. Ensure Docker is available on the runner host (the runner executes `docker build` and `docker compose` directly)
+4. Start the runner as a service or background process on the Unraid host
+
+The runner must have access to the Docker daemon on the Unraid host — either via the host socket or by running directly on the host (not inside a DinD container).
+
+### Required Secret: `TESSITURE_ENV`
+
+The `release.yml` workflow writes `deploy/.env` from a Forgejo repository secret named `TESSITURE_ENV`. This secret must contain the **full contents** of your `deploy/.env` file.
+
+**To create the secret:**
+
+1. Copy the contents of your local `deploy/.env`
+2. In Forgejo, go to your repository → **Settings** → **Secrets** → **Actions**
+3. Click **New Secret**
+4. Name: `TESSITURE_ENV`
+5. Value: paste the full `deploy/.env` contents
+6. Save
+
+> **Keep this secret up to date.** If you change `TESSITURE_IMAGE`, `TESSITURE_CORS_ORIGINS`, or any other variable in your local `deploy/.env`, update the Forgejo secret to match.
+
+### Manual Release Trigger
+
+`release.yml` supports `workflow_dispatch` with a `version_bump` input. To trigger a manual release from the Forgejo UI:
+
+1. Go to your repository → **Actions** → **Release** workflow
+2. Click **Run workflow**
+3. Select the `version_bump` strategy: `auto` (default), `patch`, `minor`, `major`, or `none`
+4. Click **Run workflow**
+
+### `fetch-depth: 0` Requirement
+
+Both workflows check out with `fetch-depth: 0` (full history). This is required because [`deploy/scripts/build.sh`](deploy/scripts/build.sh) scans `git log` since the last `v*.*.*` tag to determine the auto version bump. A shallow clone (the default `fetch-depth: 1`) would produce an incomplete commit history and cause the auto-bump to fall back to `patch` regardless of actual commit content.
+
+### Tag Push After Deploy
+
+After a successful deploy, `release.yml` reads `.release-version`, creates an annotated tag `v{version}`, and pushes it to Forgejo. To verify in your local clone:
+
+```bash
+git fetch --tags
+git tag --list 'v*' | sort -V | tail -5
+```
 
 ---
 
