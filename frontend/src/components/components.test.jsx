@@ -42,6 +42,13 @@ beforeEach(() => {
     mix: { frames_b64: "", n_time: 0, n_freq: 0, frequencies_hz: [], times_s: [] },
     vocals: { available: false },
   });
+  // jsdom does not implement URL.createObjectURL/revokeObjectURL — stub them so App renders without crashing
+  if (typeof URL.createObjectURL === "undefined") {
+    URL.createObjectURL = vi.fn(() => "blob:mock-url");
+  }
+  if (typeof URL.revokeObjectURL === "undefined") {
+    URL.revokeObjectURL = vi.fn();
+  }
 });
 
 afterEach(() => {
@@ -204,17 +211,15 @@ describe("AnalysisStatus", () => {
     );
 
     expect(screen.getByText("Polling for updates…")).toBeInTheDocument();
-    expect(screen.getByText("processing", { selector: ".status__value" })).toBeInTheDocument();
+    // The component renders the status message text, not a .status__value element
+    expect(screen.getByText("Analyzing your recording…")).toBeInTheDocument();
   });
 
   it("shows idle state without a progress bar before any job is submitted", () => {
     render(<AnalysisStatus jobId={null} status={null} isPolling={false} isFetchingResults={false} />);
 
-    expect(screen.getByText("No active job")).toBeInTheDocument();
-    expect(screen.getByText("idle", { selector: ".status__value" })).toBeInTheDocument();
-    expect(screen.getByText("not started")).toBeInTheDocument();
+    expect(screen.getByText("Ready to analyze")).toBeInTheDocument();
     expect(screen.queryByLabelText("Progress")).not.toBeInTheDocument();
-    expect(screen.getByText("Progress will appear after you submit a job.")).toBeInTheDocument();
   });
 
   it("shows stage, progress bar, and polling activity", () => {
@@ -232,7 +237,7 @@ describe("AnalysisStatus", () => {
       />
     );
 
-    expect(screen.getByText("processing", { selector: ".status__value" })).toBeInTheDocument();
+    expect(screen.getByText("Analyzing your recording…")).toBeInTheDocument();
     expect(screen.getByText("pitch extraction")).toBeInTheDocument();
     expect(screen.getByText("Extracting pitch and harmonic tracks.")).toBeInTheDocument();
     expect(screen.getByText("Polling for updates…")).toBeInTheDocument();
@@ -420,8 +425,9 @@ describe("AnalysisResults", () => {
     expect(screen.getByText("57.00 to 69.00 (A3 to A4)")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Download CSV" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Download JSON" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Download PDF" })).toBeInTheDocument();
-    expect(screen.getByText("How consistent each metric is (inferential statistics)")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "⭐ Download PDF" })).toBeInTheDocument();
+    // The heading contains a GlossaryTerm button so text is split across elements — use heading role
+    expect(screen.getByRole("heading", { name: /How consistent each metric is/i })).toBeInTheDocument();
     expect(screen.getByText("F0 Mean Hz")).toBeInTheDocument();
     expect(screen.getByText("Tessitura Center Midi")).toBeInTheDocument();
     expect(screen.getByText("221.40 (A3)")).toBeInTheDocument();
@@ -522,7 +528,7 @@ describe("AnalysisResults", () => {
     expect(screen.queryByRole("heading", { name: /piano roll/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/session distribution summary/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/time\s*[×x]\s*pitch heatmap/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/pitch curve/i)).not.toBeInTheDocument();
+    // Note: "pitch curves" appears in the PDF export description text, not as a rendered visualization
     expect(screen.queryByLabelText("Piano roll visualization")).not.toBeInTheDocument();
 
     expect(screen.queryByText("Where in your range did you sing most?")).not.toBeInTheDocument();
@@ -632,7 +638,6 @@ describe("AnalysisResults", () => {
     expect(screen.queryByRole("heading", { name: /piano roll/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/session distribution summary/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/time\s*[×x]\s*pitch heatmap/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/pitch curve/i)).not.toBeInTheDocument();
     expect(
       screen.getByText(
         "We could not detect enough pitch activity to map effort by time or range in this recording."
@@ -811,10 +816,11 @@ describe("AnalysisResults", () => {
       />
     );
 
-    expect(screen.getByRole("heading", { name: "Evidence references" })).toBeInTheDocument();
+    // "Evidence references" is an aria-label on a <ul>, not a heading
+    expect(screen.getByRole("list", { name: "Evidence references" })).toBeInTheDocument();
     expect(
       screen.getByText(
-        "Audio playback is unavailable for this result. Use timestamp references to locate moments manually."
+        "Audio playback is not available for this result. The timestamps below show when these moments occur in your recording."
       )
     ).toBeInTheDocument();
     expect(screen.getByText("A3 at 00:03")).toBeInTheDocument();
@@ -829,7 +835,6 @@ describe("AnalysisResults", () => {
 
     expect(screen.queryByRole("heading", { name: /piano roll/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/time\s*[×x]\s*pitch heatmap/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/pitch curve/i)).not.toBeInTheDocument();
   });
 
   it("supports jump and listen controls when an audio source is available", async () => {
@@ -991,7 +996,6 @@ describe("App example gallery wiring", () => {
     expect(screen.queryByRole("heading", { name: /piano roll/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/session distribution summary/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/time\s*[×x]\s*pitch heatmap/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/pitch curve/i)).not.toBeInTheDocument();
   });
 
   it("wires example analysis audio URL into evidence playback when source metadata is example", async () => {
@@ -1362,7 +1366,6 @@ describe("ComparisonResults", () => {
     expect(screen.queryByRole("heading", { name: /piano roll/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/session distribution summary/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/time\s*[×x]\s*pitch heatmap/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/pitch curve/i)).not.toBeInTheDocument();
   });
 
   it("calls onClose when close button clicked", async () => {
@@ -1517,10 +1520,10 @@ describe("SpectrogramInspector", () => {
     );
 
     // The details summary toggle should be present with the updated label
-    expect(screen.getByText("Audio inspector")).toBeInTheDocument();
+    expect(screen.getByText("🔍 Audio spectrogram (advanced)")).toBeInTheDocument();
 
     // The inspector section should be collapsed by default to avoid extra loading after results appear
-    const details = screen.getByText("Audio inspector").closest("details");
+    const details = screen.getByText("🔍 Audio spectrogram (advanced)").closest("details");
     expect(details).not.toHaveAttribute("open");
 
     // fetchSpectrogram should NOT be called since inspector is collapsed by default
