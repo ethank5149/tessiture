@@ -973,9 +973,11 @@ def test_run_analysis_pipeline_attempts_separation_for_mixed(tmp_path, monkeypat
     from unittest.mock import patch as _patch
 
     # Demucs not available → separation skipped, but audio_type_requested is "mixed"
+    # Patch the names as bound in api.analysis_core (where _run_analysis_pipeline lives),
+    # not the source module — patching the source after import has no effect on already-bound names.
     with (
-        _patch("analysis.dsp.vocal_separation.is_available", return_value=False),
-        _patch.object(routes, "_VOCAL_SEPARATION_MODE", "auto"),
+        _patch("api.analysis_core._vocal_separation_available", return_value=False),
+        _patch("api.analysis_core._VOCAL_SEPARATION_MODE", "auto"),
     ):
         result = routes._run_analysis_pipeline(
             file_path=str(wav_path),
