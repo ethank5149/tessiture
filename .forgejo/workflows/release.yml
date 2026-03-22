@@ -26,13 +26,13 @@ jobs:
     steps:
       - name: Checkout repository
         env:
-          GITEA_TOKEN: ${{ gitea.token }}
+          GIT_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           git config --global credential.helper store
-          REGISTRY_HOST=$(echo "${{ gitea.server_url }}" | sed 's|https://||' | sed 's|http://||')
-          echo "https://oauth2:${GITEA_TOKEN}@${REGISTRY_HOST}" > ~/.git-credentials
-          git clone "${{ gitea.server_url }}/${{ gitea.repository }}.git" .
+          REGISTRY_HOST=$(echo "${{ github.server_url }}" | sed 's|https://||' | sed 's|http://||')
+          echo "https://oauth2:${GIT_TOKEN}@${REGISTRY_HOST}" > ~/.git-credentials
+          git clone "${{ github.server_url }}/${{ github.repository }}.git" .
           git fetch --tags
 
       - name: Install Node.js 20
@@ -69,19 +69,19 @@ jobs:
     name: Build and Deploy
     runs-on: docker
     needs: test
-    if: gitea.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main'
 
     steps:
       - name: Checkout repository
         env:
-          GITEA_TOKEN: ${{ gitea.token }}
+          GIT_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           # Configure git to use the token for this server
           git config --global credential.helper store
-          REGISTRY_HOST=$(echo "${{ gitea.server_url }}" | sed 's|https://||' | sed 's|http://||')
-          echo "https://oauth2:${GITEA_TOKEN}@${REGISTRY_HOST}" > ~/.git-credentials
-          git clone "${{ gitea.server_url }}/${{ gitea.repository }}.git" .
+          REGISTRY_HOST=$(echo "${{ github.server_url }}" | sed 's|https://||' | sed 's|http://||')
+          echo "https://oauth2:${GIT_TOKEN}@${REGISTRY_HOST}" > ~/.git-credentials
+          git clone "${{ github.server_url }}/${{ github.repository }}.git" .
           git fetch --tags
 
       - name: Configure git identity for tagging
@@ -99,8 +99,8 @@ jobs:
       - name: Set image reference in deploy/.env
         shell: bash
         run: |
-          REGISTRY=$(echo "${{ gitea.server_url }}" | sed 's|https://||' | sed 's|http://||')
-          IMAGE="${REGISTRY}/${{ gitea.repository }}:latest"
+          REGISTRY=$(echo "${{ github.server_url }}" | sed 's|https://||' | sed 's|http://||')
+          IMAGE="${REGISTRY}/${{ github.repository }}:latest"
           # Update or append TESSITURE_IMAGE in deploy/.env
           if grep -q '^TESSITURE_IMAGE=' deploy/.env; then
             sed -i "s|^TESSITURE_IMAGE=.*|TESSITURE_IMAGE=${IMAGE}|" deploy/.env
@@ -114,10 +114,12 @@ jobs:
         run: chmod +x deploy/scripts/build.sh deploy/scripts/deploy.sh
 
       - name: Log in to Forgejo container registry
+        env:
+          GIT_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          REGISTRY=$(echo "${{ gitea.server_url }}" | sed 's|https://||' | sed 's|http://||')
-          echo "${{ gitea.token }}" | docker login "${REGISTRY}" --username "${{ gitea.repository_owner }}" --password-stdin
+          REGISTRY=$(echo "${{ github.server_url }}" | sed 's|https://||' | sed 's|http://||')
+          echo "${GIT_TOKEN}" | docker login "${REGISTRY}" --username "${{ github.repository_owner }}" --password-stdin
 
       - name: Build Docker image
         timeout-minutes: 30
@@ -169,7 +171,7 @@ jobs:
             exit 1
           fi
           VERSION="$(tr -d '[:space:]' < deploy/.release-version)"
-          echo "version=${VERSION}" >> "${GITEA_OUTPUT}"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
           echo "Release version: ${VERSION}"
 
       - name: Create and push git tag
@@ -201,5 +203,5 @@ jobs:
         if: always()
         shell: bash
         run: |
-          REGISTRY=$(echo "${{ gitea.server_url }}" | sed 's|https://||' | sed 's|http://||')
+          REGISTRY=$(echo "${{ github.server_url }}" | sed 's|https://||' | sed 's|http://||')
           docker logout "${REGISTRY}" || true
