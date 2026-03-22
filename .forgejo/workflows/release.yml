@@ -122,6 +122,32 @@ jobs:
         shell: bash
         run: chmod +x deploy/scripts/build.sh deploy/scripts/deploy.sh
 
+      - name: Configure Docker daemon for insecure registry
+        shell: bash
+        run: |
+          REGISTRY=$(echo "${{ github.server_url }}" | sed 's|https://||' | sed 's|http://||')
+          mkdir -p /etc/docker
+          # Merge insecure-registries into existing daemon.json (or create it)
+          if [ -f /etc/docker/daemon.json ]; then
+            python3 -c "
+import json, sys
+with open('/etc/docker/daemon.json') as f:
+    cfg = json.load(f)
+reg = '${REGISTRY}'
+cfg.setdefault('insecure-registries', [])
+if reg not in cfg['insecure-registries']:
+    cfg['insecure-registries'].append(reg)
+with open('/etc/docker/daemon.json', 'w') as f:
+    json.dump(cfg, f)
+"
+          else
+            echo "{\"insecure-registries\": [\"${REGISTRY}\"]}" > /etc/docker/daemon.json
+          fi
+          cat /etc/docker/daemon.json
+          # Reload Docker daemon to pick up the new config
+          kill -HUP "$(cat /var/run/docker.pid 2>/dev/null || pgrep dockerd)" 2>/dev/null || true
+          sleep 2
+
       - name: Log in to Forgejo container registry
         env:
           GIT_TOKEN: ${{ github.token }}
