@@ -2,30 +2,29 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-UNRAID_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-REPO_ROOT="$(cd "${UNRAID_DIR}/../.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-DEFAULT_ENV_FILE="${UNRAID_DIR}/.env.unraid"
-DEFAULT_COMPOSE_FILE="${UNRAID_DIR}/docker-compose.yml"
+DEFAULT_ENV_FILE="${REPO_ROOT}/deploy/.env"
+DEFAULT_COMPOSE_FILE="${REPO_ROOT}/deploy/docker-compose.yml"
 ENV_FILE="${DEFAULT_ENV_FILE}"
 COMPOSE_FILE="${DEFAULT_COMPOSE_FILE}"
 DETACH=1
 
 usage() {
   cat <<'EOF'
-Usage: deploy/unraid/scripts/deploy.sh [OPTIONS]
+Usage: deploy/scripts/deploy.sh [OPTIONS]
 
-Deploy Tessiture using docker compose and deploy/unraid/.env.unraid.
+Deploy Tessiture using docker compose and deploy/.env.
 
 Options:
-  --env-file <path>      Override env file path (default: deploy/unraid/.env.unraid)
-  --compose-file <path>  Override compose file path (default: deploy/unraid/docker-compose.yml)
+  --env-file <path>      Override env file path (default: deploy/.env)
+  --compose-file <path>  Override compose file path (default: deploy/docker-compose.yml)
   --no-detach            Run compose in attached mode
   -h, --help             Show this help message
 
 Examples:
-  deploy/unraid/scripts/deploy.sh
-  deploy/unraid/scripts/deploy.sh --env-file deploy/unraid/.env.unraid
+  deploy/scripts/deploy.sh
+  deploy/scripts/deploy.sh --env-file deploy/.env
 EOF
 }
 
@@ -105,9 +104,13 @@ TESSITURE_IMAGE="$(read_env_value TESSITURE_IMAGE "${ENV_FILE}" || true)"
 
 UPLOAD_HOST_PATH="$(read_env_value TESSITURE_UPLOAD_HOST_PATH "${ENV_FILE}" || true)"
 OUTPUT_HOST_PATH="$(read_env_value TESSITURE_OUTPUT_HOST_PATH "${ENV_FILE}" || true)"
+JOBS_HOST_PATH="$(read_env_value TESSITURE_JOBS_HOST_PATH "${ENV_FILE}" || true)"
+LOG_HOST_PATH="$(read_env_value TESSITURE_LOG_HOST_PATH "${ENV_FILE}" || true)"
 
 [[ -n "${UPLOAD_HOST_PATH}" ]] || die "TESSITURE_UPLOAD_HOST_PATH is missing or empty in ${ENV_FILE}"
 [[ -n "${OUTPUT_HOST_PATH}" ]] || die "TESSITURE_OUTPUT_HOST_PATH is missing or empty in ${ENV_FILE}"
+[[ -n "${JOBS_HOST_PATH}" ]] || die "TESSITURE_JOBS_HOST_PATH is missing or empty in ${ENV_FILE}"
+[[ -n "${LOG_HOST_PATH}" ]] || die "TESSITURE_LOG_HOST_PATH is missing or empty in ${ENV_FILE}"
 
 if [[ ! -d "${UPLOAD_HOST_PATH}" ]]; then
   log "Creating missing upload host path: ${UPLOAD_HOST_PATH}"
@@ -117,6 +120,16 @@ fi
 if [[ ! -d "${OUTPUT_HOST_PATH}" ]]; then
   log "Creating missing output host path: ${OUTPUT_HOST_PATH}"
   mkdir -p "${OUTPUT_HOST_PATH}" || die "Unable to create output host path: ${OUTPUT_HOST_PATH}"
+fi
+
+if [[ ! -d "${JOBS_HOST_PATH}" ]]; then
+  log "Creating missing jobs host path: ${JOBS_HOST_PATH}"
+  mkdir -p "${JOBS_HOST_PATH}" || die "Unable to create jobs host path: ${JOBS_HOST_PATH}"
+fi
+
+if [[ ! -d "${LOG_HOST_PATH}" ]]; then
+  log "Creating missing log host path: ${LOG_HOST_PATH}"
+  mkdir -p "${LOG_HOST_PATH}" || die "Unable to create log host path: ${LOG_HOST_PATH}"
 fi
 
 log "Repo root: ${REPO_ROOT}"

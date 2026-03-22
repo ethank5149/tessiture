@@ -2,10 +2,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-UNRAID_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-REPO_ROOT="$(cd "${UNRAID_DIR}/../.." && pwd)"
-DEFAULT_ENV_FILE="${UNRAID_DIR}/.env.unraid"
-DEFAULT_COMPOSE_FILE="${UNRAID_DIR}/docker-compose.yml"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+DEFAULT_ENV_FILE="${REPO_ROOT}/deploy/.env"
+DEFAULT_COMPOSE_FILE="${REPO_ROOT}/deploy/docker-compose.yml"
 RELEASE_VERSION_FILE="${REPO_ROOT}/.release-version"
 RELEASE_VERSION_ENV_KEY="TESSITURE_RELEASE_VERSION"
 
@@ -20,9 +19,9 @@ BASE_VERSION="0.0.0"
 
 usage() {
   cat <<'EOF'
-Usage: deploy/unraid/scripts/one-shot.sh [OPTIONS]
+Usage: deploy/scripts/one-shot.sh [OPTIONS]
 
-Run one-shot Unraid maintenance:
+Run one-shot maintenance:
   1) Build image
   2) Deploy compose stack
   3) Verify container health
@@ -32,16 +31,16 @@ Options:
   --push                   Push image after build (requires registry-qualified tag)
   --version-bump <kind>    Version strategy: auto|patch|minor|major|none (default: auto)
   --base-version <x.y.z>   Base version if current tag is non-semantic (default: 0.0.0)
-  --env-file <path>        Env file used by build/deploy (default: deploy/unraid/.env.unraid)
-  --compose-file <path>    Compose file used by deploy (default: deploy/unraid/docker-compose.yml)
+  --env-file <path>        Env file used by build/deploy (default: deploy/.env)
+  --compose-file <path>    Compose file used by deploy (default: deploy/docker-compose.yml)
   --no-detach              Run deploy in attached mode
   --verify-timeout <s>     Seconds to wait for healthy status (default: 120)
   -h, --help               Show this help message
 
 Examples:
-  deploy/unraid/scripts/one-shot.sh
-  deploy/unraid/scripts/one-shot.sh --version-bump auto
-  deploy/unraid/scripts/one-shot.sh --image ghcr.io/acme/tessiture:1.4.2 --version-bump major --push
+  deploy/scripts/one-shot.sh
+  deploy/scripts/one-shot.sh --version-bump auto
+  deploy/scripts/one-shot.sh --image ghcr.io/acme/tessiture:1.4.2 --version-bump major --push
 EOF
 }
 

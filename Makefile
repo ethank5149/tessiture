@@ -1,55 +1,67 @@
-PYTHON ?= python3
-PIP ?= $(PYTHON) -m pip
-NPM ?= npm
-VENV_DIR ?= .venv
-VENV_PYTHON ?= $(VENV_DIR)/bin/python3
-VENV_PIP ?= $(VENV_PYTHON) -m pip
-VERSION_BUMP ?= auto
-BASE_VERSION ?= 0.0.0
-UNRAID_ENV_FILE ?= deploy/unraid/.env.unraid
+.DEFAULT_GOAL := help
+
+PYTHON              ?= python3
+NPM                 ?= npm
+VENV_DIR            ?= .venv
+VENV_PYTHON         ?= $(VENV_DIR)/bin/python3.12
+VENV_PIP            ?= $(VENV_DIR)/bin/pip
+VERSION_BUMP        ?= auto
+BASE_VERSION        ?= 0.0.0
+IMAGE               ?=
+ENV_FILE            ?= deploy/.env
+COMPOSE_FILE        ?= deploy/docker-compose.yml
 RELEASE_VERSION_FILE ?= .release-version
 
-.PHONY: help install install-dev test lint format typecheck run-api run-frontend build-frontend docker-build docker-run-unraid unraid-build unraid-build-push unraid-deploy unraid-one-shot clean
+.PHONY: help install install-dev test lint format typecheck run-api run-frontend build-frontend \
+        build build-push deploy release tag \
+        unraid-build unraid-build-push unraid-deploy unraid-one-shot \
+        clean
+
+# ─── Help ────────────────────────────────────────────────────────────────────
 
 help:
-	@echo "Targets:"
-	@echo "  install            Install runtime Python dependencies"
-	@echo "  install-dev        Install runtime and development dependencies"
-	@echo "  test               Run backend tests"
-	@echo "  lint               Run ruff lint checks"
-	@echo "  format             Run black formatting"
-	@echo "  typecheck          Run mypy checks"
-	@echo "  run-api            Start FastAPI server"
-	@echo "  run-frontend       Start frontend dev server"
-	@echo "  build-frontend     Build frontend assets"
-	@echo "  docker-build       Build single-image Tessiture container"
-	@echo "  docker-run-unraid  Run container with Unraid-style bind mounts"
-	@echo "  unraid-build       Build Unraid image helper with semver bumping"
-	@echo "  unraid-build-push  Build and push image with semver bumping"
-	@echo "  unraid-deploy      Deploy Unraid compose stack via helper"
-	@echo "  unraid-one-shot    Build + deploy + verify via helper"
-	@echo "  clean              Remove common local artifacts"
-	@echo ""
-	@echo "Variables for Unraid targets:"
-	@echo "  IMAGE=<registry/repo[:tag]>"
-	@echo "  VERSION_BUMP=auto|patch|minor|major|none (default: auto)"
-	@echo "  BASE_VERSION=x.y.z (default: 0.0.0)"
-	@echo "  UNRAID_ENV_FILE=deploy/unraid/.env.unraid"
+	@printf '\n'
+	@printf '  \033[1mTessiture — available make targets\033[0m\n'
+	@printf '\n'
+	@printf '  \033[4mDevelopment\033[0m\n'
+	@printf '    %-22s %s\n' install          'Install runtime Python dependencies'
+	@printf '    %-22s %s\n' install-dev      'Install runtime + dev Python dependencies into .venv'
+	@printf '    %-22s %s\n' test             'Run backend tests (pytest)'
+	@printf '    %-22s %s\n' lint             'Run ruff lint checks'
+	@printf '    %-22s %s\n' format           'Run black formatting'
+	@printf '    %-22s %s\n' typecheck        'Run mypy type checks'
+	@printf '    %-22s %s\n' run-api          'Start FastAPI dev server'
+	@printf '    %-22s %s\n' run-frontend     'Start Vite frontend dev server'
+	@printf '    %-22s %s\n' build-frontend   'Build frontend assets (reads .release-version if present)'
+	@printf '\n'
+	@printf '  \033[4mBuild / Deploy\033[0m\n'
+	@printf '    %-22s %s\n' build            'Build Docker image with semver bump (use: make build)'
+	@printf '    %-22s %s\n' build-push       'Build and push image to registry'
+	@printf '    %-22s %s\n' deploy           'Deploy compose stack via deploy/scripts/deploy.sh'
+	@printf '    %-22s %s\n' release          'Build + deploy + verify (one-shot; primary release target)'
+	@printf '    %-22s %s\n' tag              'Re-tag current version in git without rebuilding'
+	@printf '\n'
+	@printf '  \033[4mMaintenance\033[0m\n'
+	@printf '    %-22s %s\n' clean            'Remove common local build artifacts'
+	@printf '\n'
+	@printf '  \033[4mVariables\033[0m\n'
+	@printf '    %-22s %s\n' 'IMAGE=<reg/repo[:tag]>' 'Docker image (optional; read from ENV_FILE if unset)'
+	@printf '    %-22s %s\n' 'VERSION_BUMP=auto|patch|minor|major|none' '(default: auto)'
+	@printf '    %-22s %s\n' 'BASE_VERSION=x.y.z'     '(default: 0.0.0)'
+	@printf '    %-22s %s\n' 'ENV_FILE=deploy/.env'   'Env file for build/deploy'
+	@printf '    %-22s %s\n' 'COMPOSE_FILE=deploy/docker-compose.yml' 'Compose file for deploy'
+	@printf '\n'
+
+# ─── Development ─────────────────────────────────────────────────────────────
 
 install:
-	$(PIP) install -r requirements.txt
+	$(VENV_PIP) install -r requirements.txt
 
 install-dev:
-	# Create venv directory if not exists
 	mkdir -p $(VENV_DIR)
 	$(VENV_PYTHON) -m venv $(VENV_DIR)
-	# Upgrade pip
 	$(VENV_PIP) install --upgrade pip
-	# Install stable versions, per
-	# https://packaging.python.org/en/latest/source_releases.html
 	$(VENV_PIP) install -r requirements.txt
-	# Install developer dependencies here instead of extras so setup succeeds
-	# in a virtual env, i.e., allowing 'run-api' target to work locally
 	$(VENV_PIP) install \
 		pytest==8.3.5 \
 		pytest-asyncio==0.25.3 \
@@ -92,43 +104,57 @@ build-frontend:
 		cd frontend && $(NPM) install && $(NPM) run build; \
 	fi
 
-docker-build:
-	docker build -t tessiture:latest .
+# ─── Build / Deploy ──────────────────────────────────────────────────────────
 
-docker-run-unraid:
-	docker run --rm -p 8000:8000 \
-		-e TESSITURE_HOST=0.0.0.0 \
-		-e TESSITURE_PORT=8000 \
-		-e TESSITURE_UPLOAD_DIR=/data/uploads \
-		-e TESSITURE_OUTPUT_DIR=/data/outputs \
-		-v /mnt/user/appdata/tessiture/uploads:/data/uploads \
-		-v /mnt/user/appdata/tessiture/outputs:/data/outputs \
-		tessiture:latest
-
-unraid-build:
-	bash deploy/unraid/scripts/build.sh \
-		$(if $(IMAGE),--image $(IMAGE),) \
-		--env-file $(UNRAID_ENV_FILE) \
+build:
+	deploy/scripts/build.sh \
+		$(if $(IMAGE),--image $(IMAGE)) \
+		--env-file $(ENV_FILE) \
 		--version-bump $(VERSION_BUMP) \
 		--base-version $(BASE_VERSION)
 
-unraid-build-push:
-	bash deploy/unraid/scripts/build.sh \
-		--image $(IMAGE) \
-		--env-file $(UNRAID_ENV_FILE) \
+build-push:
+	deploy/scripts/build.sh \
+		$(if $(IMAGE),--image $(IMAGE)) \
+		--env-file $(ENV_FILE) \
 		--version-bump $(VERSION_BUMP) \
 		--base-version $(BASE_VERSION) \
 		--push
 
-unraid-deploy:
-	bash deploy/unraid/scripts/deploy.sh
+deploy:
+	deploy/scripts/deploy.sh \
+		--env-file $(ENV_FILE) \
+		--compose-file $(COMPOSE_FILE)
 
-unraid-one-shot:
-	bash deploy/unraid/scripts/one-shot.sh \
-		$(if $(IMAGE),--image $(IMAGE),) \
-		--env-file $(UNRAID_ENV_FILE) \
+release:
+	deploy/scripts/one-shot.sh \
+		$(if $(IMAGE),--image $(IMAGE)) \
+		--env-file $(ENV_FILE) \
+		--compose-file $(COMPOSE_FILE) \
 		--version-bump $(VERSION_BUMP) \
 		--base-version $(BASE_VERSION)
+
+tag:
+	deploy/scripts/build.sh \
+		$(if $(IMAGE),--image $(IMAGE)) \
+		--env-file $(ENV_FILE) \
+		--version-bump none
+
+# ─── Deprecated aliases (kept for backward compatibility) ────────────────────
+
+unraid-build: build
+	@echo '[deprecated] Use: make build'
+
+unraid-build-push: build-push
+	@echo '[deprecated] Use: make build-push'
+
+unraid-deploy: deploy
+	@echo '[deprecated] Use: make deploy'
+
+unraid-one-shot: release
+	@echo '[deprecated] Use: make release'
+
+# ─── Maintenance ─────────────────────────────────────────────────────────────
 
 clean:
 	rm -rf .pytest_cache .mypy_cache .ruff_cache frontend/node_modules frontend/dist

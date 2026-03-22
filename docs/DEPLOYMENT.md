@@ -1,8 +1,8 @@
-# Tessiture — Deployment Guide
+# Tessiture — Deployment Reference
 
-**Last updated:** 2026-03-04
+**Last updated:** 2026-03-22
 
-This document covers Docker image builds, Unraid deployment, Cloudflare Tunnel integration, Caddy configuration, versioning, and the repeatable deployment checklist.
+This document is the definitive reference for building, configuring, and deploying Tessiture on Unraid. It covers the build system, versioning strategy, environment configuration, networking, and day-to-day release workflow.
 
 For API configuration variables, see [API_REFERENCE.md](API_REFERENCE.md).
 For system architecture, see [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -11,273 +11,776 @@ For system architecture, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Table of Contents
 
-1. [Production Topology](#1-production-topology)
+1. [Deployment Overview](#1-deployment-overview)
 2. [Prerequisites](#2-prerequisites)
-3. [Building the Docker Image](#3-building-the-docker-image)
-4. [Unraid Stack Deployment](#4-unraid-stack-deployment)
-5. [Cloudflare Tunnel Integration](#5-cloudflare-tunnel-integration)
-6. [Caddy (LAN-Only)](#6-caddy-lan-only)
-7. [Versioning and Release Metadata](#7-versioning-and-release-metadata)
-8. [Deployment Checklist](#8-deployment-checklist)
-9. [Migration / Cutover Runbook](#9-migration--cutover-runbook)
-10. [Validation Checklist](#10-validation-checklist)
+3. [Development from a VSCode Dev Container](#3-development-from-a-vscode-dev-container)
+4. [First-Time Setup](#4-first-time-setup)
+5. [Environment File Reference](#5-environment-file-reference)
+6. [Build System](#6-build-system)
+7. [Deploy Script](#7-deploy-script)
+8. [One-Shot Script (Primary Release)](#8-one-shot-script-primary-release)
+9. [Makefile Reference](#9-makefile-reference)
+10. [Networking](#10-networking)
+11. [Updating / Re-deploying](#11-updating--re-deploying)
+12. [Deployment Checklist](#12-deployment-checklist)
+13. [Troubleshooting](#13-troubleshooting)
 
 ---
 
-## 1. Production Topology
+## 1. Deployment Overview
 
 ```
-Internet → Cloudflare Tunnel (external/shared cloudflared) → Tessiture container :8000
+Internet → Cloudflare Tunnel (external/shared cloudflared on Unraid host)
+         → 127.0.0.1:{TESSITURE_LAN_BIND_PORT}  (host loopback)
+         → Tessiture container :8000
+
+LAN      → Caddy reverse proxy (caddy_proxy Docker network)
+         → Tessiture container :8000
 ```
 
-- This repository's Unraid stack deploys **Tessiture only**.
-- **Cloudflare Tunnel is external/shared** and is not deployed by this stack.
-- **Caddy is optional and LAN-only** (local reverse proxy/debug path), not part of the internet ingress path.
+**Key design points:**
+
+- This repository deploys **Tessiture only** — one container, one compose stack.
+- **Cloudflare Tunnel** is external and shared; it is not managed by this stack. Point your existing tunnel ingress at `http://127.0.0.1:{TESSITURE_LAN_BIND_PORT}` (host-network cloudflared) or at the container via the `caddy_proxy` network.
+- **Caddy** is the LAN reverse proxy. It reaches Tessiture via the shared `caddy_proxy` Docker network. The Caddyfile lives **outside** this repository at `/mnt/user/appdata/caddy/Caddyfile`.
+- The container also binds to `127.0.0.1:{TESSITURE_LAN_BIND_PORT}` on the host loopback so host-network processes (e.g., cloudflared) can reach it without joining the Docker network.
 
 ### WebSocket Support
 
-Caddy passes WebSocket `Upgrade` and `Connection` headers transparently by default when no explicit `header` rewrites suppress them. The existing Caddyfile configuration does not strip these headers, so WebSocket connections to `WS /compare/live` work without additional proxy configuration.
+Caddy passes WebSocket `Upgrade` and `Connection` headers transparently by default. The existing Caddyfile configuration does not strip these headers, so WebSocket connections to `WS /compare/live` work without additional proxy configuration.
 
 ---
 
 ## 2. Prerequisites
 
-- Docker and docker-compose
-- Unraid NAS (for production deployment)
-- Container images must include `ffmpeg` for reliable Opus decoding at runtime
-- The project Dockerfile already installs `ffmpeg` and `libsndfile1`
+| Requirement | Notes |
+|-------------|-------|
+| Docker Engine | Must be running on the Unraid host |
+| Docker Compose v2 | `docker compose` (plugin, not `docker-compose`) |
+| Nvidia GPU (optional) | Required only for GPU-accelerated vocal separation via Demucs |
+| `caddy_proxy` Docker network | Must pre-exist; created by your Caddy stack |
+| Git | Required for automatic version tagging |
+
+The project [`Dockerfile`](../Dockerfile) installs `ffmpeg` and `libsndfile1` inside the image — no host-level audio library installation is needed for the container.
 
 ---
 
-## 3. Building the Docker Image
+## 3. Development from a VSCode Dev Container
 
-### Using Makefile Targets (Preferred)
+Tessiture is developed from within a **VSCode Dev Container** running on the Unraid host. The workspace (`/mnt/user/public/tessiture`) is bind-mounted into the container, giving the container full access to the source tree, `.git/` history, and `deploy/` scripts. All `make` targets — including `make release` — work from inside the container when the container is configured correctly.
 
-```bash
-# Build local-only image (default: tessiture:local)
-make unraid-build
-
-# Build and push to registry
-make unraid-build-push IMAGE=ghcr.io/your-org/tessiture:latest
-
-# One-shot: build + deploy + health verification
-make unraid-one-shot
-```
-
-### Using Scripts Directly
-
-```bash
-# Build local-only image
-bash deploy/unraid/scripts/build.sh
-
-# Build a specific tag with optional push
-bash deploy/unraid/scripts/build.sh --image ghcr.io/your-org/tessiture:latest --push
-
-# One-shot: build + deploy + health verification
-bash deploy/unraid/scripts/one-shot.sh
-```
-
-### Version Bump Control
-
-The build script supports `--version-bump` with values: `auto`, `patch`, `minor`, `major`, `none`.
-
-- Default automated strategy: `VERSION_BUMP=auto`
-- A `major` bump requires explicit user intent confirming a breaking change
-- `--version-bump none` with a semantic image tag writes that version to `/.release-version`; with a non-semantic tag, it clears stale version files
-
----
-
-## 4. Unraid Stack Deployment
-
-### Stack Files
-
-- Compose: `deploy/unraid/docker-compose.yml`
-- Env template: `deploy/unraid/.env.unraid.example`
-
-### Initial Setup
-
-```bash
-# 1. Create runtime env file
-cp deploy/unraid/.env.unraid.example deploy/unraid/.env.unraid
-
-# 2. Edit and set at minimum:
-#    - TESSITURE_IMAGE
-#    - TESSITURE_CORS_ORIGINS
-#    - TESSITURE_UPLOAD_HOST_PATH
-#    - TESSITURE_OUTPUT_HOST_PATH
-
-# 3. Deploy
-bash deploy/unraid/scripts/deploy.sh
-```
-
-### What the Stack Provides
-
-- Tessiture service (no bundled cloudflared)
-- Restart policy (`unless-stopped`)
-- App healthcheck
-- Internal named Docker network (`tessiture_internal`)
-- Persistent Unraid host mounts for uploads/outputs
-- Env-file-driven configuration
-- Optional/commented host port mapping for LAN debug only
-
-### Deploy Script Behavior
-
-`deploy.sh` always reads `TESSITURE_IMAGE` from `deploy/unraid/.env.unraid` for deployment. `one-shot.sh` enforces the same image alignment to avoid drift between build and deploy.
-
----
-
-## 5. Cloudflare Tunnel Integration
-
-In your existing/shared Cloudflare Tunnel setup, route the Tessiture hostname to:
+### Architecture
 
 ```
-http://tessiture:8000
+┌─────────────────────────────────────────────────────────────────┐
+│  Developer machine (or Unraid browser)                          │
+│                                                                 │
+│   VSCode ──────────────────────────────────────────────────┐   │
+│                                                            │   │
+└────────────────────────────────────────────────────────────┼───┘
+                                                             │ SSH / Dev Containers extension
+                                                             ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Unraid host                                                    │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │  Dev Container (Docker)                                  │  │
+│  │                                                          │  │
+│  │  /mnt/user/public/tessiture  ◄── bind mount             │  │
+│  │  /var/run/docker.sock        ◄── bind mount             │  │
+│  │                                                          │  │
+│  │  $ make release                                          │  │
+│  │      └─► build.sh ──► docker build ──────────────────┐  │  │
+│  │      └─► deploy.sh ─► docker compose up ──────────┐  │  │  │
+│  └──────────────────────────────────────────────────┼──┼──┘  │
+│                                                      │  │      │
+│  Host Docker daemon ◄────────────────────────────────┘  │      │
+│      └─► Tessiture image (built here)                   │      │
+│      └─► Tessiture container (running here) ◄───────────┘      │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-Ensure the shared `cloudflared` container is attached to the `tessiture_internal` Docker network so the `tessiture` service name resolves.
+All Docker operations (`docker build`, `docker compose up`, directory creation) execute against the **host Docker daemon** via the socket. The resulting image and running container appear on the Unraid host — not inside the dev container.
 
-Example ingress rule:
+### Dev Container Requirements
+
+| Requirement | Details |
+|-------------|---------|
+| **Docker socket bind mount** | `/var/run/docker.sock` must be mounted into the dev container. Without it, `build.sh` exits with: _"Docker socket /var/run/docker.sock is not available in this container."_ |
+| **Docker CLI** | The `docker` binary must be installed inside the container (not Docker Engine — just the CLI client). Install with `apt-get install -y docker.io` or the [official Docker CLI install script](https://docs.docker.com/engine/install/). |
+| **Git** | Required for `detect_auto_bump()` (reads `git log` since last `v*.*.*` tag) and `git_tag_release()` (creates annotated tag). Install with `apt-get install -y git`. |
+| **Python 3.12 + venv** | Required for `make install-dev`, `make test`, `make run-api`. The `.venv/` directory is created inside the bind-mounted workspace. |
+| **Node.js 20+** | Required for `make run-frontend`, `make build-frontend`, and frontend tests. |
+
+### Example `.devcontainer/devcontainer.json`
+
+Create `.devcontainer/devcontainer.json` in the repository root:
+
+```json
+{
+  "name": "Tessiture Dev",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "mounts": [
+    "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
+  ],
+  "postCreateCommand": "apt-get update && apt-get install -y docker.io git python3.12 python3.12-venv nodejs npm",
+  "remoteUser": "vscode",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "charliermarsh.ruff",
+        "ms-azuretools.vscode-docker",
+        "esbenp.prettier-vscode"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/workspaces/tessiture/.venv/bin/python3.12"
+      }
+    }
+  }
+}
+```
+
+> **Note:** The `.devcontainer/` directory does not exist in the repository by default. Create it when setting up your dev container environment. Do not commit the Docker socket mount path if it is environment-specific.
+
+### Alternative: `.devcontainer/docker-compose.yml`
+
+If you prefer a Docker Compose-based dev container, create `.devcontainer/docker-compose.yml`:
 
 ```yaml
-ingress:
-  - hostname: voice.example.com
-    service: http://tessiture:8000
-  - service: http_status:404
+version: "3.8"
+services:
+  dev:
+    image: mcr.microsoft.com/devcontainers/base:ubuntu
+    volumes:
+      - ..:/workspaces/tessiture:cached
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: sleep infinity
+```
+
+And reference it from `.devcontainer/devcontainer.json`:
+
+```json
+{
+  "name": "Tessiture Dev",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "dev",
+  "workspaceFolder": "/workspaces/tessiture"
+}
+```
+
+### `deploy/.env` Path Considerations
+
+The host path variables in `deploy/.env` are resolved on the **Unraid host filesystem**, not inside the dev container. When `deploy.sh` auto-creates these directories and Docker bind-mounts them into the Tessiture container, it does so via the host Docker daemon.
+
+| Variable | Must be... |
+|----------|-----------|
+| `TESSITURE_UPLOAD_HOST_PATH` | An absolute path on the Unraid host, e.g. `/mnt/user/appdata/tessiture/uploads` |
+| `TESSITURE_OUTPUT_HOST_PATH` | An absolute path on the Unraid host, e.g. `/mnt/user/appdata/tessiture/outputs` |
+| `TESSITURE_JOBS_HOST_PATH` | An absolute path on the Unraid host, e.g. `/mnt/user/appdata/tessiture/jobs` |
+| `TESSITURE_LOG_HOST_PATH` | An absolute path on the Unraid host, e.g. `/mnt/user/appdata/tessiture/logs` |
+| `TESSITURE_STEM_CACHE_HOST_PATH` | An absolute path on the Unraid host, e.g. `/mnt/user/appdata/tessiture/stem_cache` |
+
+Do **not** use paths that are only valid inside the dev container (e.g., `/workspaces/tessiture/...`). Those paths do not exist on the host and the Tessiture container will fail to mount them.
+
+### Git Tagging from Inside the Container
+
+Git operations work correctly from inside the dev container because the workspace — including `.git/` — is bind-mounted from the host. When `build.sh` runs `git tag -a v1.3.0 -m "Release v1.3.0"`, the tag is written to the repository's git history on the host filesystem. Push tags to your remote as usual:
+
+```bash
+git push --tags
+```
+
+### `make release` Flow from Inside the Container
+
+When you run `make release` from inside the dev container, the following sequence executes:
+
+1. **`make release`** invokes `deploy/scripts/one-shot.sh` with the configured arguments
+2. **Container detection** — `one-shot.sh` calls `is_container_runtime()`, detects `/.dockerenv`, and logs `Docker preflight: context=container`
+3. **Socket check** — verifies `/var/run/docker.sock` is a socket; exits with a clear error if missing
+4. **Docker CLI check** — verifies the `docker` binary is on `PATH`; exits with a clear error if missing
+5. **Version bump** — reads `git log` since the last `v*.*.*` tag (runs inside the container against the bind-mounted `.git/`) and computes the next semver
+6. **`docker build`** — executes against the host Docker daemon via the socket; the built image appears on the Unraid host
+7. **`.release-version` written** — the resolved version string is written to the repo root (visible on the host via the bind mount)
+8. **`TESSITURE_IMAGE` updated** — `deploy/.env` is updated in-place with the new versioned tag
+9. **Git tag created** — `git tag -a v{version}` runs inside the container; the tag is written to the host-side `.git/`
+10. **`docker compose up -d`** — deploys the Tessiture container on the Unraid host; the container is visible in Unraid's Docker tab
+11. **Health verification** — polls the container's Docker healthcheck for up to 120 seconds
+
+### Troubleshooting (Dev Container)
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `Docker socket /var/run/docker.sock is not available in this container` | Socket not mounted | Add `"source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"` to `mounts` in `devcontainer.json` and rebuild the container |
+| `Docker CLI is missing in this container` | `docker` binary not installed | Run `apt-get update && apt-get install -y docker.io` inside the container, or add it to `postCreateCommand` |
+| `permission denied while trying to connect to the Docker daemon socket` | Dev container user is not in the `docker` group | Run `sudo usermod -aG docker $USER` inside the container and restart, or prefix Docker commands with `sudo` |
+| `git: command not found` | Git not installed in container | Run `apt-get install -y git` or add it to `postCreateCommand` |
+| Host paths not found / Tessiture container fails to mount volumes | `deploy/.env` contains container-internal paths | Replace all `*_HOST_PATH` values with absolute Unraid host paths (e.g., `/mnt/user/appdata/tessiture/...`) |
+| `caddy_proxy` network not found | Network does not exist on the host | Run `docker network create caddy_proxy` on the host, or deploy your Caddy stack first |
+
+---
+
+## 4. First-Time Setup
+
+```bash
+# 1. Copy the environment template
+cp deploy/.env.example deploy/.env
+
+# 2. Edit deploy/.env — set at minimum:
+#    - TESSITURE_IMAGE (your registry/repo:tag)
+#    - TESSITURE_CORS_ORIGINS (your public hostname origin)
+#    - TESSITURE_PUBLIC_HOSTNAME
+#    - TESSITURE_UPLOAD_HOST_PATH, TESSITURE_OUTPUT_HOST_PATH,
+#      TESSITURE_JOBS_HOST_PATH, TESSITURE_LOG_HOST_PATH
+
+# 3. Install Python dependencies
+make install-dev
+
+# 4. Install frontend dependencies
+cd frontend && npm ci && cd ..
+
+# 5. Run the full release (build → deploy → verify)
+make release
+```
+
+After `make release` completes, the container is running, healthy, and the version is tagged in git.
+
+---
+
+## 5. Environment File Reference
+
+`deploy/.env` (copied from [`deploy/.env.example`](../deploy/.env.example)) is the single source of truth for all runtime configuration. The build and deploy scripts read from and write to this file.
+
+### Image
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `TESSITURE_IMAGE` | `ghcr.io/your-org/tessiture:latest` | **Yes** | Docker image tag. Auto-updated by `build.sh` after each versioned build. |
+
+### Runtime
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `TESSITURE_ENV` | `production` | No | Runtime environment label |
+| `TESSITURE_HOST` | `0.0.0.0` | No | Bind address inside the container |
+| `TESSITURE_PORT` | `8000` | No | Port the app listens on inside the container |
+| `TESSITURE_LAN_BIND_PORT` | `8000` | No | Host loopback port (`127.0.0.1:PORT`) exposed to the host |
+
+### Container Data Paths
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `TESSITURE_UPLOAD_DIR` | `/data/uploads` | No | Upload directory inside the container |
+| `TESSITURE_OUTPUT_DIR` | `/data/outputs` | No | Output directory inside the container |
+| `TESSITURE_EXAMPLES_DIR` | `/app/examples/tracks` | No | Example tracks directory inside the container |
+| `TESSITURE_JOBS_DIR` | `/tmp/tessiture_jobs` | No | Job state directory inside the container |
+| `TESSITURE_LOG_DIR` | `/tmp/tessiture_logs` | No | Log directory inside the container |
+
+### Host Persistent Paths
+
+These paths are bind-mounted from the Unraid host into the container. They are **auto-created** by `deploy.sh` if they do not exist.
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `TESSITURE_UPLOAD_HOST_PATH` | `/mnt/user/appdata/tessiture/uploads` | **Yes** | Host path for uploaded audio files |
+| `TESSITURE_OUTPUT_HOST_PATH` | `/mnt/user/appdata/tessiture/outputs` | **Yes** | Host path for analysis outputs |
+| `TESSITURE_JOBS_HOST_PATH` | `/mnt/user/appdata/tessiture/jobs` | **Yes** | Host path for job state |
+| `TESSITURE_LOG_HOST_PATH` | `/mnt/user/appdata/tessiture/logs` | **Yes** | Host path for logs |
+| `TESSITURE_STEM_CACHE_HOST_PATH` | `/mnt/user/appdata/tessiture/stem_cache` | No | Host path for Demucs stem cache |
+
+### Request Limits
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `TESSITURE_UPLOAD_MAX_BYTES` | `26214400` | No | Maximum upload size in bytes (default: 25 MB) |
+| `TESSITURE_RATE_LIMIT_CAPACITY` | `10` | No | Token bucket capacity for rate limiting |
+| `TESSITURE_RATE_LIMIT_REFILL_PER_SEC` | `0.5` | No | Token bucket refill rate per second |
+
+### Public Hostname and CORS
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `TESSITURE_PUBLIC_HOSTNAME` | `tess.indecisivephysicist.space` | **Yes** | Public hostname; must match your Caddyfile site block and DNS |
+| `TESSITURE_CORS_ORIGINS` | `https://voice.example.com` | **Yes** | Allowed CORS origins, comma-separated |
+
+### Vocal Separation
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `TESSITURE_VOCAL_SEPARATION` | `auto` | No | `auto` enables Demucs if GPU is available; `disabled` skips separation |
+
+### Release Metadata
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `TESSITURE_RELEASE_VERSION` | _(set by `one-shot.sh`)_ | No | Semantic version string injected at deploy time; synced from `.release-version` |
+
+### Authentik (Optional, Disabled by Default)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AUTHENTIK_FORWARD_AUTH_ENABLED` | `false` | Enable Authentik forward auth in Caddy |
+| `AUTHENTIK_OUTPOST_ROUTE_ENABLED` | `false` | Enable Authentik outpost route in Caddy |
+| `AUTHENTIK_DOMAIN` | `auth.example.com` | Authentik domain |
+| `AUTHENTIK_OUTPOST_URL` | `http://authentik-proxy:9000` | Authentik outpost URL |
+| `AUTHENTIK_FORWARD_AUTH_URI` | `/outpost.goauthentik.io/auth/caddy` | Forward auth URI |
+| `AUTHENTIK_OUTPOST_PATH_PREFIX` | `/outpost.goauthentik.io` | Outpost path prefix |
+
+---
+
+## 6. Build System
+
+### Overview
+
+[`deploy/scripts/build.sh`](../deploy/scripts/build.sh) is the core build script. It:
+
+1. Reads `TESSITURE_IMAGE` from `deploy/.env` (or accepts `--image` override)
+2. Computes the next semantic version using the configured bump strategy
+3. Builds the Docker image with `VITE_APP_VERSION` injected as a build arg (for frontend version display)
+4. Optionally pushes the image to a registry (`--push`)
+5. Writes the new version to `.release-version` in the repo root
+6. Updates `TESSITURE_IMAGE` in `deploy/.env` to the new versioned tag
+7. Creates an annotated git tag `v{version}` (e.g., `v1.3.0`)
+
+### Versioning Strategy
+
+The default strategy is `VERSION_BUMP=auto`. The script scans git commit subjects since the last `v*.*.*` tag and applies the highest-priority rule:
+
+| Commit pattern | Effective bump |
+|----------------|----------------|
+| Subject contains `BREAKING CHANGE`, or matches `type!:` / `type(scope)!:` | **major** |
+| Subject starts with `feat:` or `feat(scope):` | **minor** |
+| All other commits | **patch** |
+
+If no git history is available (e.g., shallow clone, no tags), the script falls back to a **patch** bump.
+
+### Version Bump Options
+
+| `VERSION_BUMP` value | Behavior |
+|----------------------|----------|
+| `auto` | Scan commits and apply highest-priority rule (default) |
+| `patch` | Always bump patch component |
+| `minor` | Always bump minor component, reset patch to 0 |
+| `major` | Always bump major component, reset minor and patch to 0 |
+| `none` | Do not bump; use existing image tag as-is |
+
+### Git Tagging
+
+After a successful build (when `VERSION_BUMP` is not `none`), the script creates an annotated git tag:
+
+```bash
+git tag -a v1.3.0 -m "Release v1.3.0"
+```
+
+To push tags to your remote:
+```bash
+git push --tags
+```
+
+To skip git tagging (useful for CI pipelines):
+```bash
+make build NO_GIT_TAG=1
+# or directly:
+deploy/scripts/build.sh --no-git-tag
+```
+
+### Release Version File
+
+After a successful build, the resolved version is written to `.release-version` in the repo root:
+
+```
+1.3.0
+```
+
+This file is read by:
+- `make build-frontend` — injects `VITE_APP_VERSION` for the frontend version display
+- `deploy/scripts/one-shot.sh` — syncs `TESSITURE_RELEASE_VERSION` into `deploy/.env`
+
+### Script Usage
+
+```bash
+# Default: auto-bump, read image from deploy/.env
+deploy/scripts/build.sh
+
+# Explicit image and version bump
+deploy/scripts/build.sh --image ghcr.io/acme/tessiture:latest --version-bump auto
+
+# Build, bump major, and push
+deploy/scripts/build.sh --image ghcr.io/acme/tessiture:1.4.2 --version-bump major --push
+
+# Skip git tagging
+deploy/scripts/build.sh --no-git-tag
+
+# All options
+deploy/scripts/build.sh \
+  --image ghcr.io/acme/tessiture:latest \
+  --version-bump auto \
+  --base-version 1.0.0 \
+  --env-file deploy/.env \
+  --push \
+  --no-git-tag
+```
+
+### `--base-version`
+
+When the current image tag is not a valid semver string (e.g., `latest`, `local`), the script uses `--base-version` (default: `0.0.0`) as the starting point for the bump calculation.
+
+---
+
+## 7. Deploy Script
+
+[`deploy/scripts/deploy.sh`](../deploy/scripts/deploy.sh) runs `docker compose up -d` using the image and configuration in `deploy/.env`.
+
+### What It Does
+
+1. Validates that `deploy/.env` and `deploy/docker-compose.yml` exist
+2. Reads `TESSITURE_IMAGE` from `deploy/.env` and verifies it is set
+3. Reads the four host paths (`UPLOAD`, `OUTPUT`, `JOBS`, `LOG`) and **auto-creates** any that do not exist
+4. Runs `docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d`
+5. Prints the current service status via `docker compose ps`
+
+### Script Usage
+
+```bash
+# Default: uses deploy/.env and deploy/docker-compose.yml
+deploy/scripts/deploy.sh
+
+# Override paths
+deploy/scripts/deploy.sh --env-file deploy/.env --compose-file deploy/docker-compose.yml
+
+# Run in attached mode (foreground, useful for debugging)
+deploy/scripts/deploy.sh --no-detach
 ```
 
 ---
 
-## 6. Caddy (LAN-Only)
+## 8. One-Shot Script (Primary Release)
 
-The active Caddyfile is located **outside** the repository at:
+[`deploy/scripts/one-shot.sh`](../deploy/scripts/one-shot.sh) orchestrates the full release pipeline:
+
+```
+Step 1/3: build image      (calls build.sh)
+Step 2/3: deploy stack     (calls deploy.sh)
+Step 3/3: verify health    (polls Docker healthcheck)
+```
+
+After the build step, `one-shot.sh` reads `.release-version` and syncs `TESSITURE_RELEASE_VERSION` into `deploy/.env` before deploying. This ensures the running container receives the correct version metadata.
+
+### Health Verification
+
+The script polls the container's Docker healthcheck status for up to `--verify-timeout` seconds (default: 120). If the container does not reach `healthy` within the timeout, the script exits with an error.
+
+If no healthcheck is configured, the script passes as long as the container is in `running` state.
+
+### Script Usage
+
+```bash
+# Default: auto-bump, uses deploy/.env
+deploy/scripts/one-shot.sh
+
+# Explicit version bump
+deploy/scripts/one-shot.sh --version-bump minor
+
+# Build, push, and deploy
+deploy/scripts/one-shot.sh --image ghcr.io/acme/tessiture:latest --push
+
+# Extend health verification timeout
+deploy/scripts/one-shot.sh --verify-timeout 180
+```
+
+> **Prefer `make release` over calling `one-shot.sh` directly.** The Makefile target passes all standard arguments correctly.
+
+---
+
+## 9. Makefile Reference
+
+The `Makefile` is the primary interface for all build and deploy operations. Run `make help` to see all targets.
+
+### All Targets
+
+| Target | Description |
+|--------|-------------|
+| `make help` | Show all targets (default) |
+| `make install` | Install Python runtime deps into `.venv/` |
+| `make install-dev` | Install Python runtime + dev deps into `.venv/` |
+| `make test` | Run pytest |
+| `make lint` | Run ruff lint checks |
+| `make format` | Run black formatting |
+| `make typecheck` | Run mypy type checks |
+| `make run-api` | Start uvicorn dev server |
+| `make run-frontend` | Start Vite frontend dev server |
+| `make build-frontend` | Build frontend assets (injects version from `.release-version`) |
+| `make build` | Build Docker image with semver bump |
+| `make build-push` | Build and push image to registry |
+| `make deploy` | Deploy compose stack |
+| `make release` | **Full release: build → deploy → verify** (primary command) |
+| `make tag` | Re-tag current version in git without rebuilding |
+| `make clean` | Remove build artifacts |
+
+**Deprecated aliases** (still functional, emit a deprecation notice):
+
+| Deprecated | Use instead |
+|------------|-------------|
+| `make unraid-build` | `make build` |
+| `make unraid-build-push` | `make build-push` |
+| `make unraid-deploy` | `make deploy` |
+| `make unraid-one-shot` | `make release` |
+
+### Makefile Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VERSION_BUMP` | `auto` | Version bump strategy: `auto\|patch\|minor\|major\|none` |
+| `BASE_VERSION` | `0.0.0` | Fallback version when image tag is not semver |
+| `IMAGE` | _(from `deploy/.env`)_ | Override Docker image repo/tag |
+| `ENV_FILE` | `deploy/.env` | Path to environment file |
+| `COMPOSE_FILE` | `deploy/docker-compose.yml` | Path to compose file |
+| `NO_GIT_TAG` | _(unset)_ | Set to `1` to skip git tagging |
+
+### Examples
+
+```bash
+# Full release with auto version bump (most common)
+make release
+
+# Full release with explicit minor bump
+make release VERSION_BUMP=minor
+
+# Build only, no deploy
+make build
+
+# Build and push to a registry
+make build-push IMAGE=ghcr.io/yourorg/tessiture
+
+# Deploy only (uses image already set in deploy/.env)
+make deploy
+
+# Build without creating a git tag
+make build NO_GIT_TAG=1
+
+# Re-tag the current version in git without rebuilding
+make tag
+```
+
+---
+
+## 10. Networking
+
+### Container Networks
+
+The container joins two Docker networks:
+
+| Network | Type | Purpose |
+|---------|------|---------|
+| `tessiture_internal` | Bridge (internal) | Isolated internal network; no external routing |
+| `caddy_proxy` | External (pre-existing) | Shared network for Caddy reverse proxy routing |
+
+The `caddy_proxy` network **must pre-exist** before deploying. It is created by your Caddy stack. If it does not exist, `docker compose up` will fail.
+
+### Host Port Binding
+
+The container also binds to the host loopback:
+
+```
+127.0.0.1:{TESSITURE_LAN_BIND_PORT} → container:{TESSITURE_PORT}
+```
+
+This allows host-network processes (e.g., a cloudflared daemon running directly on the Unraid host) to reach Tessiture without joining the Docker network.
+
+### Caddy Configuration
+
+The active Caddyfile is located **outside** this repository:
 
 ```
 /mnt/user/appdata/caddy/Caddyfile
 ```
 
-Caddy is used only for LAN-local debugging. It is **not** part of the internet ingress path. Any edits must be made directly to the external file.
+Any Caddy routing changes must be made directly to that file. Validate syntax before restarting Caddy. The Caddyfile is not tracked in this repository — call out any external-file changes in your deployment notes.
+
+A typical Caddy site block for Tessiture routes by hostname to the container via the `caddy_proxy` network:
+
+```caddy
+tess.indecisivephysicist.space {
+    reverse_proxy tessiture:{TESSITURE_PORT}
+}
+```
+
+### Cloudflare Tunnel
+
+Cloudflare Tunnel is external and shared — it is not deployed by this stack. Point your existing tunnel ingress at either:
+
+- `http://127.0.0.1:{TESSITURE_LAN_BIND_PORT}` (if cloudflared runs on the host network), or
+- `http://tessiture:{TESSITURE_PORT}` (if cloudflared is a container on the `caddy_proxy` network)
 
 ---
 
-## 7. Versioning and Release Metadata
+## 11. Updating / Re-deploying
 
-### Canonical Source
+### Day-to-Day Release
 
-- Release version file: `/.release-version` at repo root
-- Generated by `deploy/unraid/scripts/build.sh` when a semantic version is resolved
+```bash
+# Most common: full release with auto version bump
+make release
 
-### Frontend Version Display
+# With explicit bump type
+make release VERSION_BUMP=minor
 
-- Injected at build time via `VITE_APP_VERSION` (Docker build arg/env path and Makefile `build-frontend` path)
-- Frontend UI displays it only when the value is semantic (`x.y.z`)
+# After release, push git tags to remote
+git push --tags
+```
 
-### Deployment Metadata Flow
+### Deploy Only (No Rebuild)
 
-1. `build.sh` resolves version → writes `/.release-version`
-2. `one-shot.sh` reads `/.release-version` → syncs as `TESSITURE_RELEASE_VERSION` in deploy env
-3. `TESSITURE_IMAGE` remains the deployment image source-of-truth for compose deploys
+If you have already built and pushed an image and just need to redeploy:
 
-### Semantic Versioning
+```bash
+# Ensure TESSITURE_IMAGE in deploy/.env points to the desired image
+make deploy
+```
 
-| Version | Codename | Description |
-|---------|----------|-------------|
-| v0.x | **Ash** | Experimental development releases |
-| v1.x | **Tessa** | First official release line |
+### Rollback
+
+1. Edit `deploy/.env` and set `TESSITURE_IMAGE` back to the previous stable tag
+2. Redeploy: `make deploy`
+3. Verify: `docker ps` and run a smoke test
 
 ---
 
-## 8. Deployment Checklist
+## 12. Deployment Checklist
 
 ### Pre-Flight
 
-- [ ] Confirm `deploy/unraid/docker-compose.yml` is unchanged/valid
-- [ ] Confirm `.env.unraid` matches the template shape in `.env.unraid.example`
-- [ ] Confirm CORS origins include your public hostname and any LAN hostname
-- [ ] Confirm Cloudflare Tunnel is external and ingress target is the Tessiture service
+- [ ] `deploy/.env` exists and matches the shape of `deploy/.env.example`
+- [ ] `TESSITURE_IMAGE` is set to the target image tag
+- [ ] `TESSITURE_CORS_ORIGINS` includes your public hostname and any LAN hostname
+- [ ] `TESSITURE_PUBLIC_HOSTNAME` matches your Caddyfile site block and DNS
+- [ ] `caddy_proxy` Docker network exists on the host
 
 ### Build Quality Gate
 
 - [ ] Run backend checks: `make test`, `make lint`, `make typecheck`
 - [ ] If frontend changed: `cd frontend && npm run test && npm run build`
-- [ ] Build the container image for this commit
-- [ ] Tag image with an immutable version
 
-### Publish
+### Release
 
-- [ ] Push the new image tag to your registry
-- [ ] Record previous stable tag and new candidate tag
-
-### Deploy
-
-- [ ] Update only the image tag in `.env.unraid`
-- [ ] Redeploy stack
-- [ ] Verify container restart policy, healthcheck state, and mounted paths
+- [ ] Run `make release` (or `make release VERSION_BUMP=minor|major` as appropriate)
+- [ ] Confirm `.release-version` was written with the expected version
+- [ ] Confirm `TESSITURE_IMAGE` in `deploy/.env` was updated to the new versioned tag
+- [ ] Confirm git tag was created: `git tag --list 'v*' | tail -5`
+- [ ] Push tags to remote: `git push --tags`
 
 ### Smoke Test
 
-- [ ] Open app UI and submit a small audio file
+- [ ] Open the app UI and submit a small audio file
 - [ ] Verify full API flow: analyze → status polling → results download (JSON/CSV/PDF)
-- [ ] Verify uploads/outputs are written to expected mounted directories
+- [ ] Verify uploads and outputs are written to the configured host paths
 - [ ] Check logs for CORS errors, 4xx spikes, or worker exceptions
 
 ### External Validation
 
 - [ ] Confirm public hostname resolves and serves the updated version
-- [ ] Confirm no router port-forwarding is required/active
-- [ ] Confirm Caddy remains LAN-only
+- [ ] Confirm Caddy is routing correctly (check `/mnt/user/appdata/caddy/Caddyfile`)
+- [ ] Confirm no unexpected internet exposure (Caddy remains the only ingress)
 
 ### Stabilization
 
 - [ ] Monitor for 15–30 minutes: error rate, restart count, request latency, disk growth
 
-### Rollback (If Needed)
-
-1. Revert `.env.unraid` image tag to previous stable
-2. Redeploy stack
-3. Re-run smoke test
-4. If needed, temporarily pin Cloudflare ingress back to known-good target
-
-### End-of-Cycle Hygiene
-
-- [ ] Keep only a small number of recent image tags on Unraid
-- [ ] Document what changed, deployed tag, validation result, and rollback tag
-
-**Fast daily mini-checklist:** Build/test → tag/push → update tag in stack → redeploy → smoke test → monitor → done.
-
 ---
 
-## 9. Migration / Cutover Runbook
+## 13. Troubleshooting
 
-### Parallel Route Test (No DNS Cutover)
+### Container not starting or not healthy
 
-1. In your shared Cloudflare Tunnel, add a temporary public hostname targeting `http://tessiture:8000`
-2. Keep existing production route active
-3. Validate temporary hostname:
-   - `POST /analyze` returns job ID
-   - `GET /status/{job_id}` reaches `completed`
-   - `GET /results/{job_id}?format=json|csv|pdf` returns expected artifacts
+```bash
+# Check container status
+docker ps -a --filter name=tessiture
 
-### Cutover
+# Check container logs
+docker logs tessiture
 
-1. Update the primary public hostname route to `http://tessiture:8000`
-2. Keep TTL low during change window
-3. Confirm active traffic uses the new route
+# Check healthcheck history
+docker inspect tessiture --format '{{json .State.Health}}' | python3 -m json.tool
+```
 
-### Rollback
+**Common causes:**
+- `TESSITURE_IMAGE` in `deploy/.env` points to an image that does not exist locally or in the registry
+- A required host path does not exist and could not be created (permissions issue)
+- The `caddy_proxy` network does not exist — create it or deploy your Caddy stack first
 
-1. Re-point the Cloudflare hostname back to the prior origin
-2. If needed, stop the new stack: `docker compose -f docker-compose.yml --env-file .env.unraid down`
-3. Confirm old route serves traffic normally
+### `caddy_proxy` network not found
 
----
+```bash
+# Check if the network exists
+docker network ls | grep caddy
 
-## 10. Validation Checklist
+# Create it manually if needed (Caddy stack should normally create it)
+docker network create caddy-proxy
+```
 
-- [ ] `docker ps` shows `tessiture` healthy/running
-- [ ] Shared `cloudflared` container remains healthy/running outside this stack
-- [ ] Shared tunnel ingress points to `http://tessiture:8000`
-- [ ] Uploads write to configured Unraid uploads path
-- [ ] JSON/CSV/PDF outputs write to configured Unraid outputs path
-- [ ] Browser/API clients succeed from allowed CORS origins
-- [ ] Rate limiting and max upload settings match expected policy
-- [ ] No internet traffic is routed through Caddy
+### Missing or empty `TESSITURE_IMAGE`
+
+`deploy.sh` will exit with an error if `TESSITURE_IMAGE` is not set in `deploy/.env`. Ensure you have:
+1. Copied `deploy/.env.example` to `deploy/.env`
+2. Set `TESSITURE_IMAGE` to a valid image tag
+3. Run `make build` at least once (which auto-updates `TESSITURE_IMAGE` to the versioned tag)
+
+### Docker socket not accessible
+
+If running `build.sh` or `one-shot.sh` from inside a container, the Docker socket must be mounted:
+
+```yaml
+volumes:
+  - /var/run/docker.sock:/var/run/docker.sock
+```
+
+The scripts detect whether they are running inside a container and emit a specific error message if the socket is missing.
+
+### Version bump produces unexpected result
+
+Check the git log since the last version tag:
+
+```bash
+# See the last semver tag
+git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname | head -5
+
+# See commits since that tag
+git log v1.2.3..HEAD --pretty=%s
+```
+
+The auto-bump algorithm scans commit subjects for `BREAKING CHANGE`, `type!:`, `feat:`, etc. If the bump is unexpected, check whether commit messages match the expected conventional commit format.
+
+### CORS errors in browser
+
+Ensure `TESSITURE_CORS_ORIGINS` in `deploy/.env` includes the exact origin (scheme + hostname + port) that the browser is using. Restart the container after changing this value:
+
+```bash
+make deploy
+```
+
+### Uploads or outputs not persisting
+
+Verify the host paths are correctly set and mounted:
+
+```bash
+# Check what is mounted
+docker inspect tessiture --format '{{json .Mounts}}' | python3 -m json.tool
+
+# Verify the host paths exist and are writable
+ls -la /mnt/user/appdata/tessiture/
+```
+
+### Checking the running version
+
+```bash
+# From the release version file
+cat .release-version
+
+# From the running container's environment
+docker exec tessiture env | grep TESSITURE_RELEASE_VERSION
+
+# From the API
+curl http://127.0.0.1:8000/health
+```

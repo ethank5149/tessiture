@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 DEFAULT_IMAGE="tessiture:local"
 IMAGE="${DEFAULT_IMAGE}"
@@ -13,10 +13,11 @@ BASE_VERSION="0.0.0"
 ENV_FILE=""
 RELEASE_VERSION_FILE="${REPO_ROOT}/.release-version"
 RELEASE_VERSION=""
+NO_GIT_TAG=0
 
 usage() {
   cat <<'EOF'
-Usage: deploy/unraid/scripts/build.sh [OPTIONS]
+Usage: deploy/scripts/build.sh [OPTIONS]
 
 Build the Tessiture Docker image from the repository root.
 
@@ -26,12 +27,14 @@ Options:
   --version-bump <kind>    Version strategy: auto|patch|minor|major|none (default: auto)
   --base-version <x.y.z>   Base version when current image tag is not semantic (default: 0.0.0)
   --env-file <path>        Optional env file to read/update TESSITURE_IMAGE
+  --no-git-tag             Skip creating a git tag after successful build
   -h, --help               Show this help message
 
 Examples:
-  deploy/unraid/scripts/build.sh
-  deploy/unraid/scripts/build.sh --image ghcr.io/acme/tessiture:latest --version-bump auto
-  deploy/unraid/scripts/build.sh --image ghcr.io/acme/tessiture:1.4.2 --version-bump major --push
+  deploy/scripts/build.sh
+  deploy/scripts/build.sh --image ghcr.io/acme/tessiture:latest --version-bump auto
+  deploy/scripts/build.sh --image ghcr.io/acme/tessiture:1.4.2 --version-bump major --push
+  deploy/scripts/build.sh --no-git-tag
 EOF
 }
 
@@ -175,7 +178,12 @@ detect_auto_bump() {
   fi
 
   subjects="$(git -C "${REPO_ROOT}" log --pretty=%s ${range} 2>/dev/null || true)"
-  if [[ -n "${subjects}" ]] && grep -qiE '(^feat(\(.+\))?:)|(^feature(\(.+\))?:)' <<<"${subjects}"; then
+
+  # Check for breaking changes first (highest priority → major bump)
+  if [[ -n "${subjects}" ]] && grep -qiE '(BREAKING CHANGE)|(^[a-z]+(\([^)]+\))?!:)' <<<"${subjects}"; then
+    printf 'major\n'
+  # Check for feature commits → minor bump
+  elif [[ -n "${subjects}" ]] && grep -qiE '(^feat(\(.+\))?:)|(^feature(\(.+\))?:)' <<<"${subjects}"; then
     printf 'minor\n'
   else
     printf 'patch\n'
@@ -220,6 +228,34 @@ clear_release_version_file() {
   fi
 }
 
+git_tag_release() {
+  local version="$1"
+  local tag="v${version}"
+
+  if [[ "${NO_GIT_TAG}" -eq 1 ]]; then
+    log "Skipping git tag (--no-git-tag)"
+    return
+  fi
+
+  if ! command -v git >/dev/null 2>&1; then
+    log "WARNING: git not available; skipping release tag ${tag}"
+    return
+  fi
+
+  if ! git -C "${REPO_ROOT}" rev-parse --git-dir >/dev/null 2>&1; then
+    log "WARNING: not inside a git repository; skipping release tag ${tag}"
+    return
+  fi
+
+  if git -C "${REPO_ROOT}" tag --list "${tag}" | grep -q "^${tag}$"; then
+    log "Tag ${tag} already exists; skipping"
+    return
+  fi
+
+  git -C "${REPO_ROOT}" tag -a "${tag}" -m "Release ${tag}"
+  log "Tagged release: ${tag}"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --image)
@@ -246,6 +282,10 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || die "Missing value for --env-file"
       ENV_FILE="$(resolve_path "$2")"
       shift 2
+      ;;
+    --no-git-tag)
+      NO_GIT_TAG=1
+      shift
       ;;
     -h|--help)
       usage
@@ -354,6 +394,11 @@ if [[ -n "${RELEASE_VERSION}" ]]; then
   write_release_version_file "${RELEASE_VERSION}"
 else
   clear_release_version_file
+fi
+
+# Tag the release in git after successful build and version file write
+if [[ "${VERSION_BUMP}" != "none" && -n "${RELEASE_VERSION}" ]]; then
+  git_tag_release "${RELEASE_VERSION}"
 fi
 
 IMAGE_ID="$(docker image inspect --format '{{.Id}}' "${IMAGE}" 2>/dev/null || true)"
