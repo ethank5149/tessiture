@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from api import job_manager
 from api import api_router as main_routes
 from api.server import app
+from api import utils as _api_utils
 
 
 def _reset_job_state() -> None:
@@ -19,6 +20,8 @@ def _reset_job_state() -> None:
             task.cancel()
     job_manager._tasks.clear()
     job_manager._jobs.clear()
+    # Reset rate-limit buckets so tests don't bleed 429s into each other
+    _api_utils._RATE_LIMIT_BUCKETS.clear()
 
 
 def _wait_for_completion(client: TestClient, job_id: str, timeout_s: float = 3.0) -> dict:
