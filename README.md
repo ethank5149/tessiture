@@ -89,10 +89,3 @@ Semantic versioning (`MAJOR.MINOR.PATCH`).
 |---------|----------|-------------|
 | v0.x | **Ash** | Experimental development releases |
 | v1.x | **Tessa** | First official release line |
-
----
-
-## Dataset Conventions
-
-- `REFERENCE_DATASET` — calibration data with known ground truth
-- `TESSA_DATASET` — real-world evaluation data
