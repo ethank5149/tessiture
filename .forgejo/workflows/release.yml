@@ -15,7 +15,6 @@ on:
           - auto
           - patch
           - minor
-          - major
           - none
 
 jobs:
@@ -61,9 +60,9 @@ jobs:
 
   build-and-deploy:
     name: Build and Deploy
-    runs-on: self-hosted
+    runs-on: docker
     needs: test
-    if: github.ref == 'refs/heads/main'
+    if: gitea.ref == 'refs/heads/main'
 
     steps:
       - name: Checkout repository
@@ -75,7 +74,7 @@ jobs:
         shell: bash
         run: |
           git config user.name "Forgejo Actions"
-          git config user.email "actions@forgejo"
+          git config user.email "actions@forgejo.local"
 
       - name: Write deploy/.env from secret
         shell: bash
@@ -83,15 +82,41 @@ jobs:
           mkdir -p deploy
           echo "${{ secrets.TESSITURE_ENV }}" > deploy/.env
 
+      - name: Set image reference in deploy/.env
+        shell: bash
+        run: |
+          REGISTRY=$(echo "${{ gitea.server_url }}" | sed 's|https://||' | sed 's|http://||')
+          IMAGE="${REGISTRY}/${{ gitea.repository }}:latest"
+          # Update or append TESSITURE_IMAGE in deploy/.env
+          if grep -q '^TESSITURE_IMAGE=' deploy/.env; then
+            sed -i "s|^TESSITURE_IMAGE=.*|TESSITURE_IMAGE=${IMAGE}|" deploy/.env
+          else
+            echo "TESSITURE_IMAGE=${IMAGE}" >> deploy/.env
+          fi
+          echo "Set TESSITURE_IMAGE=${IMAGE}"
+
+      - name: Make scripts executable
+        shell: bash
+        run: chmod +x deploy/scripts/build.sh deploy/scripts/deploy.sh
+
+      - name: Log in to Forgejo container registry
+        shell: bash
+        run: |
+          REGISTRY=$(echo "${{ gitea.server_url }}" | sed 's|https://||' | sed 's|http://||')
+          echo "${{ gitea.token }}" | docker login "${REGISTRY}" --username "${{ gitea.repository_owner }}" --password-stdin
+
       - name: Build Docker image
+        timeout-minutes: 30
         shell: bash
         run: |
           deploy/scripts/build.sh \
-            --version-bump ${{ inputs.version_bump || 'auto' }} \
+            --version-bump "${{ inputs.version_bump || 'auto' }}" \
             --env-file deploy/.env \
-            --no-git-tag
+            --no-git-tag \
+            --push
 
       - name: Deploy stack
+        timeout-minutes: 10
         shell: bash
         run: |
           deploy/scripts/deploy.sh \
@@ -101,50 +126,36 @@ jobs:
       - name: Verify deployment
         shell: bash
         run: |
-          CONTAINER_ID="$(docker ps -q --filter "name=^/tessiture$" | head -n1 || true)"
-          if [[ -z "${CONTAINER_ID}" ]]; then
-            echo "ERROR: Container 'tessiture' is not running after deploy" >&2
-            exit 1
-          fi
-
-          STATUS="$(docker inspect --format '{{.State.Status}}' "${CONTAINER_ID}")"
-          if [[ "${STATUS}" != "running" ]]; then
-            echo "ERROR: Container is not running (status=${STATUS})" >&2
-            exit 1
-          fi
-
-          HEALTH_STATUS="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "${CONTAINER_ID}")"
-          if [[ "${HEALTH_STATUS}" == "none" ]]; then
-            echo "Healthcheck not configured; running-state verification passed"
-          else
-            TIMEOUT=120
-            START_TIME="$(date +%s)"
-            while [[ "${HEALTH_STATUS}" == "starting" ]]; do
-              NOW="$(date +%s)"
-              if (( NOW - START_TIME > TIMEOUT )); then
-                echo "ERROR: Timed out waiting for healthy status after ${TIMEOUT}s" >&2
-                exit 1
-              fi
-              sleep 2
-              HEALTH_STATUS="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "${CONTAINER_ID}")"
-            done
-            if [[ "${HEALTH_STATUS}" != "healthy" ]]; then
-              echo "ERROR: Healthcheck status is '${HEALTH_STATUS}'" >&2
+          echo "Waiting for container 'tessiture' to be running..."
+          TIMEOUT=120
+          INTERVAL=10
+          ELAPSED=0
+          while true; do
+            STATUS=$(docker inspect --format '{{.State.Health.Status}}' tessiture 2>/dev/null || echo "missing")
+            if [[ "${STATUS}" == "healthy" ]]; then
+              echo "Container 'tessiture' is running"
+              break
+            fi
+            if (( ELAPSED >= TIMEOUT )); then
+              echo "ERROR: Deployment health check timed out after ${TIMEOUT}s (last status: ${STATUS})" >&2
+              docker ps
               exit 1
             fi
-            echo "Container healthcheck reports healthy"
-          fi
+            echo "Not yet running (${ELAPSED}s elapsed); retrying in ${INTERVAL}s..."
+            sleep "${INTERVAL}"
+            ELAPSED=$(( ELAPSED + INTERVAL ))
+          done
 
       - name: Read release version
         id: version
         shell: bash
         run: |
-          if [[ ! -f .release-version ]]; then
+          if [[ ! -f deploy/.release-version ]]; then
             echo "ERROR: .release-version not found after build" >&2
             exit 1
           fi
-          VERSION="$(tr -d '[:space:]' < .release-version)"
-          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          VERSION="$(tr -d '[:space:]' < deploy/.release-version)"
+          echo "version=${VERSION}" >> "${GITEA_OUTPUT}"
           echo "Release version: ${VERSION}"
 
       - name: Create and push git tag
@@ -153,7 +164,7 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           TAG="v${VERSION}"
           if git rev-parse "${TAG}" >/dev/null 2>&1; then
-            echo "Tag ${TAG} already exists; skipping tag creation"
+            echo "Tag ${TAG} already exists, skipping"
           else
             git tag -a "${TAG}" -m "Release ${TAG}"
             git push origin "${TAG}"
@@ -167,8 +178,14 @@ jobs:
           echo "========================================"
           echo "  Tessiture Release Summary"
           echo "========================================"
-          echo "  Version : v${VERSION}"
-          echo "  Branch  : ${{ github.ref_name }}"
-          echo "  Commit  : ${{ github.sha }}"
-          echo "  Trigger : ${{ github.event_name }}"
+          echo "  Version   : v${VERSION}"
+          echo "  Image     : $(grep TESSITURE_IMAGE deploy/.env | cut -d= -f2-)"
+          echo "  Timestamp : $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
           echo "========================================"
+
+      - name: Log out of container registry
+        if: always()
+        shell: bash
+        run: |
+          REGISTRY=$(echo "${{ gitea.server_url }}" | sed 's|https://||' | sed 's|http://||')
+          docker logout "${REGISTRY}" || true
