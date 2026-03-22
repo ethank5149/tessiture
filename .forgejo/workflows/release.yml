@@ -25,14 +25,13 @@ jobs:
 
     steps:
       - name: Checkout repository
-        env:
-          GIT_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          git config --global credential.helper store
-          REGISTRY_HOST=$(echo "${{ github.server_url }}" | sed 's|https://||' | sed 's|http://||')
-          echo "https://oauth2:${GIT_TOKEN}@${REGISTRY_HOST}" > ~/.git-credentials
-          git clone "${{ github.server_url }}/${{ github.repository }}.git" .
+          SERVER="${{ github.server_url }}"
+          REPO="${{ github.repository }}"
+          TOKEN="${{ github.token }}"
+          AUTH_URL=$(echo "${SERVER}" | sed "s|://|://oauth2:${TOKEN}@|")
+          git clone "${AUTH_URL}/${REPO}.git" .
           git fetch --tags
 
       - name: Install Node.js 20
@@ -73,15 +72,14 @@ jobs:
 
     steps:
       - name: Checkout repository
-        env:
-          GIT_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          # Configure git to use the token for this server
-          git config --global credential.helper store
-          REGISTRY_HOST=$(echo "${{ github.server_url }}" | sed 's|https://||' | sed 's|http://||')
-          echo "https://oauth2:${GIT_TOKEN}@${REGISTRY_HOST}" > ~/.git-credentials
-          git clone "${{ github.server_url }}/${{ github.repository }}.git" .
+          SERVER="${{ github.server_url }}"
+          REPO="${{ github.repository }}"
+          TOKEN="${{ github.token }}"
+          # Embed token in clone URL so origin remote has auth for git push later
+          AUTH_URL=$(echo "${SERVER}" | sed "s|://|://oauth2:${TOKEN}@|")
+          git clone "${AUTH_URL}/${REPO}.git" .
           git fetch --tags
 
       - name: Configure git identity for tagging
