@@ -12,6 +12,7 @@ jobs:
   test:
     name: Test
     runs-on: docker
+    container: node:20-bookworm
 
     steps:
       - name: Checkout repository
