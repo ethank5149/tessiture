@@ -16,9 +16,15 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+        env:
+          GITEA_TOKEN: ${{ gitea.token }}
+        shell: bash
+        run: |
+          git config --global credential.helper store
+          REGISTRY_HOST=$(echo "${{ gitea.server_url }}" | sed 's|https://||' | sed 's|http://||')
+          echo "https://oauth2:${GITEA_TOKEN}@${REGISTRY_HOST}" > ~/.git-credentials
+          git clone "${{ gitea.server_url }}/${{ gitea.repository }}.git" .
+          git fetch --tags
 
       - name: Install Node.js 20
         shell: bash
