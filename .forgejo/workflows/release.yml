@@ -108,9 +108,9 @@ jobs:
       - name: Set image reference in deploy/.env
         shell: bash
         run: |
-          # Use the LAN IP for the Forgejo registry (HTTP on port 1003).
-          # Tailscale handles HTTPS externally; internal access is HTTP.
-          REGISTRY=$(echo "${{ github.server_url }}" | sed 's|https://||' | sed 's|http://||')
+          # Use the Tailscale FQDN for the registry — auth tokens are issued for this hostname
+          # and blob uploads must go to the same host. The runner resolves it via /etc/hosts.
+          REGISTRY="forgejo.dojo-diminished.ts.net"
           IMAGE="${REGISTRY}/${{ github.repository }}:latest"
           if grep -q '^TESSITURE_IMAGE=' deploy/.env; then
             sed -i "s|^TESSITURE_IMAGE=.*|TESSITURE_IMAGE=${IMAGE}|" deploy/.env
@@ -123,16 +123,13 @@ jobs:
       - name: Add Forgejo hostname to /etc/hosts
         shell: bash
         run: |
-          # The Forgejo registry redirects auth token requests to its configured external URL
-          # (forgejo.dojo-diminished.ts.net) over HTTPS (port 443). This is handled by Tailscale,
-          # so we must map the hostname to the Tailscale IP (not the LAN IP, which only serves
-          # HTTP on port 1003).
+          # Map the Tailscale FQDN to the Tailscale IP so the runner can reach it.
+          # Tailscale handles HTTPS (port 443) and proxies to Forgejo's HTTP port 1003.
           FORGEJO_FQDN="forgejo.dojo-diminished.ts.net"
           TAILSCALE_IP="100.95.62.8"
           echo "${TAILSCALE_IP} ${FORGEJO_FQDN}" >> /etc/hosts
           echo "Added ${TAILSCALE_IP} ${FORGEJO_FQDN} to /etc/hosts"
-          # Verify connectivity to the Tailscale IP
-          curl -sf --max-time 5 "https://${FORGEJO_FQDN}/v2/" -o /dev/null && echo "HTTPS OK" || echo "HTTPS check failed (may still work for auth)"
+          curl -sf --max-time 5 "https://${FORGEJO_FQDN}/v2/" -o /dev/null && echo "HTTPS reachable" || echo "HTTPS check failed"
 
       - name: Make scripts executable
         shell: bash
