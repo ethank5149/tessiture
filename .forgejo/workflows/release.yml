@@ -120,6 +120,18 @@ jobs:
           echo "Set TESSITURE_IMAGE=${IMAGE}"
           echo "REGISTRY=${REGISTRY}" >> "${GITHUB_ENV}"
 
+      - name: Add Forgejo hostname to /etc/hosts
+        shell: bash
+        run: |
+          # The Forgejo registry redirects auth token requests to its configured external URL
+          # (forgejo.dojo-diminished.ts.net). The runner container can't resolve Tailscale
+          # hostnames, so we add the LAN IP to /etc/hosts.
+          LAN_IP=$(echo "${REGISTRY}" | cut -d: -f1)
+          FORGEJO_FQDN="forgejo.dojo-diminished.ts.net"
+          echo "${LAN_IP} ${FORGEJO_FQDN}" >> /etc/hosts
+          echo "Added ${LAN_IP} ${FORGEJO_FQDN} to /etc/hosts"
+          cat /etc/hosts | grep "${FORGEJO_FQDN}"
+
       - name: Make scripts executable
         shell: bash
         run: chmod +x deploy/scripts/build.sh deploy/scripts/deploy.sh
