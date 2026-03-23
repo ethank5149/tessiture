@@ -48,7 +48,7 @@ jobs:
           node --version
           npm --version
 
-      - name: Cache pip packages
+      - name: Restore pip cache (from previous run)
         shell: bash
         run: |
           FORGEJO_URL="http://forgejo"
@@ -65,7 +65,7 @@ jobs:
             fi
           fi
 
-      - name: Cache npm packages
+      - name: Restore npm cache (from previous run)
         shell: bash
         run: |
           FORGEJO_URL="http://forgejo"
@@ -86,6 +86,25 @@ jobs:
         shell: bash
         run: pip install -r requirements.txt
 
+      - name: Save pip cache (for future runs)
+        if: always()
+        shell: bash
+        run: |
+          FORGEJO_URL="http://forgejo"
+          CACHE_KEY="pip-${{ hashFiles('requirements.txt', 'pyproject.toml') }}"
+          CACHE_DIR="~/.cache/pip"
+          
+          # Create cache archive if cache directory exists and has content
+          if [ -d "$CACHE_DIR" ] && [ "$(ls -A $CACHE_DIR 2>/dev/null)" ]; then
+            tar -czf /tmp/cache.tar.gz -C "$CACHE_DIR" . 2>/dev/null
+            curl -s -X POST -H "Authorization: Bearer ${{ github.token }}" \
+              -H "Content-Type: application/json" \
+              "$FORGEJO_URL/api/v1/actions/caches" \
+              -d "{\"key\": \"$CACHE_KEY\", \"architecture\": \"linux/amd64\"}" \
+              -w "\nCache save status: %{http_code}\n" || true
+            echo "Cache saved for $CACHE_KEY"
+          fi
+
       - name: Run backend tests
         shell: bash
         run: python -m pytest tests/ -q --tb=short
@@ -101,6 +120,25 @@ jobs:
       - name: Build frontend
         shell: bash
         run: cd frontend && npm run build
+
+      - name: Save npm cache (for future runs)
+        if: always()
+        shell: bash
+        run: |
+          FORGEJO_URL="http://forgejo"
+          CACHE_KEY="npm-${{ hashFiles('frontend/package-lock.json') }}"
+          CACHE_DIR="~/.npm"
+          
+          # Create cache archive if cache directory exists and has content
+          if [ -d "$CACHE_DIR" ] && [ "$(ls -A $CACHE_DIR 2>/dev/null)" ]; then
+            tar -czf /tmp/cache.tar.gz -C "$CACHE_DIR" . 2>/dev/null
+            curl -s -X POST -H "Authorization: Bearer ${{ github.token }}" \
+              -H "Content-Type: application/json" \
+              "$FORGEJO_URL/api/v1/actions/caches" \
+              -d "{\"key\": \"$CACHE_KEY\", \"architecture\": \"linux/amd64\"}" \
+              -w "\nCache save status: %{http_code}\n" || true
+            echo "Cache saved for $CACHE_KEY"
+          fi
 
   build-and-deploy:
     name: Build and Deploy

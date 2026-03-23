@@ -40,7 +40,7 @@ jobs:
           node --version
           npm --version
 
-      - name: Cache pip packages
+      - name: Restore pip cache (from previous run)
         shell: bash
         run: |
           set -x
@@ -70,7 +70,7 @@ jobs:
             echo "No cache found"
           fi
 
-      - name: Cache npm packages
+      - name: Restore npm cache (from previous run)
         shell: bash
         run: |
           set -x
@@ -103,7 +103,7 @@ jobs:
           echo "=== pip install complete at $(date) ==="
           ls -la ~/.cache/pip/ 2>/dev/null || echo "No pip cache found"
 
-      - name: Save pip cache
+      - name: Save pip cache (for future runs)
         if: always()
         shell: bash
         run: |
@@ -136,7 +136,7 @@ jobs:
           echo "=== npm install complete at $(date) ==="
           ls -la ~/.npm/ 2>/dev/null || echo "No npm cache found"
 
-      - name: Save npm cache
+      - name: Save npm cache (for future runs)
         if: always()
         shell: bash
         run: |
