@@ -25,6 +25,7 @@ jobs:
     env:
       GITHUB_API_URL: http://forgejo/api/v1
       GITHUB_SERVER_URL: http://forgejo
+      ACTIONS_CACHE_URL: http://forgejo/api/v1
 
     steps:
       - name: Checkout repository
