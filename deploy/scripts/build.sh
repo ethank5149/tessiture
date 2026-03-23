@@ -14,6 +14,7 @@ ENV_FILE=""
 RELEASE_VERSION_FILE="${REPO_ROOT}/.release-version"
 RELEASE_VERSION=""
 NO_GIT_TAG=0
+CACHE_REF=""
 
 usage() {
   cat <<'EOF'
@@ -27,6 +28,7 @@ Options:
   --version-bump <kind>    Version strategy: auto|patch|minor|major|none (default: auto)
   --base-version <x.y.z>   Base version when current image tag is not semantic (default: 0.0.0)
   --env-file <path>        Optional env file to read/update TESSITURE_IMAGE
+  --cache-ref <tag>       Registry reference for BuildKit cache (e.g., registry/repo:buildcache)
   --no-git-tag             Skip creating a git tag after successful build
   -h, --help               Show this help message
 
@@ -82,6 +84,18 @@ docker_preflight() {
     fi
     die "Docker daemon is not reachable. Start Docker and retry."
   fi
+}
+
+setup_buildx() {
+  if ! docker buildx version >/dev/null 2>&1; then
+    log "WARNING: docker buildx not available; falling back to docker build (no registry cache)"
+    return 1
+  fi
+  docker buildx create --name tessiture-builder --driver docker-container --use 2>/dev/null \
+    || docker buildx use tessiture-builder 2>/dev/null \
+    || true
+  docker buildx inspect --bootstrap >/dev/null 2>&1 || true
+  return 0
 }
 
 resolve_path() {
@@ -284,6 +298,11 @@ while [[ $# -gt 0 ]]; do
       ENV_FILE="$(resolve_path "$2")"
       shift 2
       ;;
+    --cache-ref)
+      [[ $# -ge 2 ]] || die "Missing value for --cache-ref"
+      CACHE_REF="$2"
+      shift 2
+      ;;
     --no-git-tag)
       NO_GIT_TAG=1
       shift
@@ -365,25 +384,42 @@ fi
 log "Repository root: ${REPO_ROOT}"
 log "Building image: ${IMAGE}"
 
-BUILD_CMD=(docker build -t "${IMAGE}")
-if [[ -n "${RELEASE_VERSION}" ]]; then
-  BUILD_CMD+=(--build-arg "VITE_APP_VERSION=${RELEASE_VERSION}")
-  log "Injecting frontend release metadata: VITE_APP_VERSION=${RELEASE_VERSION}"
+USE_BUILDX=0
+if setup_buildx; then
+  USE_BUILDX=1
 fi
-if [[ -n "${LATEST_IMAGE}" && "${LATEST_IMAGE}" != "${IMAGE}" ]]; then
-  BUILD_CMD+=(-t "${LATEST_IMAGE}")
-  log "Also tagging: ${LATEST_IMAGE}"
-fi
-BUILD_CMD+=("${REPO_ROOT}")
-"${BUILD_CMD[@]}"
 
-if [[ "${PUSH}" -eq 1 ]]; then
-  log "Pushing image: ${IMAGE}"
-  docker push "${IMAGE}"
+if [[ "${USE_BUILDX}" -eq 1 ]]; then
+  BUILD_CMD=(docker buildx build --provenance=false -t "${IMAGE}")
   if [[ -n "${LATEST_IMAGE}" && "${LATEST_IMAGE}" != "${IMAGE}" ]]; then
-    log "Pushing image: ${LATEST_IMAGE}"
-    docker push "${LATEST_IMAGE}"
+    BUILD_CMD+=(-t "${LATEST_IMAGE}")
   fi
+  if [[ -n "${CACHE_REF}" ]]; then
+    BUILD_CMD+=(--cache-from "type=registry,ref=${CACHE_REF}")
+    BUILD_CMD+=(--cache-to   "type=registry,ref=${CACHE_REF},mode=max")
+    log "BuildKit registry cache: ${CACHE_REF}"
+  fi
+  if [[ "${PUSH}" -eq 1 ]]; then
+    BUILD_CMD+=(--push)
+  fi
+  if [[ -n "${RELEASE_VERSION}" ]]; then
+    BUILD_CMD+=(--build-arg "VITE_APP_VERSION=${RELEASE_VERSION}")
+  fi
+  BUILD_CMD+=("${REPO_ROOT}")
+  log "Building with docker buildx (registry cache enabled)"
+  "${BUILD_CMD[@]}"
+else
+  # Fallback: plain docker build (no registry cache)
+  BUILD_CMD=(docker build -t "${IMAGE}")
+  if [[ -n "${RELEASE_VERSION}" ]]; then
+    BUILD_CMD+=(--build-arg "VITE_APP_VERSION=${RELEASE_VERSION}")
+  fi
+  if [[ -n "${LATEST_IMAGE}" && "${LATEST_IMAGE}" != "${IMAGE}" ]]; then
+    BUILD_CMD+=(-t "${LATEST_IMAGE}")
+  fi
+  BUILD_CMD+=("${REPO_ROOT}")
+  log "Building with docker build (fallback, no registry cache)"
+  "${BUILD_CMD[@]}"
 fi
 
 if [[ -n "${ENV_FILE}" && "${VERSION_BUMP}" != "none" ]]; then

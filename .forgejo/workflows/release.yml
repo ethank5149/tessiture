@@ -34,6 +34,20 @@ jobs:
           git clone "${AUTH_URL}/${REPO}.git" .
           git fetch --tags
 
+      - name: Cache pip packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ hashFiles('requirements.txt', 'pyproject.toml') }}
+          restore-keys: pip-
+
+      - name: Cache npm packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.npm
+          key: npm-${{ hashFiles('frontend/package-lock.json') }}
+          restore-keys: npm-
+
       - name: Install Node.js 20
         shell: bash
         run: |
@@ -135,28 +149,14 @@ jobs:
         shell: bash
         run: chmod +x deploy/scripts/build.sh deploy/scripts/deploy.sh
 
-      - name: Install skopeo
-        shell: bash
-        run: |
-          if ! command -v skopeo >/dev/null 2>&1; then
-            if command -v apk >/dev/null 2>&1; then
-              apk add --no-cache skopeo
-            elif command -v apt-get >/dev/null 2>&1; then
-              apt-get update -qq && apt-get install -y -qq skopeo
-            fi
-          fi
-          skopeo --version
-
       - name: Log in to Forgejo container registry
         env:
           GIT_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          # Use skopeo login with --tls-verify=false since the internal registry is HTTP.
-          echo "${GIT_TOKEN}" | skopeo login "${REGISTRY}" \
+          echo "${GIT_TOKEN}" | docker login "${REGISTRY}" \
             --username "${{ github.repository_owner }}" \
-            --password-stdin \
-            --tls-verify=false
+            --password-stdin
 
       - name: Build and push Docker image
         timeout-minutes: 30
@@ -166,20 +166,13 @@ jobs:
         run: |
           # examples/ is gitignored (runtime data); create empty dir so Dockerfile COPY succeeds
           mkdir -p examples/tracks
-          # Build locally (no push) — skopeo handles the push over the internal Docker network
+          CACHE_REF="${REGISTRY}/${{ github.repository }}:buildcache"
           deploy/scripts/build.sh \
             --version-bump "${{ inputs.version_bump || 'auto' }}" \
             --env-file deploy/.env \
-            --no-git-tag
-          # Push via skopeo: save from DinD daemon, push to Forgejo registry
-          # Use --dest-creds to ensure auth is passed for every request (avoids token expiry)
-          IMAGE=$(grep '^TESSITURE_IMAGE=' deploy/.env | cut -d= -f2-)
-          echo "Pushing ${IMAGE} via skopeo..."
-          docker save "${IMAGE}" | skopeo copy \
-            --dest-tls-verify=false \
-            --dest-creds="${{ github.repository_owner }}:${GIT_TOKEN}" \
-            docker-archive:/dev/stdin \
-            "docker://${IMAGE}"
+            --no-git-tag \
+            --push \
+            --cache-ref "${CACHE_REF}"
 
       - name: Deploy stack
         timeout-minutes: 10
@@ -252,5 +245,4 @@ jobs:
       - name: Log out of container registry
         if: always()
         shell: bash
-        run: |
-          skopeo logout "${REGISTRY}" 2>/dev/null || true
+        run: docker logout "${REGISTRY}" 2>/dev/null || true

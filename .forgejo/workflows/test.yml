@@ -26,6 +26,20 @@ jobs:
           git clone "${AUTH_URL}/${REPO}.git" .
           git fetch --tags
 
+      - name: Cache pip packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ hashFiles('requirements.txt', 'pyproject.toml') }}
+          restore-keys: pip-
+
+      - name: Cache npm packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.npm
+          key: npm-${{ hashFiles('frontend/package-lock.json') }}
+          restore-keys: npm-
+
       - name: Install Node.js 20
         shell: bash
         run: |
