@@ -108,10 +108,9 @@ jobs:
       - name: Set image reference in deploy/.env
         shell: bash
         run: |
-          # Use the internal Docker network hostname for the Forgejo registry.
-          # The runner and DinD containers are on dind-net where 'forgejo' resolves
-          # to the Forgejo container. Port 1003 is HTTP (Tailscale handles HTTPS externally).
-          REGISTRY="forgejo:1003"
+          # Use the LAN IP for the Forgejo registry (HTTP on port 1003).
+          # Tailscale handles HTTPS externally; internal access is HTTP.
+          REGISTRY=$(echo "${{ github.server_url }}" | sed 's|https://||' | sed 's|http://||')
           IMAGE="${REGISTRY}/${{ github.repository }}:latest"
           if grep -q '^TESSITURE_IMAGE=' deploy/.env; then
             sed -i "s|^TESSITURE_IMAGE=.*|TESSITURE_IMAGE=${IMAGE}|" deploy/.env
