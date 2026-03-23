@@ -108,17 +108,11 @@ jobs:
       - name: Set image reference in deploy/.env
         shell: bash
         run: |
-          # Derive registry from the existing TESSITURE_IMAGE in deploy/.env (set by secret).
-          # This uses the correct Tailscale FQDN (forgejo.dojo-diminished.ts.net) with HTTPS.
-          CURRENT_IMAGE=$(grep '^TESSITURE_IMAGE=' deploy/.env | cut -d= -f2- | tr -d '"' || true)
-          if [ -n "${CURRENT_IMAGE}" ]; then
-            REGISTRY=$(echo "${CURRENT_IMAGE}" | cut -d/ -f1)
-            REPO_PATH="${{ github.repository }}"
-            IMAGE="${REGISTRY}/${REPO_PATH}:latest"
-          else
-            REGISTRY=$(echo "${{ github.server_url }}" | sed 's|https://||' | sed 's|http://||')
-            IMAGE="${REGISTRY}/${{ github.repository }}:latest"
-          fi
+          # Use the internal Docker network hostname for the Forgejo registry.
+          # The runner and DinD containers are on dind-net where 'forgejo' resolves
+          # to the Forgejo container. Port 1003 is HTTP (Tailscale handles HTTPS externally).
+          REGISTRY="forgejo:1003"
+          IMAGE="${REGISTRY}/${{ github.repository }}:latest"
           if grep -q '^TESSITURE_IMAGE=' deploy/.env; then
             sed -i "s|^TESSITURE_IMAGE=.*|TESSITURE_IMAGE=${IMAGE}|" deploy/.env
           else
@@ -126,22 +120,6 @@ jobs:
           fi
           echo "Set TESSITURE_IMAGE=${IMAGE}"
           echo "REGISTRY=${REGISTRY}" >> "${GITHUB_ENV}"
-
-      - name: Resolve Tailscale registry hostname
-        shell: bash
-        run: |
-          # The DinD daemon can't resolve Tailscale hostnames. Resolve via host network
-          # and add to /etc/hosts so skopeo (running in this container) can reach the registry.
-          echo "Resolving ${REGISTRY}..."
-          REGISTRY_IP=$(docker run --rm --network host alpine:3 \
-            sh -c "getent hosts ${REGISTRY} | awk '{print \$1}' | head -1" 2>/dev/null || true)
-          echo "Resolved ${REGISTRY} -> ${REGISTRY_IP}"
-          if [ -n "${REGISTRY_IP}" ]; then
-            echo "${REGISTRY_IP} ${REGISTRY}" >> /etc/hosts
-            echo "Added ${REGISTRY_IP} ${REGISTRY} to /etc/hosts"
-          else
-            echo "WARNING: Could not resolve ${REGISTRY} via host network"
-          fi
 
       - name: Make scripts executable
         shell: bash
@@ -164,11 +142,11 @@ jobs:
           GIT_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          # Use skopeo login (runs in this container, uses our /etc/hosts).
-          # docker login would go through the DinD daemon which can't resolve the hostname.
+          # Use skopeo login with --tls-verify=false since the internal registry is HTTP.
           echo "${GIT_TOKEN}" | skopeo login "${REGISTRY}" \
             --username "${{ github.repository_owner }}" \
-            --password-stdin
+            --password-stdin \
+            --tls-verify=false
 
       - name: Build and push Docker image
         timeout-minutes: 30
@@ -176,15 +154,18 @@ jobs:
         run: |
           # examples/ is gitignored (runtime data); create empty dir so Dockerfile COPY succeeds
           mkdir -p examples/tracks
-          # Build locally (no push) — DinD daemon can't resolve the Tailscale registry hostname
+          # Build locally (no push) — skopeo handles the push over the internal Docker network
           deploy/scripts/build.sh \
             --version-bump "${{ inputs.version_bump || 'auto' }}" \
             --env-file deploy/.env \
             --no-git-tag
-          # Push via skopeo: save from DinD daemon, push from this container
+          # Push via skopeo: save from DinD daemon, push to internal Forgejo registry (HTTP)
           IMAGE=$(grep '^TESSITURE_IMAGE=' deploy/.env | cut -d= -f2-)
           echo "Pushing ${IMAGE} via skopeo..."
-          docker save "${IMAGE}" | skopeo copy docker-archive:/dev/stdin "docker://${IMAGE}"
+          docker save "${IMAGE}" | skopeo copy \
+            --dest-tls-verify=false \
+            docker-archive:/dev/stdin \
+            "docker://${IMAGE}"
 
       - name: Deploy stack
         timeout-minutes: 10
@@ -258,4 +239,4 @@ jobs:
         if: always()
         shell: bash
         run: |
-          docker logout "${REGISTRY}" || true
+          skopeo logout "${REGISTRY}" 2>/dev/null || true
