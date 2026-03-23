@@ -49,20 +49,38 @@ jobs:
           npm --version
 
       - name: Cache pip packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: pip-${{ hashFiles('requirements.txt', 'pyproject.toml') }}
-          enableCrossOsArchive: true
-          fail-on-cache-miss: false
+        shell: bash
+        run: |
+          FORGEJO_URL="http://forgejo"
+          CACHE_KEY="pip-${{ hashFiles('requirements.txt', 'pyproject.toml') }}"
+          CACHE_DIR="~/.cache/pip"
+          
+          # Try to restore cache
+          if curl -s -f -o /tmp/cache.tar.gz -H "Authorization: Bearer ${{ github.token }}" \
+            "$FORGEJO_URL/api/v1/actions/caches?key=$CACHE_KEY" 2>/dev/null; then
+            if [ -s /tmp/cache.tar.gz ]; then
+              mkdir -p "$CACHE_DIR"
+              tar -xzf /tmp/cache.tar.gz -C "$CACHE_DIR" 2>/dev/null || true
+              echo "Cache restored for $CACHE_KEY"
+            fi
+          fi
 
       - name: Cache npm packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.npm
-          key: npm-${{ hashFiles('frontend/package-lock.json') }}
-          enableCrossOsArchive: true
-          fail-on-cache-miss: false
+        shell: bash
+        run: |
+          FORGEJO_URL="http://forgejo"
+          CACHE_KEY="npm-${{ hashFiles('frontend/package-lock.json') }}"
+          CACHE_DIR="~/.npm"
+          
+          # Try to restore cache
+          if curl -s -f -o /tmp/cache.tar.gz -H "Authorization: Bearer ${{ github.token }}" \
+            "$FORGEJO_URL/api/v1/actions/caches?key=$CACHE_KEY" 2>/dev/null; then
+            if [ -s /tmp/cache.tar.gz ]; then
+              mkdir -p "$CACHE_DIR"
+              tar -xzf /tmp/cache.tar.gz -C "$CACHE_DIR" 2>/dev/null || true
+              echo "Cache restored for $CACHE_KEY"
+            fi
+          fi
 
       - name: Install Python dependencies
         shell: bash
