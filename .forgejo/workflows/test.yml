@@ -26,6 +26,16 @@ jobs:
           git clone "${AUTH_URL}/${REPO}.git" .
           git fetch --tags
 
+      - name: Install Node.js 20
+        shell: bash
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq ca-certificates curl gnupg
+          curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+          apt-get install -y -qq nodejs
+          node --version
+          npm --version
+
       - name: Cache pip packages
         uses: actions/cache@v3
         with:
@@ -39,16 +49,6 @@ jobs:
           path: ~/.npm
           key: npm-${{ hashFiles('frontend/package-lock.json') }}
           restore-keys: npm-
-
-      - name: Install Node.js 20
-        shell: bash
-        run: |
-          apt-get update -qq
-          apt-get install -y -qq ca-certificates curl gnupg
-          curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-          apt-get install -y -qq nodejs
-          node --version
-          npm --version
 
       - name: Install Python dependencies
         shell: bash
