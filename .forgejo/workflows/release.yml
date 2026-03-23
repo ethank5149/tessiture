@@ -154,9 +154,11 @@ jobs:
         shell: bash
         run: |
           # Build locally (no push) — skopeo will push to the HTTP registry
+          # Use absolute path for --env-file: build.sh resolves relative paths
+          # against REPO_ROOT (deploy/), so "deploy/.env" would become deploy/deploy/.env
           deploy/scripts/build.sh \
             --version-bump "${{ inputs.version_bump || 'auto' }}" \
-            --env-file deploy/.env \
+            --env-file "$(pwd)/deploy/.env" \
             --no-git-tag
 
       - name: Push Docker image via skopeo
