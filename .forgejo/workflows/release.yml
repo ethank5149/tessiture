@@ -122,46 +122,30 @@ jobs:
         shell: bash
         run: chmod +x deploy/scripts/build.sh deploy/scripts/deploy.sh
 
-      - name: Configure Docker daemon for insecure registry
+      - name: Verify Docker daemon insecure-registry config
         shell: bash
         run: |
           REGISTRY=$(echo "${{ github.server_url }}" | sed 's|https://||' | sed 's|http://||')
           echo "Registry: ${REGISTRY}"
-          echo "Current daemon.json:"
-          cat /etc/docker/daemon.json 2>/dev/null || echo "(none)"
-          mkdir -p /etc/docker
-          printf '{"insecure-registries":["%s"]}\n' "${REGISTRY}" > /etc/docker/daemon.json
-          echo "New daemon.json:"
-          cat /etc/docker/daemon.json
-          echo "Docker info (insecure-registries before restart):"
-          docker info 2>&1 | grep -i insecure || echo "(none listed)"
-          # Restart Docker daemon to pick up insecure-registries change
-          if command -v service >/dev/null 2>&1 && service docker status >/dev/null 2>&1; then
-            echo "Restarting via service..."
-            service docker restart
-          elif command -v systemctl >/dev/null 2>&1 && systemctl is-active docker >/dev/null 2>&1; then
-            echo "Restarting via systemctl..."
-            systemctl restart docker
-          else
-            echo "Attempting kill+restart of dockerd..."
-            DOCKERD_PID=$(pgrep -x dockerd || true)
-            echo "dockerd PID: ${DOCKERD_PID}"
-            if [ -n "${DOCKERD_PID}" ]; then
-              DOCKERD_CMD=$(cat /proc/${DOCKERD_PID}/cmdline | tr '\0' ' ' || true)
-              echo "dockerd cmd: ${DOCKERD_CMD}"
-              kill "${DOCKERD_PID}"
-              sleep 3
-              ${DOCKERD_CMD} &>/var/log/dockerd-restart.log &
-            fi
+          echo "--- /etc/docker/daemon.json ---"
+          cat /etc/docker/daemon.json 2>/dev/null || echo "(file not found)"
+          echo "--- docker info insecure-registries ---"
+          docker info 2>&1 | grep -i insecure || echo "(none configured)"
+          # Verify the registry is reachable over HTTP before attempting login
+          if ! curl -sf --max-time 5 "http://${REGISTRY}/v2/" >/dev/null 2>&1; then
+            echo "WARNING: Registry ${REGISTRY} is not reachable over HTTP"
           fi
-          # Wait for Docker to be ready
-          for i in $(seq 1 20); do
-            docker info >/dev/null 2>&1 && break
-            echo "Waiting for Docker... (${i}s)"
-            sleep 1
-          done
-          echo "Docker info (insecure-registries after restart):"
-          docker info 2>&1 | grep -i insecure || echo "(none listed)"
+          # Check if daemon already has the registry configured
+          if docker info 2>&1 | grep -q "${REGISTRY}"; then
+            echo "OK: ${REGISTRY} is already in insecure-registries"
+          else
+            echo "ERROR: ${REGISTRY} is NOT in insecure-registries."
+            echo "To fix this, add the following to /etc/docker/daemon.json on the Unraid host"
+            echo "and restart Docker (Settings > Docker > restart):"
+            echo "  {\"insecure-registries\": [\"${REGISTRY}\"]}"
+            echo "This is a one-time host configuration required for HTTP-only registries."
+            exit 1
+          fi
 
       - name: Log in to Forgejo container registry
         env:
