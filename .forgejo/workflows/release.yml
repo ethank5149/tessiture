@@ -163,6 +163,8 @@ jobs:
 
       - name: Build and push Docker image
         timeout-minutes: 30
+        env:
+          GIT_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           # examples/ is gitignored (runtime data); create empty dir so Dockerfile COPY succeeds
@@ -172,11 +174,13 @@ jobs:
             --version-bump "${{ inputs.version_bump || 'auto' }}" \
             --env-file deploy/.env \
             --no-git-tag
-          # Push via skopeo: save from DinD daemon, push to internal Forgejo registry (HTTP)
+          # Push via skopeo: save from DinD daemon, push to Forgejo registry
+          # Use --dest-creds to ensure auth is passed for every request (avoids token expiry)
           IMAGE=$(grep '^TESSITURE_IMAGE=' deploy/.env | cut -d= -f2-)
           echo "Pushing ${IMAGE} via skopeo..."
           docker save "${IMAGE}" | skopeo copy \
             --dest-tls-verify=false \
+            --dest-creds="${{ github.repository_owner }}:${GIT_TOKEN}" \
             docker-archive:/dev/stdin \
             "docker://${IMAGE}"
 
