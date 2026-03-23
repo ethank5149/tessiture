@@ -22,6 +22,9 @@ jobs:
     name: Test
     runs-on: docker
     container: python:3.12-bookworm
+    env:
+      GITHUB_API_URL: http://forgejo/api/v1
+      GITHUB_SERVER_URL: http://forgejo
 
     steps:
       - name: Checkout repository
