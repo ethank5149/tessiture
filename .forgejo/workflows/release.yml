@@ -124,13 +124,15 @@ jobs:
         shell: bash
         run: |
           # The Forgejo registry redirects auth token requests to its configured external URL
-          # (forgejo.dojo-diminished.ts.net). The runner container can't resolve Tailscale
-          # hostnames, so we add the LAN IP to /etc/hosts.
-          LAN_IP=$(echo "${REGISTRY}" | cut -d: -f1)
+          # (forgejo.dojo-diminished.ts.net) over HTTPS (port 443). This is handled by Tailscale,
+          # so we must map the hostname to the Tailscale IP (not the LAN IP, which only serves
+          # HTTP on port 1003).
           FORGEJO_FQDN="forgejo.dojo-diminished.ts.net"
-          echo "${LAN_IP} ${FORGEJO_FQDN}" >> /etc/hosts
-          echo "Added ${LAN_IP} ${FORGEJO_FQDN} to /etc/hosts"
-          cat /etc/hosts | grep "${FORGEJO_FQDN}"
+          TAILSCALE_IP="100.95.62.8"
+          echo "${TAILSCALE_IP} ${FORGEJO_FQDN}" >> /etc/hosts
+          echo "Added ${TAILSCALE_IP} ${FORGEJO_FQDN} to /etc/hosts"
+          # Verify connectivity to the Tailscale IP
+          curl -sf --max-time 5 "https://${FORGEJO_FQDN}/v2/" -o /dev/null && echo "HTTPS OK" || echo "HTTPS check failed (may still work for auth)"
 
       - name: Make scripts executable
         shell: bash
