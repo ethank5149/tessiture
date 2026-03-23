@@ -126,28 +126,42 @@ jobs:
         shell: bash
         run: |
           REGISTRY=$(echo "${{ github.server_url }}" | sed 's|https://||' | sed 's|http://||')
+          echo "Registry: ${REGISTRY}"
+          echo "Current daemon.json:"
+          cat /etc/docker/daemon.json 2>/dev/null || echo "(none)"
           mkdir -p /etc/docker
           printf '{"insecure-registries":["%s"]}\n' "${REGISTRY}" > /etc/docker/daemon.json
+          echo "New daemon.json:"
           cat /etc/docker/daemon.json
+          echo "Docker info (insecure-registries before restart):"
+          docker info 2>&1 | grep -i insecure || echo "(none listed)"
           # Restart Docker daemon to pick up insecure-registries change
-          if command -v service >/dev/null 2>&1; then
-            service docker restart || true
-          elif command -v systemctl >/dev/null 2>&1; then
-            systemctl restart docker || true
+          if command -v service >/dev/null 2>&1 && service docker status >/dev/null 2>&1; then
+            echo "Restarting via service..."
+            service docker restart
+          elif command -v systemctl >/dev/null 2>&1 && systemctl is-active docker >/dev/null 2>&1; then
+            echo "Restarting via systemctl..."
+            systemctl restart docker
           else
-            # Fallback: kill and re-exec dockerd in background
-            DOCKERD_PID=$(pgrep dockerd || true)
+            echo "Attempting kill+restart of dockerd..."
+            DOCKERD_PID=$(pgrep -x dockerd || true)
+            echo "dockerd PID: ${DOCKERD_PID}"
             if [ -n "${DOCKERD_PID}" ]; then
-              kill "${DOCKERD_PID}" 2>/dev/null || true
-              sleep 2
-              dockerd &>/var/log/dockerd.log &
+              DOCKERD_CMD=$(cat /proc/${DOCKERD_PID}/cmdline | tr '\0' ' ' || true)
+              echo "dockerd cmd: ${DOCKERD_CMD}"
+              kill "${DOCKERD_PID}"
+              sleep 3
+              ${DOCKERD_CMD} &>/var/log/dockerd-restart.log &
             fi
           fi
           # Wait for Docker to be ready
-          for i in $(seq 1 15); do
+          for i in $(seq 1 20); do
             docker info >/dev/null 2>&1 && break
+            echo "Waiting for Docker... (${i}s)"
             sleep 1
           done
+          echo "Docker info (insecure-registries after restart):"
+          docker info 2>&1 | grep -i insecure || echo "(none listed)"
 
       - name: Log in to Forgejo container registry
         env:
