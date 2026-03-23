@@ -154,11 +154,9 @@ jobs:
         shell: bash
         run: |
           # Build locally (no push) — skopeo will push to the HTTP registry
-          # Use absolute path for --env-file: build.sh resolves relative paths
-          # against REPO_ROOT (deploy/), so "deploy/.env" would become deploy/deploy/.env
           deploy/scripts/build.sh \
             --version-bump "${{ inputs.version_bump || 'auto' }}" \
-            --env-file "$(pwd)/deploy/.env" \
+            --env-file deploy/.env \
             --no-git-tag
 
       - name: Push Docker image via skopeo
@@ -206,11 +204,11 @@ jobs:
         id: version
         shell: bash
         run: |
-          if [[ ! -f deploy/.release-version ]]; then
+          if [[ ! -f .release-version ]]; then
             echo "ERROR: .release-version not found after build" >&2
             exit 1
           fi
-          VERSION="$(tr -d '[:space:]' < deploy/.release-version)"
+          VERSION="$(tr -d '[:space:]' < .release-version)"
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
           echo "Release version: ${VERSION}"
 
