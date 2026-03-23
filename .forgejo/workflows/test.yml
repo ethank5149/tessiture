@@ -111,16 +111,30 @@ jobs:
           CACHE_KEY="pip-${{ hashFiles('requirements.txt', 'pyproject.toml') }}"
           CACHE_DIR="~/.cache/pip"
           
-          if [ -d "$CACHE_DIR" ]; then
+          if [ -d "$CACHE_DIR" ] && [ "$(ls -A $CACHE_DIR 2>/dev/null)" ]; then
             echo "Creating cache archive for $CACHE_KEY"
             tar -czf /tmp/cache.tar.gz -C ~ .cache/pip 2>/dev/null || true
             SIZE=$(stat -f%z /tmp/cache.tar.gz 2>/dev/null || stat -c%s /tmp/cache.tar.gz 2>/dev/null)
             if [ "$SIZE" -gt 100 ]; then
-              curl -X POST -H "Authorization: Bearer ${{ github.token }}" \
+              echo "Cache size: $SIZE bytes"
+              # Create cache entry and get upload URL
+              RESPONSE=$(curl -s -X POST -H "Authorization: Bearer ${{ github.token }}" \
                 -H "Content-Type: application/json" \
                 -d "{\"key\":\"$CACHE_KEY\",\"size\":$SIZE}" \
-                "$FORGEJO_URL/api/v1/actions/caches" 2>/dev/null
-              echo "Cache save attempted (full upload requires additional API call)"
+                "$FORGEJO_URL/api/v1/actions/caches")
+              echo "Create response: $RESPONSE"
+              
+              # Extract upload URL and upload the archive
+              UPLOAD_URL=$(echo "$RESPONSE" | grep -o '"archive_upload_url":"[^"]*' | cut -d'"' -f4)
+              if [ -n "$UPLOAD_URL" ]; then
+                echo "Uploading to: $UPLOAD_URL"
+                curl -X PUT -H "Content-Type: application/gzip" \
+                  --data-binary @/tmp/cache.tar.gz \
+                  "$UPLOAD_URL" -w "Upload status: %{http_code}\n"
+                echo "Cache saved successfully for $CACHE_KEY"
+              else
+                echo "Failed to get upload URL"
+              fi
             fi
           fi
 
@@ -144,16 +158,30 @@ jobs:
           CACHE_KEY="npm-${{ hashFiles('frontend/package-lock.json') }}"
           CACHE_DIR="~/.npm"
           
-          if [ -d "$CACHE_DIR" ]; then
+          if [ -d "$CACHE_DIR" ] && [ "$(ls -A $CACHE_DIR 2>/dev/null)" ]; then
             echo "Creating cache archive for $CACHE_KEY"
             tar -czf /tmp/npm-cache.tar.gz -C ~ .npm 2>/dev/null || true
             SIZE=$(stat -f%z /tmp/npm-cache.tar.gz 2>/dev/null || stat -c%s /tmp/npm-cache.tar.gz 2>/dev/null)
             if [ "$SIZE" -gt 100 ]; then
-              curl -X POST -H "Authorization: Bearer ${{ github.token }}" \
+              echo "Cache size: $SIZE bytes"
+              # Create cache entry and get upload URL
+              RESPONSE=$(curl -s -X POST -H "Authorization: Bearer ${{ github.token }}" \
                 -H "Content-Type: application/json" \
                 -d "{\"key\":\"$CACHE_KEY\",\"size\":$SIZE}" \
-                "$FORGEJO_URL/api/v1/actions/caches" 2>/dev/null
-              echo "Cache save attempted (full upload requires additional API call)"
+                "$FORGEJO_URL/api/v1/actions/caches")
+              echo "Create response: $RESPONSE"
+              
+              # Extract upload URL and upload the archive
+              UPLOAD_URL=$(echo "$RESPONSE" | grep -o '"archive_upload_url":"[^"]*' | cut -d'"' -f4)
+              if [ -n "$UPLOAD_URL" ]; then
+                echo "Uploading to: $UPLOAD_URL"
+                curl -X PUT -H "Content-Type: application/gzip" \
+                  --data-binary @/tmp/npm-cache.tar.gz \
+                  "$UPLOAD_URL" -w "Upload status: %{http_code}\n"
+                echo "Cache saved successfully for $CACHE_KEY"
+              else
+                echo "Failed to get upload URL"
+              fi
             fi
           fi
 
