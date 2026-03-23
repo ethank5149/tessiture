@@ -99,6 +99,27 @@ jobs:
         shell: bash
         run: pip install -r requirements.txt -e ".[dev]"
 
+      - name: Save pip cache
+        if: always()
+        shell: bash
+        run: |
+          FORGEJO_URL="http://forgejo"
+          CACHE_KEY="pip-${{ hashFiles('requirements.txt', 'pyproject.toml') }}"
+          CACHE_DIR="~/.cache/pip"
+          
+          if [ -d "$CACHE_DIR" ]; then
+            echo "Creating cache archive for $CACHE_KEY"
+            tar -czf /tmp/cache.tar.gz -C ~ .cache/pip 2>/dev/null || true
+            SIZE=$(stat -f%z /tmp/cache.tar.gz 2>/dev/null || stat -c%s /tmp/cache.tar.gz 2>/dev/null)
+            if [ "$SIZE" -gt 100 ]; then
+              curl -X POST -H "Authorization: Bearer ${{ github.token }}" \
+                -H "Content-Type: application/json" \
+                -d "{\"key\":\"$CACHE_KEY\",\"size\":$SIZE}" \
+                "$FORGEJO_URL/api/v1/actions/caches" 2>/dev/null
+              echo "Cache save attempted (full upload requires additional API call)"
+            fi
+          fi
+
       - name: Run backend tests
         shell: bash
         run: python -m pytest tests/ -q --tb=short
@@ -106,6 +127,27 @@ jobs:
       - name: Install frontend dependencies
         shell: bash
         run: cd frontend && npm ci
+
+      - name: Save npm cache
+        if: always()
+        shell: bash
+        run: |
+          FORGEJO_URL="http://forgejo"
+          CACHE_KEY="npm-${{ hashFiles('frontend/package-lock.json') }}"
+          CACHE_DIR="~/.npm"
+          
+          if [ -d "$CACHE_DIR" ]; then
+            echo "Creating cache archive for $CACHE_KEY"
+            tar -czf /tmp/npm-cache.tar.gz -C ~ .npm 2>/dev/null || true
+            SIZE=$(stat -f%z /tmp/npm-cache.tar.gz 2>/dev/null || stat -c%s /tmp/npm-cache.tar.gz 2>/dev/null)
+            if [ "$SIZE" -gt 100 ]; then
+              curl -X POST -H "Authorization: Bearer ${{ github.token }}" \
+                -H "Content-Type: application/json" \
+                -d "{\"key\":\"$CACHE_KEY\",\"size\":$SIZE}" \
+                "$FORGEJO_URL/api/v1/actions/caches" 2>/dev/null
+              echo "Cache save attempted (full upload requires additional API call)"
+            fi
+          fi
 
       - name: Run frontend tests
         shell: bash
