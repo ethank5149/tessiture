@@ -43,31 +43,43 @@ jobs:
       - name: Restore pip cache (from previous run)
         shell: bash
         run: |
-          set -x
           FORGEJO_URL="http://forgejo"
           CACHE_KEY="pip-${{ hashFiles('requirements.txt', 'pyproject.toml') }}"
           CACHE_DIR="~/.cache/pip"
+          TOKEN="${{ github.token }}"
           
-          echo "Checking for cache key: $CACHE_KEY"
-          curl -v -H "Authorization: Bearer ${{ github.token }}" \
-            "$FORGEJO_URL/api/v1/actions/caches?key=$CACHE_KEY" 2>&1 | head -50
-          echo "---"
+          echo "=== Restore pip cache for key: $CACHE_KEY ==="
           
-          # Try to restore cache
-          RESPONSE=$(curl -s -H "Authorization: Bearer ${{ github.token }}" \
-            "$FORGEJO_URL/api/v1/actions/caches?key=$CACHE_KEY")
-          echo "API Response: $RESPONSE"
+          # Query for existing caches
+          curl -s -H "Authorization: Bearer $TOKEN" \
+            "$FORGEJO_URL/api/v1/actions/caches?key=$CACHE_KEY" > /tmp/caches.json
           
-          if echo "$RESPONSE" | grep -q 'archive_download_url'; then
-            DOWNLOAD_URL=$(echo "$RESPONSE" | grep -o '"archive_download_url":"[^"]*' | cut -d'"' -f4)
-            if [ -n "$DOWNLOAD_URL" ]; then
-              mkdir -p "$CACHE_DIR"
-              curl -L -o /tmp/cache.tar.gz "$DOWNLOAD_URL" 2>/dev/null && \
-                tar -xzf /tmp/cache.tar.gz -C "$CACHE_DIR" 2>/dev/null && \
-                echo "Cache restored for $CACHE_KEY" || echo "Cache restore failed"
+          echo "Cache API response:"
+          cat /tmp/caches.json
+          echo ""
+          
+          # Try to extract download URL - handle both array and object responses
+          DOWNLOAD_URL=$(cat /tmp/caches.json | grep -o '"archive_download_url":"[^"]*' | head -1 | cut -d'"' -f4)
+          
+          if [ -z "$DOWNLOAD_URL" ]; then
+            # Try alternative path - maybe it's in a 'caches' array
+            DOWNLOAD_URL=$(cat /tmp/caches.json | grep -o '"archive_download_url[^"]*":[^"]*' | head -1 | cut -d':' -f2 | tr -d '"')
+          fi
+          
+          echo "Extracted download URL: $DOWNLOAD_URL"
+          
+          if [ -n "$DOWNLOAD_URL" ]; then
+            mkdir -p "$CACHE_DIR"
+            echo "Downloading from: $DOWNLOAD_URL"
+            curl -L -o /tmp/pip-cache.tar.gz "$DOWNLOAD_URL" 2>&1
+            if [ -s /tmp/pip-cache.tar.gz ]; then
+              tar -xzf /tmp/pip-cache.tar.gz -C "$CACHE_DIR" 2>/dev/null && echo "Cache restored successfully!" || echo "Cache extract failed"
+              ls -la "$CACHE_DIR"
+            else
+              echo "Download failed or empty"
             fi
           else
-            echo "No cache found"
+            echo "No cache found - this is expected on first run"
           fi
 
       - name: Restore npm cache (from previous run)
@@ -110,32 +122,46 @@ jobs:
           FORGEJO_URL="http://forgejo"
           CACHE_KEY="pip-${{ hashFiles('requirements.txt', 'pyproject.toml') }}"
           CACHE_DIR="~/.cache/pip"
+          TOKEN="${{ github.token }}"
           
           if [ -d "$CACHE_DIR" ] && [ "$(ls -A $CACHE_DIR 2>/dev/null)" ]; then
-            echo "Creating cache archive for $CACHE_KEY"
-            tar -czf /tmp/cache.tar.gz -C ~ .cache/pip 2>/dev/null || true
-            SIZE=$(stat -f%z /tmp/cache.tar.gz 2>/dev/null || stat -c%s /tmp/cache.tar.gz 2>/dev/null)
+            echo "=== Saving pip cache for key: $CACHE_KEY ==="
+            tar -czf /tmp/pip-cache.tar.gz -C ~ .cache/pip 2>/dev/null || true
+            SIZE=$(stat -c%s /tmp/pip-cache.tar.gz 2>/dev/null || stat -f%z /tmp/pip-cache.tar.gz 2>/dev/null)
+            echo "Archive size: $SIZE bytes"
+            
             if [ "$SIZE" -gt 100 ]; then
-              echo "Cache size: $SIZE bytes"
-              # Create cache entry and get upload URL
-              RESPONSE=$(curl -s -X POST -H "Authorization: Bearer ${{ github.token }}" \
+              # Step 1: Create cache entry, get upload URL
+              echo "Creating cache entry..."
+              RESPONSE=$(curl -s -X POST \
+                -H "Authorization: Bearer $TOKEN" \
                 -H "Content-Type: application/json" \
-                -d "{\"key\":\"$CACHE_KEY\",\"size\":$SIZE}" \
+                -d "{\"key\":\"$CACHE_KEY\",\"size\":$SIZE,\"architecture\":\"linux/amd64\"}" \
                 "$FORGEJO_URL/api/v1/actions/caches")
               echo "Create response: $RESPONSE"
               
-              # Extract upload URL and upload the archive
+              # Extract upload URL from response
               UPLOAD_URL=$(echo "$RESPONSE" | grep -o '"archive_upload_url":"[^"]*' | cut -d'"' -f4)
+              echo "Upload URL: $UPLOAD_URL"
+              
               if [ -n "$UPLOAD_URL" ]; then
-                echo "Uploading to: $UPLOAD_URL"
-                curl -X PUT -H "Content-Type: application/gzip" \
-                  --data-binary @/tmp/cache.tar.gz \
-                  "$UPLOAD_URL" -w "Upload status: %{http_code}\n"
+                # Step 2: Upload the archive
+                echo "Uploading archive..."
+                UPLOAD_RESP=$(curl -s -X PUT \
+                  -H "Content-Type: application/gzip" \
+                  --data-binary @/tmp/pip-cache.tar.gz \
+                  "$UPLOAD_URL" \
+                  -w "\nHTTP_CODE:%{http_code}")
+                echo "Upload response: $UPLOAD_RESP"
                 echo "Cache saved successfully for $CACHE_KEY"
               else
-                echo "Failed to get upload URL"
+                echo "ERROR: Failed to get upload URL"
               fi
+            else
+              echo "Archive too small, not saving"
             fi
+          else
+            echo "No cache directory or empty"
           fi
 
       - name: Run backend tests
