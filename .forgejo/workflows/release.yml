@@ -108,8 +108,19 @@ jobs:
       - name: Set image reference in deploy/.env
         shell: bash
         run: |
-          REGISTRY=$(echo "${{ github.server_url }}" | sed 's|https://||' | sed 's|http://||')
-          IMAGE="${REGISTRY}/${{ github.repository }}:latest"
+          # Derive registry from the existing TESSITURE_IMAGE in deploy/.env (set by secret).
+          # This preserves the correct hostname (e.g. Tailscale FQDN) rather than overwriting
+          # with the raw github.server_url LAN IP which may not have TLS.
+          CURRENT_IMAGE=$(grep '^TESSITURE_IMAGE=' deploy/.env | cut -d= -f2- | tr -d '"' || true)
+          if [ -n "${CURRENT_IMAGE}" ]; then
+            REGISTRY=$(echo "${CURRENT_IMAGE}" | cut -d/ -f1)
+            REPO_PATH="${{ github.repository }}"
+            IMAGE="${REGISTRY}/${REPO_PATH}:latest"
+          else
+            # Fallback: derive from github.server_url
+            REGISTRY=$(echo "${{ github.server_url }}" | sed 's|https://||' | sed 's|http://||')
+            IMAGE="${REGISTRY}/${{ github.repository }}:latest"
+          fi
           # Update or append TESSITURE_IMAGE in deploy/.env
           if grep -q '^TESSITURE_IMAGE=' deploy/.env; then
             sed -i "s|^TESSITURE_IMAGE=.*|TESSITURE_IMAGE=${IMAGE}|" deploy/.env
@@ -117,53 +128,17 @@ jobs:
             echo "TESSITURE_IMAGE=${IMAGE}" >> deploy/.env
           fi
           echo "Set TESSITURE_IMAGE=${IMAGE}"
+          echo "REGISTRY=${REGISTRY}" >> "${GITHUB_ENV}"
 
       - name: Make scripts executable
         shell: bash
         run: chmod +x deploy/scripts/build.sh deploy/scripts/deploy.sh
-
-      - name: Configure Docker daemon for insecure registry
-        shell: bash
-        run: |
-          REGISTRY=$(echo "${{ github.server_url }}" | sed 's|https://||' | sed 's|http://||')
-          echo "Registry: ${REGISTRY}"
-          # Check if daemon already has the registry configured
-          if docker info 2>&1 | grep -q "${REGISTRY}"; then
-            echo "OK: ${REGISTRY} is already in insecure-registries"
-            exit 0
-          fi
-          echo "Configuring insecure-registries for ${REGISTRY} in DinD daemon..."
-          mkdir -p /etc/docker
-          printf '{"insecure-registries":["%s"]}\n' "${REGISTRY}" > /etc/docker/daemon.json
-          cat /etc/docker/daemon.json
-          # Restart the DinD dockerd process directly
-          DOCKERD_PID=$(pgrep -x dockerd || true)
-          echo "dockerd PID: ${DOCKERD_PID}"
-          if [ -n "${DOCKERD_PID}" ]; then
-            # Capture the original command line
-            DOCKERD_ARGS=$(tr '\0' '\n' < /proc/${DOCKERD_PID}/cmdline | tail -n +2 | tr '\n' ' ')
-            echo "dockerd args: ${DOCKERD_ARGS}"
-            kill "${DOCKERD_PID}"
-            sleep 2
-            # Re-launch dockerd with the same arguments
-            # shellcheck disable=SC2086
-            dockerd ${DOCKERD_ARGS} &>/var/log/dockerd.log &
-          fi
-          # Wait for Docker to be ready
-          for i in $(seq 1 20); do
-            docker info >/dev/null 2>&1 && break
-            echo "Waiting for Docker... (${i}s)"
-            sleep 1
-          done
-          echo "--- docker info insecure-registries after restart ---"
-          docker info 2>&1 | grep -i insecure || echo "(none listed)"
 
       - name: Log in to Forgejo container registry
         env:
           GIT_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          REGISTRY=$(echo "${{ github.server_url }}" | sed 's|https://||' | sed 's|http://||')
           echo "${GIT_TOKEN}" | docker login "${REGISTRY}" --username "${{ github.repository_owner }}" --password-stdin
 
       - name: Build Docker image
@@ -248,5 +223,4 @@ jobs:
         if: always()
         shell: bash
         run: |
-          REGISTRY=$(echo "${{ github.server_url }}" | sed 's|https://||' | sed 's|http://||')
           docker logout "${REGISTRY}" || true
