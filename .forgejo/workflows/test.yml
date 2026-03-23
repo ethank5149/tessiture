@@ -97,7 +97,11 @@ jobs:
 
       - name: Install Python dependencies
         shell: bash
-        run: pip install -r requirements.txt -e ".[dev]"
+        run: |
+          echo "=== Starting pip install at $(date) ==="
+          pip install -r requirements.txt -e ".[dev]"
+          echo "=== pip install complete at $(date) ==="
+          ls -la ~/.cache/pip/ 2>/dev/null || echo "No pip cache found"
 
       - name: Save pip cache
         if: always()
@@ -126,7 +130,11 @@ jobs:
 
       - name: Install frontend dependencies
         shell: bash
-        run: cd frontend && npm ci
+        run: |
+          echo "=== Starting npm install at $(date) ==="
+          cd frontend && npm ci
+          echo "=== npm install complete at $(date) ==="
+          ls -la ~/.npm/ 2>/dev/null || echo "No npm cache found"
 
       - name: Save npm cache
         if: always()
