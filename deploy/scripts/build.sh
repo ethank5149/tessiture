@@ -71,8 +71,9 @@ docker_preflight() {
     die "Docker CLI is missing on host. Install Docker Engine/CLI and retry."
   fi
 
-  if [[ "${runtime_context}" = "container" && ! -S "/var/run/docker.sock" ]]; then
-    die "Docker socket /var/run/docker.sock is not available in this container. Run on host or mount the Docker socket."
+  # Allow TCP-based Docker connections (e.g. DinD via DOCKER_HOST) in addition to socket
+  if [[ "${runtime_context}" = "container" && ! -S "/var/run/docker.sock" && -z "${DOCKER_HOST:-}" ]]; then
+    die "Docker socket /var/run/docker.sock is not available in this container. Run on host, mount the Docker socket, or set DOCKER_HOST to a TCP endpoint."
   fi
 
   if ! docker info >/dev/null 2>&1; then
