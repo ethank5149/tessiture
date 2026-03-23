@@ -40,18 +40,20 @@ jobs:
           npm --version
 
       - name: Cache pip packages
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: pip-${{ hashFiles('requirements.txt', 'pyproject.toml') }}
-          restore-keys: pip-
+          enableCrossOsArchive: true
+          fail-on-cache-miss: false
 
       - name: Cache npm packages
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ~/.npm
           key: npm-${{ hashFiles('frontend/package-lock.json') }}
-          restore-keys: npm-
+          enableCrossOsArchive: true
+          fail-on-cache-miss: false
 
       - name: Install Python dependencies
         shell: bash
