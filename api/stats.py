@@ -179,9 +179,51 @@ def _build_metric_inference(
         sampled = rng.choice(samples, size=sample_size, replace=True)
         replicates[idx] = float(reducer(sampled))
 
+    # --- BCa (Bias-Corrected and Accelerated) confidence interval ----------
+    # Falls back to percentile bootstrap if BCa computation fails.
+    from scipy import stats as _scipy_stats
+
     tail = (1.0 - float(confidence_level)) / 2.0
-    ci_low = float(np.quantile(replicates, tail))
-    ci_high = float(np.quantile(replicates, 1.0 - tail))
+    alpha_lo = tail
+    alpha_hi = 1.0 - tail
+
+    try:
+        # Bias correction factor z0: proportion of replicates below the
+        # point estimate, mapped through the inverse normal CDF.
+        prop_below = float(np.mean(replicates < estimate))
+        prop_below = np.clip(prop_below, 1e-10, 1.0 - 1e-10)
+        z0 = float(_scipy_stats.norm.ppf(prop_below))
+
+        # Acceleration factor a: estimated from jackknife influence values.
+        jackknife_values = np.empty(sample_size, dtype=float)
+        for i in range(sample_size):
+            jack_sample = np.concatenate([samples[:i], samples[i + 1:]])
+            jackknife_values[i] = float(reducer(jack_sample))
+        jack_mean = float(np.mean(jackknife_values))
+        jack_diff = jack_mean - jackknife_values
+        sum_cubed = float(np.sum(jack_diff ** 3))
+        sum_squared = float(np.sum(jack_diff ** 2))
+        if sum_squared > 0.0:
+            a = sum_cubed / (6.0 * (sum_squared ** 1.5))
+        else:
+            a = 0.0
+
+        # Adjusted quantiles
+        z_lo = float(_scipy_stats.norm.ppf(alpha_lo))
+        z_hi = float(_scipy_stats.norm.ppf(alpha_hi))
+
+        def _bca_quantile(z_alpha: float) -> float:
+            numerator = z0 + z_alpha
+            adjusted = z0 + numerator / (1.0 - a * numerator)
+            return float(np.clip(_scipy_stats.norm.cdf(adjusted), 1e-10, 1.0 - 1e-10))
+
+        ci_low = float(np.quantile(replicates, _bca_quantile(z_lo)))
+        ci_high = float(np.quantile(replicates, _bca_quantile(z_hi)))
+    except Exception:
+        # Fallback to plain percentile bootstrap
+        logger.debug("bca_bootstrap_fallback metric=%s", metric_name)
+        ci_low = float(np.quantile(replicates, alpha_lo))
+        ci_high = float(np.quantile(replicates, alpha_hi))
 
     payload = {
         "estimate": estimate,

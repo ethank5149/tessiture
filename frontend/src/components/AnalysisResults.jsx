@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 import ReportExporter from "./ReportExporter";
 import SpectrogramInspector from "./SpectrogramInspector";
 import SummaryMetrics from "./SummaryMetrics";
@@ -6,40 +6,35 @@ import EvidenceReferences from "./EvidenceReferences";
 import PracticeGuidance from "./PracticeGuidance";
 import InferentialStatistics from "./InferentialStatistics";
 import CalibrationSummary from "./CalibrationSummary";
+import PitchTimeline from "./PitchTimeline";
+import VocalProfileCard from "./VocalProfileCard";
+import SongSuggestions from "./SongSuggestions";
+import WarmUpRoutine from "./WarmUpRoutine";
+import SessionHistory from "./SessionHistory";
 import {
   normalizeQualityWarnings,
   normalizeEvidencePayload,
   isPlainObject,
 } from "./AnalysisFormatters";
 
-const RESULTS_VIEWS = {
-  analysis: "analysis",
-  calibration: "calibration",
-};
-
 /**
- * AdvancedInspectorToggle
- * Renders the SpectrogramInspector as a collapsible section.
- * The user can expand to view the spectrogram visualization.
+ * AdvancedInspectorToggle — collapsible spectrogram section.
  */
 function AdvancedInspectorToggle({ jobId, audioRef, results, duration }) {
   const [isOpen, setIsOpen] = useState(false);
   return (
     <details
-      className="spectrogram-inspector-toggle"
+      className="results__disclosure"
       open={isOpen}
       onToggle={(e) => setIsOpen(e.currentTarget.open)}
     >
-      <summary className="spectrogram-inspector-toggle__summary">
-        🔍 Audio spectrogram (advanced)
-      </summary>
+      <summary>Audio spectrogram (advanced)</summary>
       {isOpen ? (
-        <>
-          <p className="spectrogram-inspector-toggle__description">
+        <div className="results__disclosure__body">
+          <p className="results__section-copy">
             This shows the frequency content of your recording over time. 
             The horizontal axis is time, the vertical axis is frequency (pitch), 
-            and the white line is your detected pitch. Colored markers show key moments.
-            Brighter colors mean louder frequencies.
+            and the white line is your detected pitch. Brighter colors mean louder frequencies.
           </p>
           <SpectrogramInspector
             jobId={jobId}
@@ -48,9 +43,45 @@ function AdvancedInspectorToggle({ jobId, audioRef, results, duration }) {
             durationSeconds={duration ?? 0}
             pitchFrames={results?.pitch?.frames ?? results?.pitch_frames ?? []}
           />
-        </>
+        </div>
       ) : null}
     </details>
+  );
+}
+
+/**
+ * ConfidenceBadge — one-glance analysis quality indicator derived from
+ * calibration metrics.  Replaces the raw calibration table for most users.
+ */
+function ConfidenceBadge({ calibrationSummary }) {
+  if (!calibrationSummary) return null;
+
+  const bias = Math.abs(calibrationSummary.mean_pitch_bias_cents ?? 0);
+  const std = calibrationSummary.pitch_error_std_cents ?? 0;
+  const samples = calibrationSummary.voiced_frame_count ?? 0;
+
+  let level = "high";
+  let label = "High confidence";
+  let description = "Stable, well-calibrated results across the detected frequency range.";
+
+  if (samples < 5 || std > 15 || bias > 10) {
+    level = "low";
+    label = "Low confidence";
+    description = "Limited data or high variance — treat these results as rough estimates.";
+  } else if (std > 5 || bias > 3) {
+    level = "medium";
+    label = "Moderate confidence";
+    description = "Reasonable results with some measurement uncertainty in extreme ranges.";
+  }
+
+  return (
+    <div className={`confidence-badge confidence-badge--${level}`} role="status" aria-label={`Analysis confidence: ${label}`}>
+      <span aria-hidden="true">{level === "high" ? "✓" : level === "medium" ? "~" : "!"}</span>
+      <span>{label}</span>
+      <span style={{ fontWeight: 400, fontSize: "0.8rem", opacity: 0.8, marginLeft: 4 }}>
+        — {description}
+      </span>
+    </div>
   );
 }
 
@@ -67,14 +98,15 @@ function AnalysisResults({
   jobId = null,
 }) {
   const titleId = useId();
-  const [activeResultsView, setActiveResultsView] = useState(RESULTS_VIEWS.analysis);
   const hasResults = Boolean(results && Object.keys(results).length > 0);
   const audioRef = useRef(null);
 
-  // Extract data from results
-  const hasPitchFrames =
-    (Array.isArray(results?.pitch?.frames) && results.pitch.frames.length > 0) ||
-    (Array.isArray(results?.pitch_frames) && results.pitch_frames.length > 0);
+  // --- Extract data from results ------------------------------------------
+  const pitchFrames =
+    (Array.isArray(results?.pitch?.frames) && results.pitch.frames) ||
+    (Array.isArray(results?.pitch_frames) && results.pitch_frames) ||
+    [];
+  const hasPitchFrames = pitchFrames.length > 0;
   const hasNoteEvents =
     (Array.isArray(results?.note_events) && results.note_events.length > 0) ||
     (Array.isArray(results?.notes?.events) && results.notes.events.length > 0);
@@ -121,24 +153,15 @@ function AnalysisResults({
   const calibrationSummary = isPlainObject(results?.calibration?.summary)
     ? results.calibration.summary
     : null;
-  const hasCalibrationSummary = Boolean(
-    calibrationSummary && Object.keys(calibrationSummary).length > 0
-  );
-  const showResultsViewTabs = hasCalibrationSummary;
-
-  useEffect(() => {
-    if (!hasCalibrationSummary && activeResultsView === RESULTS_VIEWS.calibration) {
-      setActiveResultsView(RESULTS_VIEWS.analysis);
-    }
-  }, [activeResultsView, hasCalibrationSummary]);
-
-  const readableStatus = (status?.status ?? "waiting").replace(/_/g, " ");
-  const analysisTabId = `${titleId}-tab-analysis`;
-  const analysisPanelId = `${titleId}-panel-analysis`;
-  const calibrationTabId = `${titleId}-tab-calibration`;
-  const calibrationPanelId = `${titleId}-panel-calibration`;
 
   const duration = results?.metadata?.duration_seconds ?? results?.duration_seconds ?? results?.summary?.duration_seconds;
+  const readableStatus = (status?.status ?? "waiting").replace(/_/g, " ");
+
+  // Tessitura bounds for pitch timeline
+  const tessituraLow = results?.tessitura?.metrics?.tessitura_band?.[0]
+    ?? results?.summary?.tessitura_range?.[0];
+  const tessituraHigh = results?.tessitura?.metrics?.tessitura_band?.[1]
+    ?? results?.summary?.tessitura_range?.[1];
 
   return (
     <section className="card results" aria-labelledby={titleId} aria-busy={isFetchingResults}>
@@ -147,7 +170,7 @@ function AnalysisResults({
           <h2 id={titleId} className="card__title">Analysis results</h2>
           <p className={`results__status results__status--${status?.status ?? "idle"}`}>{readableStatus}</p>
         </div>
-        <p className="card__meta">Key outcomes are shown first, followed by plain-language practice guidance and supporting statistics.</p>
+        <ConfidenceBadge calibrationSummary={calibrationSummary} />
       </header>
 
       {error ? <p className="results__error" role="alert">{error}</p> : null}
@@ -156,64 +179,48 @@ function AnalysisResults({
         <p className="results__empty">Results will appear here after the job completes.</p>
       ) : (
         <>
-          {hasCalibrationSummary ? (
-            <div className="results__view-tabs" role="tablist" aria-label="Analysis result views">
-              <button
-                id={analysisTabId}
-                className="button results__view-tab"
-                type="button"
-                role="tab"
-                aria-selected={activeResultsView === RESULTS_VIEWS.analysis}
-                aria-controls={analysisPanelId}
-                onClick={() => setActiveResultsView(RESULTS_VIEWS.analysis)}
-              >
-                General analysis
-              </button>
-              <button
-                id={calibrationTabId}
-                className="button results__view-tab"
-                type="button"
-                role="tab"
-                aria-selected={activeResultsView === RESULTS_VIEWS.calibration}
-                aria-controls={calibrationPanelId}
-                onClick={() => setActiveResultsView(RESULTS_VIEWS.calibration)}
-              >
-                Reference calibration
-              </button>
-            </div>
+          {isSparseCompletedResults ? (
+            <p className="results__empty" role="status">
+              Analysis completed, but the file did not contain enough detectable pitch activity for detailed personalized guidance.
+            </p>
           ) : null}
 
-          {activeResultsView === RESULTS_VIEWS.analysis ? (
-            <div
-              id={showResultsViewTabs ? analysisPanelId : undefined}
-              role={showResultsViewTabs ? "tabpanel" : undefined}
-              aria-labelledby={showResultsViewTabs ? analysisTabId : undefined}
-            >
-              {isSparseCompletedResults ? (
-                <p className="results__empty" role="status">
-                  Analysis completed, but the file did not contain enough detectable pitch activity for detailed personalized guidance.
-                </p>
-              ) : null}
+          {qualityWarnings.length ? (
+            <section className="results__section" aria-label="Analysis quality warnings">
+              <h3 className="results__section-title">Analysis quality notes</h3>
+              <ul>
+                {qualityWarnings.map((warning, index) => (
+                  <li key={`${warning}-${index}`}>{warning}</li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
 
-              <section className="results__section" aria-label="How to interpret analysis results">
-                <h3 className="results__section-title">Interpretation help</h3>
-                <p className="results__section-copy">
-                  Use summary metrics as your quick snapshot, then follow the guidance cards below to pick one clear practice action.
-                </p>
-              </section>
+          {/* ── LAYER 1: Dashboard (always visible) ─────────────────── */}
+          {/* Identity + key outcomes — what every user sees first.       */}
 
-              {qualityWarnings.length ? (
-                <section className="results__section" aria-label="Analysis quality warnings">
-                  <h3 className="results__section-title">Analysis quality notes</h3>
-                  <ul>
-                    {qualityWarnings.map((warning, index) => (
-                      <li key={`${warning}-${index}`}>{warning}</li>
-                    ))}
-                  </ul>
-                </section>
-              ) : null}
+          <SessionHistory results={results} />
 
-              <SummaryMetrics results={results} />
+          <VocalProfileCard results={results} />
+
+          <SummaryMetrics results={results} />
+
+          {hasPitchFrames && (
+            <PitchTimeline
+              pitchFrames={pitchFrames}
+              durationSeconds={duration ?? 0}
+              tessituraLow={tessituraLow}
+              tessituraHigh={tessituraHigh}
+            />
+          )}
+
+          {/* ── LAYER 2: Coaching (expandable, open by default) ─────── */}
+          {/* Actionable guidance — what to practice, sing, and warm up.  */}
+
+          <details className="results__disclosure" open>
+            <summary>What to do next</summary>
+            <div className="results__disclosure__body">
+              <SongSuggestions results={results} />
 
               <EvidenceReferences
                 results={results}
@@ -224,23 +231,37 @@ function AnalysisResults({
                 audioSourceUrl={audioSourceUrl}
                 audioSourceLabel={audioSourceLabel}
               />
-
               <PracticeGuidance results={results} evidence={evidence} />
 
-              <InferentialStatistics
-                inferentialStatistics={inferentialStatistics}
-                inferentialMetrics={inferentialMetrics}
-              />
+              <WarmUpRoutine results={results} />
             </div>
-          ) : null}
+          </details>
 
-          {hasCalibrationSummary && activeResultsView === RESULTS_VIEWS.calibration ? (
-            <CalibrationSummary
-              calibrationSummary={calibrationSummary}
-              calibrationTabId={calibrationPanelId}
-              titleId={calibrationTabId}
-            />
-          ) : null}
+          {/* ── LAYER 3: Technical details (opt-in, closed) ─────────── */}
+          {/* Statistical inference and calibration — power users only.   */}
+
+          {(hasInferentialMetrics || calibrationSummary) && (
+            <details className="results__disclosure">
+              <summary>Technical statistics & calibration</summary>
+              <div className="results__disclosure__body">
+                {hasInferentialMetrics && (
+                  <InferentialStatistics
+                    inferentialStatistics={inferentialStatistics}
+                    inferentialMetrics={inferentialMetrics}
+                  />
+                )}
+                {calibrationSummary && (
+                  <CalibrationSummary
+                    calibrationSummary={calibrationSummary}
+                    calibrationTabId={`${titleId}-calib`}
+                    titleId={`${titleId}-calib-title`}
+                  />
+                )}
+              </div>
+            </details>
+          )}
+
+          {/* ── Advanced: spectrogram inspector ─────────────────────── */}
 
           {jobId ? (
             <AdvancedInspectorToggle

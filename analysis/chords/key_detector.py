@@ -236,9 +236,156 @@ def detect_key(
     )
 
 
+@dataclass(frozen=True)
+class KeyTrajectoryEntry:
+    """A single entry in a windowed key trajectory."""
+    start_s: float
+    end_s: float
+    label: str
+    confidence: float
+    probabilities: Dict[str, float]
+
+
+def detect_key_trajectory(
+    observations: Sequence[float],
+    timestamps_s: Sequence[float],
+    *,
+    input_unit: str = "midi",
+    window_s: float = 8.0,
+    hop_s: float = 4.0,
+    softmax_beta: float = 1.0,
+    transition_penalty: float = 2.0,
+    profile_map: Optional[Dict[str, np.ndarray]] = None,
+) -> List[KeyTrajectoryEntry]:
+    """Detect a key trajectory using overlapping windows + Viterbi smoothing.
+
+    Slides a window across the observation sequence, computes per-window key
+    probabilities using Krumhansl-Schmuckler correlation, then smooths the
+    resulting label sequence with Viterbi dynamic programming to penalize
+    implausible rapid modulations.
+
+    Args:
+        observations: MIDI note values (or pitch classes if input_unit="pc").
+        timestamps_s: Timestamp in seconds for each observation.
+        input_unit: "midi" or "pc".
+        window_s: Window duration in seconds.
+        hop_s: Hop between window centres in seconds.
+        softmax_beta: Inverse temperature for probability conversion.
+        transition_penalty: Log-domain penalty for key changes in Viterbi.
+        profile_map: Optional tonal profile map.
+
+    Returns:
+        List of KeyTrajectoryEntry with one entry per smoothed window.
+    """
+    from analysis.chords._viterbi_shared import _viterbi_smooth_sequences
+
+    if len(observations) == 0 or len(timestamps_s) == 0:
+        return []
+
+    obs_arr = np.asarray(observations, dtype=float)
+    time_arr = np.asarray(timestamps_s, dtype=float)
+
+    if profile_map is None:
+        profile_map = build_tonal_profile_map()
+
+    key_labels = [label for label in iter_key_labels() if label in profile_map]
+    if not key_labels:
+        key_labels = list(profile_map.keys())
+
+    duration = float(np.max(time_arr) - np.min(time_arr))
+    if duration <= 0.0 or len(key_labels) == 0:
+        # Fall back to global detection
+        result = detect_key(observations, input_unit=input_unit,
+                            softmax_beta=softmax_beta, profile_map=profile_map)
+        if result.best_key is None:
+            return []
+        return [KeyTrajectoryEntry(
+            start_s=float(np.min(time_arr)),
+            end_s=float(np.max(time_arr)),
+            label=result.best_key,
+            confidence=result.confidence,
+            probabilities=result.probabilities,
+        )]
+
+    t_start = float(np.min(time_arr))
+    t_end = float(np.max(time_arr))
+
+    # Build windows
+    window_centres: List[float] = []
+    c = t_start + window_s / 2.0
+    while c - window_s / 2.0 < t_end:
+        window_centres.append(c)
+        c += hop_s
+
+    if not window_centres:
+        window_centres = [(t_start + t_end) / 2.0]
+
+    # Compute per-window key probability frames
+    prob_frames: List[np.ndarray] = []
+    window_spans: List[Tuple[float, float]] = []
+
+    for centre in window_centres:
+        w_start = centre - window_s / 2.0
+        w_end = centre + window_s / 2.0
+        mask = (time_arr >= w_start) & (time_arr < w_end)
+        window_obs = obs_arr[mask]
+
+        if len(window_obs) < 2:
+            # Not enough observations — uniform distribution
+            prob_frames.append(np.ones(len(key_labels), dtype=float) / len(key_labels))
+        else:
+            _, probs = score_keys(
+                list(window_obs),
+                input_unit=input_unit,
+                softmax_beta=softmax_beta,
+                profile_map=profile_map,
+            )
+            prob_frames.append(probs)
+
+        window_spans.append((max(w_start, t_start), min(w_end, t_end)))
+
+    # Stack into (T, N) probability matrix and run Viterbi smoothing
+    prob_matrix = np.array(prob_frames, dtype=np.float64)
+    smoothed_labels = _viterbi_smooth_sequences(
+        key_labels, prob_matrix, transition_penalty=transition_penalty
+    )
+
+    # Build trajectory, merging adjacent windows with the same key
+    trajectory: List[KeyTrajectoryEntry] = []
+    for idx, label in enumerate(smoothed_labels):
+        span_start, span_end = window_spans[idx]
+        window_probs = {k: float(v) for k, v in zip(key_labels, prob_frames[idx])}
+        conf = entropy_confidence(list(prob_frames[idx]))
+
+        if trajectory and trajectory[-1].label == label:
+            # Merge with previous entry
+            prev = trajectory[-1]
+            merged_probs = {k: max(prev.probabilities.get(k, 0.0), window_probs.get(k, 0.0))
+                           for k in key_labels}
+            trajectory[-1] = KeyTrajectoryEntry(
+                start_s=prev.start_s,
+                end_s=span_end,
+                label=label,
+                confidence=max(prev.confidence, conf),
+                probabilities=merged_probs,
+            )
+        else:
+            trajectory.append(KeyTrajectoryEntry(
+                start_s=span_start,
+                end_s=span_end,
+                label=label,
+                confidence=conf,
+                probabilities=window_probs,
+            ))
+
+    return trajectory
+
+
 __all__ = [
     "KeyDetectionResult",
+    "KeyTrajectoryEntry",
     "detect_key",
+    "detect_key_trajectory",
     "entropy_confidence",
     "propagate_key_probabilities",
     "score_keys",

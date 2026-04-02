@@ -33,6 +33,38 @@ const parseErrorMessage = async (response) => {
   return response.statusText || "Request failed.";
 };
 
+/**
+ * Retry a fetch-returning function with exponential backoff.
+ * Retries on network errors and 5xx status codes.
+ * Does NOT retry on 4xx (client errors) — those are permanent.
+ */
+const withRetry = async (fn, { maxAttempts = 3, baseDelayMs = 1000 } = {}) => {
+  let lastError;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      const response = await fn();
+      // Retry on server errors (5xx), not client errors (4xx)
+      if (response.ok || (response.status >= 400 && response.status < 500)) {
+        return response;
+      }
+      if (attempt < maxAttempts - 1) {
+        const delay = baseDelayMs * Math.pow(2, attempt);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        continue;
+      }
+      return response; // final attempt — return the 5xx response for caller to handle
+    } catch (err) {
+      lastError = err;
+      if (attempt < maxAttempts - 1) {
+        const delay = baseDelayMs * Math.pow(2, attempt);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        continue;
+      }
+    }
+  }
+  throw lastError;
+};
+
 const ensureOk = async (response) => {
   if (response.ok) {
     return response;
@@ -288,9 +320,7 @@ export const fetchJobStatus = async (jobId) => {
     throw new Error("Job ID is required.");
   }
   const response = await ensureOk(
-    await fetch(buildUrl(`/status/${jobId}`), {
-      method: "GET",
-    })
+    await withRetry(() => fetch(buildUrl(`/status/${jobId}`), { method: "GET" }))
   );
   return normalizeJobStatus(await response.json());
 };
@@ -301,9 +331,7 @@ export const fetchJobResults = async (jobId, format = "json") => {
   }
   const query = new URLSearchParams({ format }).toString();
   const response = await ensureOk(
-    await fetch(buildUrl(`/results/${jobId}?${query}`), {
-      method: "GET",
-    })
+    await withRetry(() => fetch(buildUrl(`/results/${jobId}?${query}`), { method: "GET" }))
   );
   if (format === "json") {
     return normalizeAnalysisResult(await response.json());

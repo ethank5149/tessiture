@@ -13,7 +13,7 @@ import numpy as np
 from analysis.advanced.formants import estimate_formants_from_audio
 from analysis.advanced.phrase_segmentation import segment_phrases_from_audio
 from analysis.advanced.vibrato import detect_vibrato
-from analysis.chords.key_detector import detect_key
+from analysis.chords.key_detector import detect_key, detect_key_trajectory
 from analysis.dsp.peak_detection import detect_harmonics
 from analysis.dsp.preprocessing import preprocess_audio
 from analysis.dsp.stft import compute_stft
@@ -285,7 +285,6 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
     note_events = _build_note_events(pitch_frames)
     chord_timeline = _build_chord_timeline(note_events)
 
-    report_progress(65, "key_detection", "Detecting musical key.")
     # Spectrogram data is served via the dedicated GET /spectrogram/{job_id} endpoint;
     # the legacy stft_raw is kept as an empty dict for backward compatibility with any
     # consuming code that reads analysis_payload["spectrogram"] or ["spectrum"].
@@ -321,7 +320,38 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
             str(label): float(probability)
             for label, probability in key_detection_result.probabilities.items()
         }
-        if key_detection_result.best_key:
+        # Attempt windowed key trajectory with Viterbi smoothing.
+        # Falls back to a single global key entry when there aren't enough
+        # observations or when the trajectory function is unavailable.
+        voiced_timestamps = [
+            float(frame.get("time", 0.0))
+            for frame in voiced_pitch_frames
+            if _safe_float(frame.get("time")) is not None
+        ]
+        if len(voiced_midi) >= 10 and len(voiced_timestamps) == len(voiced_midi):
+            try:
+                traj_entries = detect_key_trajectory(
+                    voiced_midi,
+                    voiced_timestamps,
+                    input_unit="midi",
+                    window_s=8.0,
+                    hop_s=4.0,
+                )
+                if traj_entries:
+                    key_trajectory = [
+                        {
+                            "start": entry.start_s,
+                            "end": entry.end_s,
+                            "label": entry.label,
+                            "confidence": entry.confidence,
+                        }
+                        for entry in traj_entries
+                    ]
+            except Exception as exc:
+                logger.debug("key_trajectory_failed error=%s", exc)
+
+        # Fall back to single global key if trajectory is empty.
+        if not key_trajectory and key_detection_result.best_key:
             key_trajectory.append(
                 {
                     "start": 0.0,
@@ -334,7 +364,6 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
     report_progress(72, "tessitura", "Analyzing vocal range.")
     if job_logger:
         job_logger.debug("Stage: tessitura analysis")
-    report_progress(72, "tessitura", "Analyzing vocal range.")
     tessitura_payload: Dict[str, Any] = {}
     if voiced_midi:
         try:

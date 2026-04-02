@@ -382,3 +382,499 @@
 .note-display__status {
   font-size: 0.75rem;
 }
+
+/* ============================================================================
+   PITCH TIMELINE
+   ============================================================================ */
+
+.results__section--pitch-timeline {
+  margin-top: var(--space-md);
+}
+
+.pitch-timeline__tooltip {
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  color: var(--text-primary);
+  box-shadow: var(--shadow);
+  white-space: nowrap;
+  z-index: 10;
+}
+
+/* ============================================================================
+   PROGRESSIVE DISCLOSURE — Expandable sections
+   ============================================================================ */
+
+.results__disclosure {
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  margin-top: var(--space-md);
+  overflow: hidden;
+}
+
+.results__disclosure summary {
+  cursor: pointer;
+  padding: var(--space-sm) var(--space-md);
+  font-weight: 600;
+  color: var(--text-primary);
+  background: var(--surface-2);
+  user-select: none;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-height: var(--touch-min);
+}
+
+.results__disclosure summary::before {
+  content: "▸";
+  font-size: 0.85rem;
+  transition: transform var(--transition-ui);
+}
+
+.results__disclosure[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.results__disclosure summary::-webkit-details-marker {
+  display: none;
+}
+
+.results__disclosure__body {
+  padding: var(--space-md);
+}
+
+/* ============================================================================
+   CONFIDENCE BADGE
+   ============================================================================ */
+
+.confidence-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 99px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.confidence-badge--high {
+  background: rgba(74, 222, 128, 0.12);
+  color: var(--success);
+}
+
+.confidence-badge--medium {
+  background: rgba(251, 191, 36, 0.12);
+  color: #fbbf24;
+}
+
+.confidence-badge--low {
+  background: rgba(251, 113, 133, 0.12);
+  color: var(--danger);
+}
+
+/* ============================================================================
+   PITCH METER — Live comparison real-time feedback
+   ============================================================================ */
+
+.pitch-meter {
+  padding: var(--space-md);
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  text-align: center;
+}
+
+.pitch-meter__notes {
+  display: flex;
+  justify-content: center;
+  gap: var(--space-xl);
+  margin-bottom: var(--space-md);
+}
+
+.pitch-meter__note-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.pitch-meter__note-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-soft);
+}
+
+.pitch-meter__note-value {
+  color: var(--text-primary);
+}
+
+.pitch-meter__bar-container {
+  max-width: 400px;
+  margin: 0 auto var(--space-sm);
+}
+
+.pitch-meter__bar-track {
+  position: relative;
+  height: 24px;
+  background: var(--surface-3);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.pitch-meter__bar-center {
+  position: absolute;
+  left: 50%;
+  top: 2px;
+  bottom: 2px;
+  width: 2px;
+  background: var(--text-soft);
+  opacity: 0.4;
+  transform: translateX(-50%);
+}
+
+.pitch-meter__bar-indicator {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  width: 18px;
+  border-radius: 9px;
+  transform: translateX(-50%);
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.2);
+}
+
+.pitch-meter__bar-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.7rem;
+  color: var(--text-soft);
+  margin-top: 4px;
+  padding: 0 4px;
+}
+
+.pitch-meter__accuracy {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  margin-top: var(--space-sm);
+}
+
+.pitch-meter__accuracy-label {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+/* ============================================================================
+   VOCAL PROFILE CARD
+   ============================================================================ */
+
+.vocal-profile-card {
+  background: linear-gradient(135deg, var(--surface-1) 0%, var(--surface-2) 100%);
+  border: 1px solid var(--border-subtle);
+  border-left: 4px solid var(--profile-accent, var(--brand));
+  border-radius: 12px;
+  padding: var(--space-lg);
+  margin: var(--space-md) 0;
+}
+
+.vocal-profile-card__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  margin-bottom: var(--space-md);
+}
+
+.vocal-profile-card__icon {
+  font-size: 2.2rem;
+}
+
+.vocal-profile-card__voice-type {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0;
+  line-height: 1.2;
+}
+
+.vocal-profile-card__confidence {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  text-transform: capitalize;
+}
+
+.vocal-profile-card__context {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  margin-bottom: var(--space-md);
+  font-style: italic;
+}
+
+.vocal-profile-card__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  margin-bottom: var(--space-md);
+}
+
+.vocal-profile-card__stat {
+  display: flex;
+  flex-direction: column;
+  min-width: 80px;
+}
+
+.vocal-profile-card__stat-value {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.vocal-profile-card__stat-label {
+  font-size: 0.72rem;
+  color: var(--text-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.vocal-profile-card__stability {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--surface-3);
+  border-radius: 8px;
+  font-size: 0.85rem;
+}
+
+.vocal-profile-card__stability p {
+  margin: 2px 0 0;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+/* ============================================================================
+   SONG SUGGESTIONS
+   ============================================================================ */
+
+.song-suggestions {
+  margin-top: var(--space-md);
+}
+
+.song-suggestions__title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.song-suggestions__subtitle {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-bottom: var(--space-md);
+}
+
+.song-suggestions__list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.song-suggestions__item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--space-sm) var(--space-md);
+  background: var(--surface-2);
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+}
+
+.song-suggestions__info {
+  display: flex;
+  flex-direction: column;
+}
+
+.song-suggestions__song-title {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.song-suggestions__artist {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.song-suggestions__meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.song-suggestions__genre {
+  font-size: 0.7rem;
+  color: var(--text-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.song-suggestions__fit {
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+/* ============================================================================
+   WARM-UP ROUTINE
+   ============================================================================ */
+
+.warmup-routine {
+  margin-top: var(--space-md);
+}
+
+.warmup-routine__title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.warmup-routine__subtitle {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-bottom: var(--space-md);
+}
+
+.warmup-routine__steps {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.warmup-routine__step {
+  padding: var(--space-md);
+  background: var(--surface-2);
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+}
+
+.warmup-routine__step-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-sm);
+}
+
+.warmup-routine__step-number {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--brand);
+  color: var(--brand-contrast);
+  font-weight: 700;
+  font-size: 0.85rem;
+  flex-shrink: 0;
+}
+
+.warmup-routine__step-title {
+  display: block;
+  font-size: 0.95rem;
+}
+
+.warmup-routine__step-duration {
+  font-size: 0.75rem;
+  color: var(--text-soft);
+}
+
+.warmup-routine__step-instruction {
+  font-size: 0.9rem;
+  line-height: 1.5;
+  margin: 0 0 var(--space-xs);
+}
+
+.warmup-routine__step-why {
+  font-size: 0.8rem;
+  color: var(--text-soft);
+  margin: 0;
+}
+
+/* ============================================================================
+   SESSION HISTORY
+   ============================================================================ */
+
+.session-history {
+  margin-top: var(--space-md);
+}
+
+.session-history__title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin-bottom: var(--space-sm);
+}
+
+.session-history__first {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--surface-2);
+  border-radius: 8px;
+}
+
+.session-history__insights {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.session-history__insight {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
+
+.session-history__insight--positive {
+  background: rgba(74, 222, 128, 0.08);
+  color: var(--success);
+}
+
+.session-history__insight--neutral {
+  background: var(--surface-2);
+  color: var(--text-muted);
+}
+
+.session-history__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.session-history__table th,
+.session-history__table td {
+  padding: var(--space-xs) var(--space-sm);
+  text-align: left;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.session-history__table th {
+  color: var(--text-soft);
+  font-weight: 600;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}

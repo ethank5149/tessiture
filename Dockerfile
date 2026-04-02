@@ -1,14 +1,16 @@
 # syntax=docker/dockerfile:1.7
 
+# ── Stage 1: Frontend build ──────────────────────────────────────────────────
 FROM node:20-alpine AS frontend-build
 WORKDIR /app/frontend
 ARG VITE_APP_VERSION
 ENV VITE_APP_VERSION=${VITE_APP_VERSION}
-COPY frontend/package.json ./package.json
-RUN npm install --no-audit --no-fund
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --no-audit --no-fund
 COPY frontend/ ./
 RUN npm run build
 
+# ── Stage 2: Runtime ─────────────────────────────────────────────────────────
 FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -32,18 +34,20 @@ RUN apt-get update \
     && ln -sf python3.11 /usr/bin/python3 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt ./requirements.txt
-
-# Install PyTorch with CUDA support first (separate index), then remaining deps
+# Layer 1: PyTorch + CUDA (largest layer, changes least often)
 RUN python -m pip install --upgrade pip \
     && python -m pip install torch==2.2.2 torchaudio==2.2.2 \
-       --index-url https://download.pytorch.org/whl/cu121 \
-    && python -m pip install demucs==4.0.1 \
-    && python -m pip install -r requirements.txt
+       --index-url https://download.pytorch.org/whl/cu121
 
-# Pre-download Demucs model weights so they're baked into the image
-RUN python -c "from demucs.pretrained import get_model; get_model('htdemucs')"
+# Layer 2: Demucs + model weights (changes rarely)
+RUN python -m pip install demucs==4.0.1 \
+    && python -c "from demucs.pretrained import get_model; get_model('htdemucs')"
 
+# Layer 3: Application dependencies (changes when requirements.txt changes)
+COPY requirements.txt ./requirements.txt
+RUN python -m pip install -r requirements.txt
+
+# Application code (changes most often — last layer for cache efficiency)
 COPY analysis/ ./analysis/
 COPY api/ ./api/
 COPY calibration/ ./calibration/
@@ -54,8 +58,15 @@ COPY pyproject.toml ./pyproject.toml
 
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 
-RUN mkdir -p /data/uploads /data/outputs
+RUN mkdir -p /data/uploads /data/outputs /data/stem_cache \
+    && groupadd -r tessiture && useradd -r -g tessiture tessiture \
+    && chown -R tessiture:tessiture /data
+
+USER tessiture
 
 EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=15s \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
 
 CMD ["sh", "-c", "uvicorn api.server:app --host ${TESSITURE_HOST:-0.0.0.0} --port ${TESSITURE_PORT:-8000}"]

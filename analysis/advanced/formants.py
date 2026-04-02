@@ -435,8 +435,32 @@ def estimate_formants_from_audio(
     ),
     min_db: float = -50.0,
     smoothing_bins: int = 5,
+    method: str = "lpc",
 ) -> FormantTrack:
-    """Estimate formants directly from audio by computing an STFT."""
+    """Estimate formants directly from audio.
+
+    Args:
+        method: "lpc" (default, recommended) uses LPC pole analysis — the
+            standard approach in speech science.  "spectrum" uses the legacy
+            smoothed-spectrum peak-picking method.  LPC is more robust for
+            high-pitched voices where harmonics can masquerade as formants
+            in the magnitude spectrum.
+    """
+    import logging as _logging
+    _logger = _logging.getLogger(__name__)
+
+    if method == "lpc":
+        try:
+            return estimate_formants_lpc(
+                audio,
+                sample_rate,
+                hop_length=hop_length,
+            )
+        except Exception as exc:
+            _logger.debug("formant_lpc_failed, falling back to spectrum method: %s", exc)
+            # Fall through to spectrum method
+
+    # Spectrum peak-picking fallback
     if preprocess:
         result = preprocess_audio(audio, sample_rate, target_sr=target_sr)
         audio = result.audio

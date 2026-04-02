@@ -14,74 +14,15 @@ import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
 
-
-NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
-
-
-def _safe_float(value: Any) -> Optional[float]:
-    if value is None:
-        return None
-    try:
-        num = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(num):
-        return None
-    return num
-
-
-def _ensure_mapping(value: Any) -> MutableMapping[str, Any]:
-    if isinstance(value, MutableMapping):
-        return value
-    if isinstance(value, Mapping):
-        return dict(value)
-    return {}
-
-
-def _coerce_sequence(value: Any) -> list[Any]:
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-        return list(value)
-    return []
-
-
-def _first_float(mapping: Mapping[str, Any], keys: Sequence[str]) -> Optional[float]:
-    for key in keys:
-        if key not in mapping:
-            continue
-        value = _safe_float(mapping.get(key))
-        if value is not None:
-            return value
-    return None
-
-
-def _extract_frames(result: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    for path in (
-        ("frames",),
-        ("pitch", "frames"),
-        ("pitch_frames",),
-        ("pitch", "pitch_frames"),
-        ("analysis", "frames"),
-    ):
-        current: Any = result
-        for key in path:
-            if not isinstance(current, Mapping) or key not in current:
-                current = None
-                break
-            current = current[key]
-        if isinstance(current, Sequence) and not isinstance(current, (str, bytes)):
-            return [item for item in current if isinstance(item, Mapping)]
-    return []
-
-
-def _extract_events(result: Mapping[str, Any], *path: str) -> list[Mapping[str, Any]]:
-    current: Any = result
-    for key in path:
-        if not isinstance(current, Mapping) or key not in current:
-            return []
-        current = current[key]
-    if not isinstance(current, Sequence) or isinstance(current, (str, bytes)):
-        return []
-    return [item for item in current if isinstance(item, Mapping)]
+from reporting._helpers import (
+    NOTE_NAMES,
+    _safe_float,
+    _ensure_mapping,
+    _coerce_sequence,
+    _first_float,
+    _extract_frames,
+    _extract_events,
+)
 
 
 def _frame_time(frame: Mapping[str, Any], index: int, metadata: Mapping[str, Any]) -> float:

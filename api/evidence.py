@@ -135,7 +135,13 @@ def _build_evidence_payload(
     if len(voiced_frames_data) >= 2:
         ordered_frames = sorted(voiced_frames_data, key=lambda f: f["time"])
         best_jump: Optional[Dict[str, Any]] = None
+        # Maximum inter-frame time gap to count as a single-phrase transition.
+        # Gaps larger than this are phrase boundaries, not pitch jumps.
+        max_intra_phrase_gap_s = 0.25
         for prev, curr in zip(ordered_frames, ordered_frames[1:]):
+            time_gap = curr["time"] - prev["time"]
+            if time_gap > max_intra_phrase_gap_s or time_gap <= 0.0:
+                continue  # skip cross-phrase transitions
             jump_midi = abs(curr["midi"] - prev["midi"])
             if best_jump is None or jump_midi > float(best_jump["delta_midi"]):
                 best_jump = {
@@ -205,20 +211,71 @@ def _build_evidence_payload(
 
 
 def _build_chord_timeline(note_events: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
-    timeline: List[Dict[str, Any]] = []
+    """Build a chord timeline by detecting chords from simultaneously-sounding notes.
+
+    Groups overlapping note events into time windows, then runs chord detection
+    on each window's pitch set.  Single-note windows are labelled with the note
+    name rather than a spurious chord label.
+    """
+    # --- collect valid events with start/end/midi --------------------------
+    valid_events: List[Dict[str, Any]] = []
     for event in note_events:
         midi_value = _safe_float(event.get("midi"))
+        start = _safe_float(event.get("start")) or 0.0
+        end = _safe_float(event.get("end"))
         if midi_value is None:
             continue
-        detected = detect_chord([midi_value], input_unit="midi", max_notes=4, top_k=3)
-        label = detected.best_chord or str(event.get("note") or "Unknown")
-        probability = float(detected.probabilities.get(label, 0.0)) if detected.probabilities else 0.0
-        timeline.append(
-            {
-                "start": _safe_float(event.get("start")) or 0.0,
-                "end": _safe_float(event.get("end")),
-                "label": label,
-                "confidence": probability,
-            }
-        )
-    return timeline
+        if end is None or end <= start:
+            end = start + 0.1  # fallback duration
+        valid_events.append({"start": start, "end": end, "midi": midi_value,
+                             "note": event.get("note") or _midi_to_note_name(midi_value)})
+
+    if not valid_events:
+        return []
+
+    # --- build boundary-point timeline -------------------------------------
+    # Collect every unique start/end time as a boundary point, then for each
+    # interval [boundary_i, boundary_{i+1}] find all notes sounding in that
+    # interval.
+    boundaries: List[float] = sorted({e["start"] for e in valid_events}
+                                      | {e["end"] for e in valid_events})
+
+    raw_timeline: List[Dict[str, Any]] = []
+    for i in range(len(boundaries) - 1):
+        seg_start = boundaries[i]
+        seg_end = boundaries[i + 1]
+        if seg_end <= seg_start:
+            continue
+        # Collect MIDI values of all notes sounding during this segment.
+        sounding_midi: List[float] = []
+        for ev in valid_events:
+            if ev["start"] < seg_end and ev["end"] > seg_start:
+                sounding_midi.append(ev["midi"])
+
+        if not sounding_midi:
+            continue
+
+        if len(sounding_midi) >= 2:
+            # Multiple simultaneous notes — run real chord detection.
+            detected = detect_chord(sounding_midi, input_unit="midi", max_notes=4, top_k=3)
+            label = detected.best_chord or "N.C."
+            confidence = float(detected.probabilities.get(label, 0.0)) if detected.probabilities else 0.0
+        else:
+            # Single note — label with note name, not a chord.
+            label = str(_midi_to_note_name(sounding_midi[0]))
+            confidence = 0.0
+
+        raw_timeline.append({"start": seg_start, "end": seg_end,
+                             "label": label, "confidence": confidence})
+
+    # --- merge adjacent segments with the same label -----------------------
+    merged: List[Dict[str, Any]] = []
+    for entry in raw_timeline:
+        if merged and merged[-1]["label"] == entry["label"]:
+            merged[-1]["end"] = entry["end"]
+            # Keep the higher confidence of the two segments.
+            merged[-1]["confidence"] = max(merged[-1]["confidence"], entry["confidence"])
+        else:
+            merged.append(dict(entry))
+
+    return merged

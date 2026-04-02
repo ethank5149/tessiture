@@ -18,75 +18,15 @@ else:
     _REPORTLAB_AVAILABLE = True
     _REPORTLAB_IMPORT_ERROR = None
 
-
-def _safe_float(value: Any) -> Optional[float]:
-    if value is None:
-        return None
-    try:
-        num = float(value)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(num):
-        return None
-    return num
-
-
-def _ensure_mapping(value: Any) -> MutableMapping[str, Any]:
-    if isinstance(value, MutableMapping):
-        return value
-    if isinstance(value, Mapping):
-        return dict(value)
-    return {}
-
-
-def _coerce_sequence(value: Any) -> list[Any]:
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-        return list(value)
-    return []
-
-
-def _first_float(mapping: Mapping[str, Any], keys: Sequence[str]) -> Optional[float]:
-    for key in keys:
-        if key not in mapping:
-            continue
-        value = _safe_float(mapping.get(key))
-        if value is not None:
-            return value
-    return None
-
-
-def _format_number(value: Any, *, decimals: int = 2) -> str:
-    number = _safe_float(value)
-    if number is None:
-        return "N/A"
-    if number.is_integer():
-        return str(int(number))
-    return f"{number:.{decimals}f}"
-
-
-def _format_band(value: Any) -> str:
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)) and len(value) >= 2:
-        return f"{_format_number(value[0])} to {_format_number(value[1])}"
-    return "N/A"
-
-
-def _extract_frames(result: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    for path in (
-        ("frames",),
-        ("pitch", "frames"),
-        ("pitch_frames",),
-        ("pitch", "pitch_frames"),
-        ("analysis", "frames"),
-    ):
-        current: Any = result
-        for key in path:
-            if not isinstance(current, Mapping) or key not in current:
-                current = None
-                break
-            current = current[key]
-        if isinstance(current, Sequence) and not isinstance(current, (str, bytes)):
-            return [item for item in current if isinstance(item, Mapping)]
-    return []
+from reporting._helpers import (
+    _safe_float,
+    _ensure_mapping,
+    _coerce_sequence,
+    _first_float,
+    _format_number,
+    _format_band,
+    _extract_frames,
+)
 
 
 def _frame_time(frame: Mapping[str, Any], index: int, metadata: Mapping[str, Any]) -> float:
