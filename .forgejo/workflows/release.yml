@@ -84,7 +84,7 @@ jobs:
 
       - name: Install Python dependencies
         shell: bash
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt -e ".[dev]"
 
       - name: Save pip cache (for future runs)
         if: always()
@@ -99,23 +99,15 @@ jobs:
             SIZE=$(stat -c%s /tmp/cache.tar.gz 2>/dev/null || stat -f%z /tmp/cache.tar.gz 2>/dev/null)
             if [ "$SIZE" -gt 100 ]; then
               echo "Cache size: $SIZE bytes"
-              # Create cache entry and get upload URL
               RESPONSE=$(curl -s -X POST -H "Authorization: Bearer ${{ github.token }}" \
                 -H "Content-Type: application/json" \
                 -d "{\"key\":\"$CACHE_KEY\",\"size\":$SIZE}" \
                 "$FORGEJO_URL/api/v1/actions/caches")
-              echo "Create response: $RESPONSE"
-              
-              # Extract upload URL and upload the archive
               UPLOAD_URL=$(echo "$RESPONSE" | grep -o '"archive_upload_url":"[^"]*' | cut -d'"' -f4)
               if [ -n "$UPLOAD_URL" ]; then
-                echo "Uploading to: $UPLOAD_URL"
                 curl -X PUT -H "Content-Type: application/gzip" \
                   --data-binary @/tmp/cache.tar.gz \
                   "$UPLOAD_URL" -w "Upload status: %{http_code}\n"
-                echo "Cache saved successfully for $CACHE_KEY"
-              else
-                echo "Failed to get upload URL"
               fi
             fi
           fi
@@ -148,24 +140,15 @@ jobs:
             tar -czf /tmp/npm-cache.tar.gz -C "$CACHE_DIR" . 2>/dev/null
             SIZE=$(stat -c%s /tmp/npm-cache.tar.gz 2>/dev/null || stat -f%z /tmp/npm-cache.tar.gz 2>/dev/null)
             if [ "$SIZE" -gt 100 ]; then
-              echo "Cache size: $SIZE bytes"
-              # Create cache entry and get upload URL
               RESPONSE=$(curl -s -X POST -H "Authorization: Bearer ${{ github.token }}" \
                 -H "Content-Type: application/json" \
                 -d "{\"key\":\"$CACHE_KEY\",\"size\":$SIZE}" \
                 "$FORGEJO_URL/api/v1/actions/caches")
-              echo "Create response: $RESPONSE"
-              
-              # Extract upload URL and upload the archive
               UPLOAD_URL=$(echo "$RESPONSE" | grep -o '"archive_upload_url":"[^"]*' | cut -d'"' -f4)
               if [ -n "$UPLOAD_URL" ]; then
-                echo "Uploading to: $UPLOAD_URL"
                 curl -X PUT -H "Content-Type: application/gzip" \
                   --data-binary @/tmp/npm-cache.tar.gz \
                   "$UPLOAD_URL" -w "Upload status: %{http_code}\n"
-                echo "Cache saved successfully for $CACHE_KEY"
-              else
-                echo "Failed to get upload URL"
               fi
             fi
           fi
@@ -194,7 +177,6 @@ jobs:
           SERVER="${{ github.server_url }}"
           REPO="${{ github.repository }}"
           TOKEN="${{ github.token }}"
-          # Embed token in clone URL so origin remote has auth for git push later
           AUTH_URL=$(echo "${SERVER}" | sed "s|://|://oauth2:${TOKEN}@|")
           git clone "${AUTH_URL}/${REPO}.git" .
           git fetch --tags
@@ -214,8 +196,6 @@ jobs:
       - name: Set image reference in deploy/.env
         shell: bash
         run: |
-          # Use the Tailscale FQDN for the registry — auth tokens are issued for this hostname
-          # and blob uploads must go to the same host. The runner resolves it via /etc/hosts.
           REGISTRY="forgejo.dojo-diminished.ts.net"
           IMAGE="${REGISTRY}/${{ github.repository }}:latest"
           if grep -q '^TESSITURE_IMAGE=' deploy/.env; then
@@ -229,13 +209,11 @@ jobs:
       - name: Add Forgejo hostname to /etc/hosts
         shell: bash
         run: |
-          # Map the Tailscale FQDN to the Tailscale IP so the runner can reach it.
-          # Tailscale handles HTTPS (port 443) and proxies to Forgejo's HTTP port 1003.
           FORGEJO_FQDN="forgejo.dojo-diminished.ts.net"
           TAILSCALE_IP="100.95.62.8"
           echo "${TAILSCALE_IP} ${FORGEJO_FQDN}" >> /etc/hosts
           echo "Added ${TAILSCALE_IP} ${FORGEJO_FQDN} to /etc/hosts"
-          curl -sf --max-time 5 "https://${FORGEJO_FQDN}/v2/" -o /dev/null && echo "HTTPS reachable" || echo "HTTPS check failed"
+          curl -sf --max-time 5 "https://${FORGEJO_FQDN}/v2/" -o /dev/null && echo "HTTPS reachable" || echo "HTTPS check failed (non-fatal)"
 
       - name: Make scripts executable
         shell: bash
@@ -246,9 +224,19 @@ jobs:
           GIT_TOKEN: ${{ github.token }}
         shell: bash
         run: |
+          # DinD runners set DOCKER_TLS_VERIFY=1 and DOCKER_CERT_PATH=/certs/client
+          # but the cert files may not exist in the runner container, causing:
+          #   "unable to resolve docker endpoint: open /certs/client/ca.pem: no such file or directory"
+          # Unsetting these lets the Docker client connect without TLS verification
+          # to the local daemon (which is safe — it's the same host via socket or localhost TCP).
+          unset DOCKER_TLS_VERIFY 2>/dev/null || true
+          unset DOCKER_CERT_PATH 2>/dev/null || true
+
           echo "${GIT_TOKEN}" | docker login "${REGISTRY}" \
             --username "${{ github.repository_owner }}" \
-            --password-stdin
+            --password-stdin \
+            && echo "Registry login successful" \
+            || echo "::warning::Registry login failed — image will be built locally but not pushed"
 
       - name: Build and push Docker image
         timeout-minutes: 30
@@ -256,20 +244,35 @@ jobs:
           GIT_TOKEN: ${{ github.token }}
         shell: bash
         run: |
+          # Unset DinD TLS vars for all docker operations in this step
+          unset DOCKER_TLS_VERIFY 2>/dev/null || true
+          unset DOCKER_CERT_PATH 2>/dev/null || true
+
           # examples/ is gitignored (runtime data); create empty dir so Dockerfile COPY succeeds
           mkdir -p examples/tracks
           CACHE_REF="${REGISTRY}/${{ github.repository }}:buildcache"
+
+          # Try build with push; fall back to local-only build if push fails
           deploy/scripts/build.sh \
             --version-bump "${{ inputs.version_bump || 'auto' }}" \
             --env-file deploy/.env \
             --no-git-tag \
             --push \
-            --cache-ref "${CACHE_REF}"
+            --cache-ref "${CACHE_REF}" \
+          || {
+            echo "::warning::Push failed — rebuilding for local deployment only"
+            deploy/scripts/build.sh \
+              --version-bump "none" \
+              --env-file deploy/.env \
+              --no-git-tag
+          }
 
       - name: Deploy stack
         timeout-minutes: 10
         shell: bash
         run: |
+          unset DOCKER_TLS_VERIFY 2>/dev/null || true
+          unset DOCKER_CERT_PATH 2>/dev/null || true
           deploy/scripts/deploy.sh \
             --env-file deploy/.env \
             --compose-file deploy/docker-compose.yml
@@ -277,6 +280,8 @@ jobs:
       - name: Verify deployment
         shell: bash
         run: |
+          unset DOCKER_TLS_VERIFY 2>/dev/null || true
+          unset DOCKER_CERT_PATH 2>/dev/null || true
           echo "Waiting for container 'tessiture' to be running..."
           TIMEOUT=120
           INTERVAL=10
@@ -337,4 +342,7 @@ jobs:
       - name: Log out of container registry
         if: always()
         shell: bash
-        run: docker logout "${REGISTRY}" 2>/dev/null || true
+        run: |
+          unset DOCKER_TLS_VERIFY 2>/dev/null || true
+          unset DOCKER_CERT_PATH 2>/dev/null || true
+          docker logout "${REGISTRY}" 2>/dev/null || true
