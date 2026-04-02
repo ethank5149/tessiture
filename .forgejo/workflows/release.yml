@@ -172,12 +172,9 @@ jobs:
           echo "DOCKER_TLS_VERIFY=" >> "${GITHUB_ENV}"
           echo "DOCKER_CERT_PATH=" >> "${GITHUB_ENV}"
 
-      - name: Write .env to host
+      - name: Write .env
         shell: bash
-        run: |
-          echo "${{ secrets.TESSITURE_ENV }}" | docker run --rm -i \
-            -v /mnt/user/public/tessiture/deploy:/deploy \
-            alpine sh -c "cat > /deploy/.env"
+        run: echo "${{ secrets.TESSITURE_ENV }}" > deploy/.env
 
       - name: Pull and deploy
         shell: bash
@@ -190,7 +187,7 @@ jobs:
           docker pull "${IMAGE}"
           docker logout "${REGISTRY}"
           TESSITURE_IMAGE="${IMAGE}" deploy/scripts/deploy.sh \
-            --env-file /mnt/user/public/tessiture/deploy/.env \
+            --env-file deploy/.env \
             --compose-file deploy/docker-compose.yml
 
       - name: Verify deployment
