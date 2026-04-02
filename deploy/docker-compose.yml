@@ -41,6 +41,3 @@ networks:
     name: tessiture_internal
     driver: bridge
     internal: true
-  caddy_proxy:
-    external: true
-    name: caddy-proxy
