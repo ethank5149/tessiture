@@ -149,6 +149,11 @@ jobs:
     needs: build-and-push
 
     steps:
+      - name: Install bash
+        shell: sh
+        run: |
+          command -v bash >/dev/null 2>&1 || apk add --no-cache bash || apt-get install -y bash
+
       - name: Checkout
         shell: bash
         run: |
