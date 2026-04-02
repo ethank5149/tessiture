@@ -86,6 +86,7 @@ function PitchTimeline({ pitchFrames = [], durationSeconds = 0, tessituraLow, te
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
+    if (!ctx) return; // jsdom or unsupported browser — skip drawing
     const { width, height } = canvasSize;
     const dpr = window.devicePixelRatio || 1;
     canvas.width = width * dpr;
