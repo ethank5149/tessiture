@@ -149,6 +149,9 @@ jobs:
       needs: build-and-push
 
       steps:
+        - name: Install dependencies
+          run: apt-get update -qq && apt-get install -y -qq git
+        
         - name: Checkout
           shell: bash
           run: |
