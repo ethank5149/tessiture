@@ -162,13 +162,16 @@ jobs:
           chmod 700 ~/.ssh
           echo "${{ secrets.SKYNET_SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H 100.95.62.8 >> ~/.ssh/known_hosts 2>/dev/null || true
+          # Resolve the Docker host gateway — this is SkyNet as seen from inside the runner container
+          SKYNET_HOST=$(ip route | awk '/default/ { print $3; exit }')
+          echo "SKYNET_HOST=${SKYNET_HOST}" >> "${GITHUB_ENV}"
+          ssh-keyscan -H "${SKYNET_HOST}" >> ~/.ssh/known_hosts
 
       - name: Write .env to SkyNet
         shell: bash
         run: |
           echo "${{ secrets.TESSITURE_ENV }}" | \
-            ssh -i ~/.ssh/id_ed25519 root@100.95.62.8 \
+            ssh -i ~/.ssh/id_ed25519 root@"${SKYNET_HOST}" \
             "cat > /mnt/user/public/tessiture/deploy/.env"
 
       - name: Deploy on SkyNet
@@ -177,7 +180,7 @@ jobs:
           REGISTRY="forgejo.dojo-diminished.ts.net"
           IMAGE="${REGISTRY}/${{ github.repository }}:latest"
 
-          ssh -i ~/.ssh/id_ed25519 root@100.95.62.8 bash <<EOF
+          ssh -i ~/.ssh/id_ed25519 root@"${SKYNET_HOST}" bash <<EOF
             set -euo pipefail
             echo "${{ github.token }}" | docker login ${REGISTRY} \
               --username "${{ github.repository_owner }}" \
@@ -193,7 +196,7 @@ jobs:
       - name: Verify deployment
         shell: bash
         run: |
-          ssh -i ~/.ssh/id_ed25519 root@100.95.62.8 bash <<'EOF'
+          ssh -i ~/.ssh/id_ed25519 root@"${SKYNET_HOST}" bash <<'EOF'
             TIMEOUT=120
             ELAPSED=0
             while true; do
