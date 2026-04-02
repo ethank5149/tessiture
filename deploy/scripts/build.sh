@@ -26,7 +26,7 @@ Options:
   --image <tag>            Docker image tag/repo to build (default: tessiture:local)
   --push                   Push image to registry after successful build
   --version-bump <kind>    Version strategy: auto|patch|minor|major|none (default: auto)
-  --base-version <x.y.z>   Base version when current image tag is not semantic (default: 0.0.0)
+  --base-version <x.y.z>  Base version when current image tag is not semantic (default: 0.0.0)
   --env-file <path>        Optional env file to read/update TESSITURE_IMAGE
   --cache-ref <tag>        Registry reference for BuildKit cache (e.g., registry/repo:buildcache)
   --no-git-tag             Skip creating a git tag after successful build
@@ -40,18 +40,9 @@ Examples:
 EOF
 }
 
-log() {
-  printf '[build] %s\n' "$*"
-}
-
-die() {
-  printf '[build] ERROR: %s\n' "$*" >&2
-  exit 1
-}
-
-require_cmd() {
-  command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
-}
+log()     { printf '[build] %s\n' "$*"; }
+die()     { printf '[build] ERROR: %s\n' "$*" >&2; exit 1; }
+require_cmd() { command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"; }
 
 is_container_runtime() {
   [[ -f "/.dockerenv" ]] && return 0
@@ -60,41 +51,27 @@ is_container_runtime() {
 
 docker_preflight() {
   local runtime_context="host"
-  if is_container_runtime; then
-    runtime_context="container"
-  fi
-
+  is_container_runtime && runtime_context="container"
   log "Docker preflight: context=${runtime_context}"
 
-  if ! command -v docker >/dev/null 2>&1; then
-    if [[ "${runtime_context}" = "container" ]]; then
-      die "Docker CLI is missing in this container. Run on the Unraid host, or install docker CLI and mount /var/run/docker.sock into the container."
-    fi
-    die "Docker CLI is missing on host. Install Docker Engine/CLI and retry."
-  fi
+  command -v docker >/dev/null 2>&1 || die "Docker CLI is missing."
 
   if [[ "${runtime_context}" = "container" && ! -S "/var/run/docker.sock" && -z "${DOCKER_HOST:-}" ]]; then
-    die "Docker socket /var/run/docker.sock is not available in this container. Run on host, mount the Docker socket, or set DOCKER_HOST to a TCP endpoint."
+    die "Docker socket unavailable and DOCKER_HOST unset. Mount the socket or set DOCKER_HOST."
   fi
 
   if ! docker info >/dev/null 2>&1; then
     if [[ "${DOCKER_HOST:-}" == *":2376"* ]]; then
       local alt_host="${DOCKER_HOST//:2376/:2375}"
-      log "TLS connection failed (certs likely missing); trying non-TLS fallback: ${alt_host}"
-      unset DOCKER_TLS_VERIFY 2>/dev/null || true
-      unset DOCKER_CERT_PATH 2>/dev/null || true
+      log "TLS connection failed; trying non-TLS fallback: ${alt_host}"
+      unset DOCKER_TLS_VERIFY DOCKER_CERT_PATH 2>/dev/null || true
       export DOCKER_HOST="${alt_host}"
       if docker info >/dev/null 2>&1; then
-        log "Connected to Docker daemon via non-TLS fallback (${alt_host})"
+        log "Connected via non-TLS fallback (${alt_host})"
         return 0
       fi
-      log "Non-TLS fallback also failed"
     fi
-
-    if [[ "${runtime_context}" = "container" ]]; then
-      die "Docker daemon is unreachable from this container. Ensure /var/run/docker.sock is mounted with correct permissions, or set DOCKER_TLS_CERTDIR='' on the DinD sidecar to enable non-TLS connections on port 2375."
-    fi
-    die "Docker daemon is not reachable. Start Docker and retry."
+    die "Docker daemon is not reachable."
   fi
 }
 
@@ -104,9 +81,10 @@ setup_buildx() {
     return 1
   fi
 
-  # Use host networking so the buildkit container inherits DinD's /etc/hosts
-  # (including any --add-host entries, e.g. private registry hostnames).
-  # Re-create the builder each time to ensure driver options are applied.
+  # Recreate the builder with host networking every time.
+  # --driver-opt network=host makes the buildkit container share DinD's network
+  # namespace, inheriting its DNS configuration (including --dns=100.100.100.100
+  # set on the DinD container for Tailscale MagicDNS resolution).
   docker buildx rm tessiture-builder 2>/dev/null || true
   docker buildx create \
     --name tessiture-builder \
@@ -127,28 +105,19 @@ resolve_path() {
 }
 
 read_env_value() {
-  local key="$1"
-  local file="$2"
-  local line
-
+  local key="$1" file="$2" line
   line="$(grep -E "^[[:space:]]*${key}=" "${file}" | tail -n1 || true)"
   [[ -n "${line}" ]] || return 1
-  line="${line#*=}"
-  line="${line%\"}"
-  line="${line#\"}"
-  line="${line%\'}"
-  line="${line#\'}"
+  line="${line#*=}"; line="${line%\"}"; line="${line#\"}"; line="${line%\'}"; line="${line#\'}"
   printf '%s\n' "${line}"
 }
 
 split_image_ref() {
   local ref="$1"
   if [[ "${ref##*/}" == *:* ]]; then
-    IMAGE_REPO="${ref%:*}"
-    IMAGE_TAG="${ref##*:}"
+    IMAGE_REPO="${ref%:*}"; IMAGE_TAG="${ref##*:}"
   else
-    IMAGE_REPO="${ref}"
-    IMAGE_TAG="latest"
+    IMAGE_REPO="${ref}"; IMAGE_TAG="latest"
   fi
 }
 
@@ -164,53 +133,29 @@ parse_semver() {
 }
 
 bump_semver() {
-  local current="$1"
-  local bump_kind="$2"
-
+  local current="$1" bump_kind="$2"
   parse_semver "${current}" || return 1
-
-  local major="${SEMVER_MAJOR}"
-  local minor="${SEMVER_MINOR}"
-  local patch="${SEMVER_PATCH}"
-
+  local major="${SEMVER_MAJOR}" minor="${SEMVER_MINOR}" patch="${SEMVER_PATCH}"
   case "${bump_kind}" in
-    major)
-      major=$((major + 1))
-      minor=0
-      patch=0
-      ;;
-    minor)
-      minor=$((minor + 1))
-      patch=0
-      ;;
-    patch)
-      patch=$((patch + 1))
-      ;;
-    *)
-      return 1
-      ;;
+    major) major=$((major + 1)); minor=0; patch=0 ;;
+    minor) minor=$((minor + 1)); patch=0 ;;
+    patch) patch=$((patch + 1)) ;;
+    *)     return 1 ;;
   esac
-
   printf '%s.%s.%s\n' "${major}" "${minor}" "${patch}"
 }
 
 detect_auto_bump() {
-  if ! command -v git >/dev/null 2>&1; then
-    printf 'patch\n'
-    return
-  fi
-  if ! git -C "${REPO_ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    printf 'patch\n'
-    return
+  if ! command -v git >/dev/null 2>&1 || \
+     ! git -C "${REPO_ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    printf 'patch\n'; return
   fi
 
   local last_semver_tag range subjects
-  last_semver_tag="$(git -C "${REPO_ROOT}" tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-version:refname | head -n1 || true)"
+  last_semver_tag="$(git -C "${REPO_ROOT}" tag --list 'v[0-9]*.[0-9]*.[0-9]*' \
+    --sort=-version:refname | head -n1 || true)"
   range="HEAD"
-  if [[ -n "${last_semver_tag}" ]]; then
-    range="${last_semver_tag}..HEAD"
-  fi
-
+  [[ -n "${last_semver_tag}" ]] && range="${last_semver_tag}..HEAD"
   subjects="$(git -C "${REPO_ROOT}" log --pretty=%s ${range} 2>/dev/null || true)"
 
   if [[ -n "${subjects}" ]] && grep -qiE '(BREAKING CHANGE)|(^[a-z]+(\([^)]+\))?!:)' <<<"${subjects}"; then
@@ -223,114 +168,52 @@ detect_auto_bump() {
 }
 
 update_env_image() {
-  local env_file="$1"
-  local image="$2"
-  local tmp_file
-
+  local env_file="$1" image="$2" tmp_file
   tmp_file="$(mktemp)"
   awk -v image="${image}" '
     BEGIN { updated = 0 }
-    /^[[:space:]]*TESSITURE_IMAGE=/ {
-      print "TESSITURE_IMAGE=" image
-      updated = 1
-      next
-    }
+    /^[[:space:]]*TESSITURE_IMAGE=/ { print "TESSITURE_IMAGE=" image; updated = 1; next }
     { print }
-    END {
-      if (updated == 0) {
-        print "TESSITURE_IMAGE=" image
-      }
-    }
+    END { if (!updated) print "TESSITURE_IMAGE=" image }
   ' "${env_file}" > "${tmp_file}"
   mv "${tmp_file}" "${env_file}"
 }
 
 write_release_version_file() {
-  local version="$1"
-  printf '%s\n' "${version}" > "${RELEASE_VERSION_FILE}"
-  log "Wrote canonical release version to ${RELEASE_VERSION_FILE}: ${version}"
+  printf '%s\n' "$1" > "${RELEASE_VERSION_FILE}"
+  log "Wrote release version: $1"
 }
 
 clear_release_version_file() {
   if [[ -f "${RELEASE_VERSION_FILE}" ]]; then
     rm -f "${RELEASE_VERSION_FILE}"
-    log "No semantic release version resolved; removed stale ${RELEASE_VERSION_FILE}"
-  else
-    log "No semantic release version resolved; ${RELEASE_VERSION_FILE} was not written"
+    log "No semantic version resolved; removed stale ${RELEASE_VERSION_FILE}"
   fi
 }
 
 git_tag_release() {
-  local version="$1"
-  local tag="v${version}"
-
-  if [[ "${NO_GIT_TAG}" -eq 1 ]]; then
-    log "Skipping git tag (--no-git-tag)"
-    return
-  fi
-
-  if ! command -v git >/dev/null 2>&1; then
-    log "WARNING: git not available; skipping release tag ${tag}"
-    return
-  fi
-
-  if ! git -C "${REPO_ROOT}" rev-parse --git-dir >/dev/null 2>&1; then
-    log "WARNING: not inside a git repository; skipping release tag ${tag}"
-    return
-  fi
-
-  if git -C "${REPO_ROOT}" tag --list "${tag}" | grep -q "^${tag}$"; then
-    log "Tag ${tag} already exists; skipping"
-    return
-  fi
-
+  local version="$1" tag="v${1}"
+  [[ "${NO_GIT_TAG}" -eq 1 ]] && { log "Skipping git tag (--no-git-tag)"; return; }
+  command -v git >/dev/null 2>&1 || { log "WARNING: git not available; skipping tag"; return; }
+  git -C "${REPO_ROOT}" rev-parse --git-dir >/dev/null 2>&1 || { log "WARNING: not a git repo; skipping tag"; return; }
+  git -C "${REPO_ROOT}" tag --list "${tag}" | grep -q "^${tag}$" && { log "Tag ${tag} already exists; skipping"; return; }
   git -C "${REPO_ROOT}" tag -a "${tag}" -m "Release ${tag}"
   log "Tagged release: ${tag}"
 }
 
+# ── Argument parsing ──────────────────────────────────────────────────────────
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --image)
-      [[ $# -ge 2 ]] || die "Missing value for --image"
-      IMAGE="$2"
-      IMAGE_SET=1
-      shift 2
-      ;;
-    --push)
-      PUSH=1
-      shift
-      ;;
-    --version-bump)
-      [[ $# -ge 2 ]] || die "Missing value for --version-bump"
-      VERSION_BUMP="$2"
-      shift 2
-      ;;
-    --base-version)
-      [[ $# -ge 2 ]] || die "Missing value for --base-version"
-      BASE_VERSION="$2"
-      shift 2
-      ;;
-    --env-file)
-      [[ $# -ge 2 ]] || die "Missing value for --env-file"
-      ENV_FILE="$(resolve_path "$2")"
-      shift 2
-      ;;
-    --cache-ref)
-      [[ $# -ge 2 ]] || die "Missing value for --cache-ref"
-      CACHE_REF="$2"
-      shift 2
-      ;;
-    --no-git-tag)
-      NO_GIT_TAG=1
-      shift
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      die "Unknown argument: $1"
-      ;;
+    --image)        [[ $# -ge 2 ]] || die "Missing value for --image";        IMAGE="$2";                   IMAGE_SET=1; shift 2 ;;
+    --push)         PUSH=1; shift ;;
+    --version-bump) [[ $# -ge 2 ]] || die "Missing value for --version-bump"; VERSION_BUMP="$2";             shift 2 ;;
+    --base-version) [[ $# -ge 2 ]] || die "Missing value for --base-version"; BASE_VERSION="$2";             shift 2 ;;
+    --env-file)     [[ $# -ge 2 ]] || die "Missing value for --env-file";     ENV_FILE="$(resolve_path "$2")"; shift 2 ;;
+    --cache-ref)    [[ $# -ge 2 ]] || die "Missing value for --cache-ref";    CACHE_REF="$2";               shift 2 ;;
+    --no-git-tag)   NO_GIT_TAG=1; shift ;;
+    -h|--help)      usage; exit 0 ;;
+    *)              die "Unknown argument: $1" ;;
   esac
 done
 
@@ -356,92 +239,79 @@ fi
 [[ -n "${IMAGE}" ]] || die "Image tag cannot be empty"
 
 require_cmd docker
-
 docker_preflight
-
 split_image_ref "${IMAGE}"
+
+# ── Version resolution ────────────────────────────────────────────────────────
 
 LATEST_IMAGE=""
 if [[ "${VERSION_BUMP}" != "none" ]]; then
-  current_version=""
+  local_version=""
   if parse_semver "${IMAGE_TAG}"; then
-    current_version="${SEMVER_MAJOR}.${SEMVER_MINOR}.${SEMVER_PATCH}"
+    local_version="${SEMVER_MAJOR}.${SEMVER_MINOR}.${SEMVER_PATCH}"
   else
-    current_version="${BASE_VERSION}"
-    log "Current image tag '${IMAGE_TAG}' is not semantic; using base version ${current_version}"
+    local_version="${BASE_VERSION}"
+    log "Image tag '${IMAGE_TAG}' is not semantic; using base version ${local_version}"
   fi
 
   EFFECTIVE_BUMP="${VERSION_BUMP}"
-  if [[ "${VERSION_BUMP}" = "auto" ]]; then
-    EFFECTIVE_BUMP="$(detect_auto_bump)"
-  fi
+  [[ "${VERSION_BUMP}" = "auto" ]] && EFFECTIVE_BUMP="$(detect_auto_bump)"
 
-  NEXT_VERSION="$(bump_semver "${current_version}" "${EFFECTIVE_BUMP}")" || die "Unable to bump version"
+  NEXT_VERSION="$(bump_semver "${local_version}" "${EFFECTIVE_BUMP}")" || die "Unable to bump version"
   IMAGE="${IMAGE_REPO}:${NEXT_VERSION}"
   LATEST_IMAGE="${IMAGE_REPO}:latest"
   RELEASE_VERSION="${NEXT_VERSION}"
 
-  log "Version bump strategy: ${VERSION_BUMP} (effective=${EFFECTIVE_BUMP})"
-  log "Version: ${current_version} -> ${NEXT_VERSION}"
+  log "Version bump: ${VERSION_BUMP} (effective=${EFFECTIVE_BUMP})"
+  log "Version: ${local_version} -> ${NEXT_VERSION}"
 else
   if parse_semver "${IMAGE_TAG}"; then
     RELEASE_VERSION="${SEMVER_MAJOR}.${SEMVER_MINOR}.${SEMVER_PATCH}"
-    log "Version bump strategy: none (effective=none)"
-    log "Using semantic image tag for release metadata: ${RELEASE_VERSION}"
+    log "Version bump: none; using tag for release metadata: ${RELEASE_VERSION}"
   else
-    log "Version bump strategy: none (effective=none)"
-    log "Image tag '${IMAGE_TAG}' is not semantic; canonical release version will not be written"
+    log "Version bump: none; tag '${IMAGE_TAG}' is not semantic — release version file will not be written"
   fi
 fi
 
-if [[ "${PUSH}" -eq 1 && "${IMAGE}" != */* ]]; then
-  die "--push requires a registry-qualified image tag (example: ghcr.io/<org>/tessiture:<tag>)"
-fi
+[[ "${PUSH}" -eq 1 && "${IMAGE}" != */* ]] && \
+  die "--push requires a registry-qualified image tag (e.g. ghcr.io/<org>/tessiture:<tag>)"
 
 log "Repository root: ${REPO_ROOT}"
-log "Building image: ${IMAGE}"
+log "Building image:  ${IMAGE}"
+
+# ── Build ─────────────────────────────────────────────────────────────────────
 
 USE_BUILDX=0
-if setup_buildx; then
-  USE_BUILDX=1
-fi
+setup_buildx && USE_BUILDX=1
 
 if [[ "${USE_BUILDX}" -eq 1 ]]; then
   BUILD_CMD=(docker buildx build --provenance=false -t "${IMAGE}")
-  if [[ -n "${LATEST_IMAGE}" && "${LATEST_IMAGE}" != "${IMAGE}" ]]; then
-    BUILD_CMD+=(-t "${LATEST_IMAGE}")
-  fi
+  [[ -n "${LATEST_IMAGE}" && "${LATEST_IMAGE}" != "${IMAGE}" ]] && BUILD_CMD+=(-t "${LATEST_IMAGE}")
   if [[ -n "${CACHE_REF}" ]]; then
     BUILD_CMD+=(--cache-from "type=registry,ref=${CACHE_REF}")
     BUILD_CMD+=(--cache-to   "type=registry,ref=${CACHE_REF},mode=max")
     log "BuildKit registry cache: ${CACHE_REF}"
   fi
-  if [[ "${PUSH}" -eq 1 ]]; then
-    BUILD_CMD+=(--push)
-  fi
-  if [[ -n "${RELEASE_VERSION}" ]]; then
-    BUILD_CMD+=(--build-arg "VITE_APP_VERSION=${RELEASE_VERSION}")
-  fi
+  [[ "${PUSH}" -eq 1 ]]         && BUILD_CMD+=(--push)
+  [[ -n "${RELEASE_VERSION}" ]] && BUILD_CMD+=(--build-arg "VITE_APP_VERSION=${RELEASE_VERSION}")
   BUILD_CMD+=("${REPO_ROOT}")
-  log "Building with docker buildx (registry cache enabled)"
+  log "Building with docker buildx"
   "${BUILD_CMD[@]}"
 else
   BUILD_CMD=(docker build -t "${IMAGE}")
-  if [[ -n "${RELEASE_VERSION}" ]]; then
-    BUILD_CMD+=(--build-arg "VITE_APP_VERSION=${RELEASE_VERSION}")
-  fi
-  if [[ -n "${LATEST_IMAGE}" && "${LATEST_IMAGE}" != "${IMAGE}" ]]; then
-    BUILD_CMD+=(-t "${LATEST_IMAGE}")
-  fi
+  [[ -n "${RELEASE_VERSION}" ]] && BUILD_CMD+=(--build-arg "VITE_APP_VERSION=${RELEASE_VERSION}")
+  [[ -n "${LATEST_IMAGE}" && "${LATEST_IMAGE}" != "${IMAGE}" ]] && BUILD_CMD+=(-t "${LATEST_IMAGE}")
   BUILD_CMD+=("${REPO_ROOT}")
   log "Building with docker build (fallback, no registry cache)"
   "${BUILD_CMD[@]}"
 fi
 
-if [[ -n "${ENV_FILE}" && "${VERSION_BUMP}" != "none" ]]; then
+# ── Post-build ────────────────────────────────────────────────────────────────
+
+[[ -n "${ENV_FILE}" && "${VERSION_BUMP}" != "none" ]] && {
   update_env_image "${ENV_FILE}" "${IMAGE}"
-  log "Updated ${ENV_FILE} with TESSITURE_IMAGE=${IMAGE}"
-fi
+  log "Updated ${ENV_FILE}: TESSITURE_IMAGE=${IMAGE}"
+}
 
 if [[ -n "${RELEASE_VERSION}" ]]; then
   write_release_version_file "${RELEASE_VERSION}"
@@ -449,9 +319,7 @@ else
   clear_release_version_file
 fi
 
-if [[ "${VERSION_BUMP}" != "none" && -n "${RELEASE_VERSION}" ]]; then
-  git_tag_release "${RELEASE_VERSION}"
-fi
+[[ "${VERSION_BUMP}" != "none" && -n "${RELEASE_VERSION}" ]] && git_tag_release "${RELEASE_VERSION}"
 
 IMAGE_ID="$(docker image inspect --format '{{.Id}}' "${IMAGE}" 2>/dev/null || true)"
 if [[ -n "${IMAGE_ID}" ]]; then
