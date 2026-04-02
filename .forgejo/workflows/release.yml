@@ -100,7 +100,7 @@ jobs:
         shell: bash
         run: |
           unset DOCKER_TLS_VERIFY DOCKER_CERT_PATH
-          echo "${{ github.token }}" | docker login forgejo.dojo-diminished.ts.net \
+          echo "${{ secrets.FORGEJO_PACKAGE_TOKEN }}" | docker login forgejo.dojo-diminished.ts.net \
             --username "${{ github.repository_owner }}" \
             --password-stdin
 
