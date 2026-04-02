@@ -1,0 +1,106 @@
+diff --git a/frontend/src/components/components.test.jsx b/frontend/src/components/components.test.jsx
+index 3ba7038..7f6d7c7 100644
+--- a/frontend/src/components/components.test.jsx
++++ b/frontend/src/components/components.test.jsx
+@@ -3,6 +3,26 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
+ import userEvent from "@testing-library/user-event";
+ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+ 
++// Mock ResizeObserver (not available in jsdom)
++global.ResizeObserver = class ResizeObserver {
++  constructor(cb) { this._cb = cb; }
++  observe() {}
++  unobserve() {}
++  disconnect() {}
++};
++
++// Mock localStorage for SessionHistory component
++const localStorageMock = (() => {
++  let store = {};
++  return {
++    getItem: (key) => store[key] ?? null,
++    setItem: (key, value) => { store[key] = String(value); },
++    removeItem: (key) => { delete store[key]; },
++    clear: () => { store = {}; },
++  };
++})();
++Object.defineProperty(global, "localStorage", { value: localStorageMock });
++
+ import App from "../App";
+ import {
+   fetchExampleTracks,
+@@ -459,7 +479,7 @@ describe("AnalysisResults", () => {
+       />
+     );
+ 
+-    expect(screen.getByRole("heading", { name: "Interpretation help" })).toBeInTheDocument();
++    // "Interpretation help" section was replaced by progressive disclosure layout
+     expect(screen.getByRole("heading", { name: "Analysis quality notes" })).toBeInTheDocument();
+     expect(screen.getByText("Vocal separation unavailable: model not installed")).toBeInTheDocument();
+     expect(screen.getByText("Tessitura analysis unavailable: insufficient voiced frames")).toBeInTheDocument();
+@@ -483,7 +503,7 @@ describe("AnalysisResults", () => {
+       />
+     );
+ 
+-    expect(screen.getByRole("heading", { name: "Interpretation help" })).toBeInTheDocument();
++    // "Interpretation help" section was replaced by progressive disclosure layout
+     expect(screen.queryByRole("heading", { name: "Analysis quality notes" })).not.toBeInTheDocument();
+   });
+ 
+@@ -701,17 +721,17 @@ describe("AnalysisResults", () => {
+       />
+     );
+ 
+-    const analysisTab = screen.getByRole("tab", { name: "General analysis" });
+-    const calibrationTab = screen.getByRole("tab", { name: "Reference calibration" });
++    // Tabs replaced by disclosure sections in progressive disclosure redesign
++    const calibrationDisclosure = screen.getByText("Technical statistics & calibration");
+ 
+-    expect(analysisTab).toHaveAttribute("aria-selected", "true");
+-    expect(calibrationTab).toHaveAttribute("aria-selected", "false");
++    expect(calibrationDisclosure).toBeInTheDocument();
++    // Calibration is inside a closed disclosure by default
+ 
+-    await user.click(calibrationTab);
++    await user.click(calibrationDisclosure);
+ 
+     const sampleCountItem = screen.getByText("Reference samples (N)").closest(".summary-list__item");
+ 
+-    expect(calibrationTab).toHaveAttribute("aria-selected", "true");
++    // Disclosure is now open after click
+     expect(screen.getByRole("heading", { name: "Reference calibration summary" })).toBeInTheDocument();
+     expect(
+       screen.getByText(
+@@ -752,7 +772,7 @@ describe("AnalysisResults", () => {
+       />
+     );
+ 
+-    await user.click(screen.getByRole("tab", { name: "Reference calibration" }));
++    await user.click(screen.getByText("Technical statistics & calibration"));
+ 
+     const sampleCountItem = screen.getByText("Reference samples (N)").closest(".summary-list__item");
+     const voicedFramesItem = screen.getByText("Voiced frame count").closest(".summary-list__item");
+@@ -1143,8 +1163,8 @@ describe("App example gallery wiring", () => {
+       expect(fetchJobResults).toHaveBeenCalledWith("job-calibration", "json");
+     });
+ 
+-    const calibrationTab = await screen.findByRole("tab", { name: "Reference calibration" });
+-    fireEvent.click(calibrationTab);
++    const calibrationDisclosure = await screen.findByText("Technical statistics & calibration");
++    fireEvent.click(calibrationDisclosure);
+ 
+     expect(screen.getByRole("heading", { name: "Reference calibration summary" })).toBeInTheDocument();
+   });
+@@ -1520,10 +1540,10 @@ describe("SpectrogramInspector", () => {
+     );
+ 
+     // The details summary toggle should be present with the updated label
+-    expect(screen.getByText("🔍 Audio spectrogram (advanced)")).toBeInTheDocument();
++    expect(screen.getByText("Audio spectrogram (advanced)")).toBeInTheDocument();
+ 
+     // The inspector section should be collapsed by default to avoid extra loading after results appear
+-    const details = screen.getByText("🔍 Audio spectrogram (advanced)").closest("details");
++    const details = screen.getByText("Audio spectrogram (advanced)").closest("details");
+     expect(details).not.toHaveAttribute("open");
+ 
+     // fetchSpectrogram should NOT be called since inspector is collapsed by default
