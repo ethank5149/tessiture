@@ -1,5 +1,4 @@
 # Tessiture runtime dependencies (pinned)
-# Dev dependencies (pytest, httpx) are in pyproject.toml [project.optional-dependencies.dev]
 numpy==1.26.4
 scipy==1.12.0
 librosa==0.10.2.post1
@@ -11,4 +10,9 @@ matplotlib==3.8.4
 plotly==5.24.1
 reportlab==4.2.5
 mutagen==1.47.0
-pytest
+# Test dependencies — also listed in pyproject.toml [project.optional-dependencies.dev]
+# but kept here as a safety net because CI runs: pip install -r requirements.txt -e ".[dev]"
+# and the editable install can fail silently on VCS version detection issues.
+pytest==8.3.5
+pytest-asyncio==0.25.3
+httpx==0.28.1
