@@ -15,6 +15,7 @@ on:
           - auto
           - patch
           - minor
+          - major
           - none
 
 jobs:
@@ -22,95 +23,26 @@ jobs:
     name: Test
     runs-on: docker
     container: python:3.12-bookworm
-    env:
-      GITHUB_API_URL: http://forgejo/api/v1
-      GITHUB_SERVER_URL: http://forgejo
-      ACTIONS_CACHE_URL: http://forgejo/api/v1
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         shell: bash
         run: |
-          SERVER="${{ github.server_url }}"
-          REPO="${{ github.repository }}"
-          TOKEN="${{ github.token }}"
-          AUTH_URL=$(echo "${SERVER}" | sed "s|://|://oauth2:${TOKEN}@|")
-          git clone "${AUTH_URL}/${REPO}.git" .
+          AUTH_URL=$(echo "${{ github.server_url }}" | sed "s|://|://oauth2:${{ github.token }}@|")
+          git clone "${AUTH_URL}/${{ github.repository }}.git" .
           git fetch --tags
 
-      - name: Install Node.js 20
+      - name: Install system dependencies
         shell: bash
         run: |
           apt-get update -qq
-          apt-get install -y -qq ca-certificates curl gnupg
+          apt-get install -y -qq ca-certificates curl gnupg libsndfile1 ffmpeg
           curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
           apt-get install -y -qq nodejs
-          node --version
-          npm --version
-
-      - name: Restore pip cache (from previous run)
-        shell: bash
-        run: |
-          FORGEJO_URL="http://forgejo"
-          CACHE_KEY="pip-${{ hashFiles('requirements.txt', 'pyproject.toml') }}"
-          CACHE_DIR="~/.cache/pip"
-          
-          # Try to restore cache
-          if curl -s -f -o /tmp/cache.tar.gz -H "Authorization: Bearer ${{ github.token }}" \
-            "$FORGEJO_URL/api/v1/actions/caches?key=$CACHE_KEY" 2>/dev/null; then
-            if [ -s /tmp/cache.tar.gz ]; then
-              mkdir -p "$CACHE_DIR"
-              tar -xzf /tmp/cache.tar.gz -C "$CACHE_DIR" 2>/dev/null || true
-              echo "Cache restored for $CACHE_KEY"
-            fi
-          fi
-
-      - name: Restore npm cache (from previous run)
-        shell: bash
-        run: |
-          FORGEJO_URL="http://forgejo"
-          CACHE_KEY="npm-${{ hashFiles('frontend/package-lock.json') }}"
-          CACHE_DIR="~/.npm"
-          
-          # Try to restore cache
-          if curl -s -f -o /tmp/cache.tar.gz -H "Authorization: Bearer ${{ github.token }}" \
-            "$FORGEJO_URL/api/v1/actions/caches?key=$CACHE_KEY" 2>/dev/null; then
-            if [ -s /tmp/cache.tar.gz ]; then
-              mkdir -p "$CACHE_DIR"
-              tar -xzf /tmp/cache.tar.gz -C "$CACHE_DIR" 2>/dev/null || true
-              echo "Cache restored for $CACHE_KEY"
-            fi
-          fi
 
       - name: Install Python dependencies
         shell: bash
-        run: pip install -r requirements.txt
-
-      - name: Save pip cache (for future runs)
-        if: always()
-        shell: bash
-        run: |
-          FORGEJO_URL="http://forgejo"
-          CACHE_KEY="pip-${{ hashFiles('requirements.txt', 'pyproject.toml') }}"
-          CACHE_DIR="~/.cache/pip"
-          
-          if [ -d "$CACHE_DIR" ] && [ "$(ls -A $CACHE_DIR 2>/dev/null)" ]; then
-            tar -czf /tmp/cache.tar.gz -C "$CACHE_DIR" . 2>/dev/null
-            SIZE=$(stat -c%s /tmp/cache.tar.gz 2>/dev/null || stat -f%z /tmp/cache.tar.gz 2>/dev/null)
-            if [ "$SIZE" -gt 100 ]; then
-              echo "Cache size: $SIZE bytes"
-              RESPONSE=$(curl -s -X POST -H "Authorization: Bearer ${{ github.token }}" \
-                -H "Content-Type: application/json" \
-                -d "{\"key\":\"$CACHE_KEY\",\"size\":$SIZE}" \
-                "$FORGEJO_URL/api/v1/actions/caches")
-              UPLOAD_URL=$(echo "$RESPONSE" | grep -o '"archive_upload_url":"[^"]*' | cut -d'"' -f4)
-              if [ -n "$UPLOAD_URL" ]; then
-                curl -X PUT -H "Content-Type: application/gzip" \
-                  --data-binary @/tmp/cache.tar.gz \
-                  "$UPLOAD_URL" -w "Upload status: %{http_code}\n"
-              fi
-            fi
-          fi
+        run: pip install -r requirements.txt -e ".[dev]"
 
       - name: Run backend tests
         shell: bash
@@ -128,223 +60,73 @@ jobs:
         shell: bash
         run: cd frontend && npm run build
 
-      - name: Save npm cache (for future runs)
-        if: always()
-        shell: bash
-        run: |
-          FORGEJO_URL="http://forgejo"
-          CACHE_KEY="npm-${{ hashFiles('frontend/package-lock.json') }}"
-          CACHE_DIR="~/.npm"
-          
-          if [ -d "$CACHE_DIR" ] && [ "$(ls -A $CACHE_DIR 2>/dev/null)" ]; then
-            tar -czf /tmp/npm-cache.tar.gz -C "$CACHE_DIR" . 2>/dev/null
-            SIZE=$(stat -c%s /tmp/npm-cache.tar.gz 2>/dev/null || stat -f%z /tmp/npm-cache.tar.gz 2>/dev/null)
-            if [ "$SIZE" -gt 100 ]; then
-              RESPONSE=$(curl -s -X POST -H "Authorization: Bearer ${{ github.token }}" \
-                -H "Content-Type: application/json" \
-                -d "{\"key\":\"$CACHE_KEY\",\"size\":$SIZE}" \
-                "$FORGEJO_URL/api/v1/actions/caches")
-              UPLOAD_URL=$(echo "$RESPONSE" | grep -o '"archive_upload_url":"[^"]*' | cut -d'"' -f4)
-              if [ -n "$UPLOAD_URL" ]; then
-                curl -X PUT -H "Content-Type: application/gzip" \
-                  --data-binary @/tmp/npm-cache.tar.gz \
-                  "$UPLOAD_URL" -w "Upload status: %{http_code}\n"
-              fi
-            fi
-          fi
-
-  build-and-deploy:
-    name: Build and Deploy
+  build-and-push:
+    name: Build and Push Image
     runs-on: docker
     needs: test
-    if: github.ref == 'refs/heads/main'
 
     steps:
       - name: Install bash
         shell: sh
         run: |
-          if ! command -v bash >/dev/null 2>&1; then
-            if command -v apk >/dev/null 2>&1; then
-              apk add --no-cache bash
-            elif command -v apt-get >/dev/null 2>&1; then
-              apt-get update -qq && apt-get install -y -qq bash
-            fi
-          fi
+          command -v bash >/dev/null 2>&1 || apk add --no-cache bash || apt-get install -y bash
 
-      - name: Checkout repository
+      - name: Checkout
         shell: bash
         run: |
-          SERVER="${{ github.server_url }}"
-          REPO="${{ github.repository }}"
-          TOKEN="${{ github.token }}"
-          AUTH_URL=$(echo "${SERVER}" | sed "s|://|://oauth2:${TOKEN}@|")
-          git clone "${AUTH_URL}/${REPO}.git" .
+          AUTH_URL=$(echo "${{ github.server_url }}" | sed "s|://|://oauth2:${{ github.token }}@|")
+          git clone "${AUTH_URL}/${{ github.repository }}.git" .
           git fetch --tags
 
-      - name: Configure git identity for tagging
+      - name: Configure git identity
         shell: bash
         run: |
           git config user.name "Forgejo Actions"
           git config user.email "actions@forgejo.local"
 
-      - name: Write deploy/.env from secret
+      - name: Connect to Docker daemon
         shell: bash
         run: |
-          mkdir -p deploy
-          echo "${{ secrets.TESSITURE_ENV }}" > deploy/.env
-
-      - name: Set image reference in deploy/.env
-        shell: bash
-        run: |
-          REGISTRY="forgejo.dojo-diminished.ts.net"
-          IMAGE="${REGISTRY}/${{ github.repository }}:latest"
-          if grep -q '^TESSITURE_IMAGE=' deploy/.env; then
-            sed -i "s|^TESSITURE_IMAGE=.*|TESSITURE_IMAGE=${IMAGE}|" deploy/.env
-          else
-            echo "TESSITURE_IMAGE=${IMAGE}" >> deploy/.env
+          # DinD exposes :2375 (non-TLS). Ensure we're connected.
+          unset DOCKER_TLS_VERIFY DOCKER_CERT_PATH
+          if ! docker info >/dev/null 2>&1; then
+            export DOCKER_HOST="tcp://172.40.0.2:2375"
+            docker info >/dev/null 2>&1 || { echo "::error::Cannot reach Docker daemon"; exit 1; }
+            echo "DOCKER_HOST=tcp://172.40.0.2:2375" >> "${GITHUB_ENV}"
           fi
-          echo "Set TESSITURE_IMAGE=${IMAGE}"
-          echo "REGISTRY=${REGISTRY}" >> "${GITHUB_ENV}"
+          echo "DOCKER_TLS_VERIFY=" >> "${GITHUB_ENV}"
+          echo "DOCKER_CERT_PATH=" >> "${GITHUB_ENV}"
 
-      - name: Add Forgejo hostname to /etc/hosts
+      - name: Add Forgejo registry hostname
         shell: bash
         run: |
-          FORGEJO_FQDN="forgejo.dojo-diminished.ts.net"
-          TAILSCALE_IP="100.95.62.8"
-          echo "${TAILSCALE_IP} ${FORGEJO_FQDN}" >> /etc/hosts
-          echo "Added ${TAILSCALE_IP} ${FORGEJO_FQDN} to /etc/hosts"
-          curl -sf --max-time 5 "https://${FORGEJO_FQDN}/v2/" -o /dev/null && echo "HTTPS reachable" || echo "HTTPS check failed (non-fatal)"
+          echo "100.95.62.8 forgejo.dojo-diminished.ts.net" >> /etc/hosts
 
-      - name: Make scripts executable
-        shell: bash
-        run: chmod +x deploy/scripts/build.sh deploy/scripts/deploy.sh
-
-      - name: Detect Docker connectivity (DinD TLS fallback)
+      - name: Log in to Forgejo registry
         shell: bash
         run: |
-          # DinD runners set DOCKER_HOST=tcp://...:2376 (TLS) and expect certs
-          # at /certs/client/.  If the cert volume isn't mounted into job
-          # containers, docker commands fail.  Detect this and switch to the
-          # non-TLS port (2375) for the rest of the job.
-          echo "DOCKER_HOST=${DOCKER_HOST:-<unset>}"
-          echo "DOCKER_TLS_VERIFY=${DOCKER_TLS_VERIFY:-<unset>}"
-          echo "DOCKER_CERT_PATH=${DOCKER_CERT_PATH:-<unset>}"
-
-          if docker info >/dev/null 2>&1; then
-            echo "Docker daemon reachable with current settings"
-          elif [[ "${DOCKER_HOST:-}" == *":2376"* ]]; then
-            ALT_HOST="${DOCKER_HOST//:2376/:2375}"
-            echo "TLS connection failed — trying non-TLS fallback: ${ALT_HOST}"
-            export DOCKER_HOST="${ALT_HOST}"
-            unset DOCKER_TLS_VERIFY
-            unset DOCKER_CERT_PATH
-            if docker info >/dev/null 2>&1; then
-              echo "Connected via non-TLS port 2375"
-              # Persist for all subsequent steps
-              echo "DOCKER_HOST=${ALT_HOST}" >> "${GITHUB_ENV}"
-              echo "DOCKER_TLS_VERIFY=" >> "${GITHUB_ENV}"
-              echo "DOCKER_CERT_PATH=" >> "${GITHUB_ENV}"
-            else
-              echo "::error::Docker daemon unreachable on both :2376 (TLS) and :2375 (non-TLS)"
-              exit 1
-            fi
-          else
-            echo "::error::Docker daemon unreachable and DOCKER_HOST is not a DinD TCP endpoint"
-            docker info 2>&1 || true
-            exit 1
-          fi
-
-      - name: Log in to Forgejo container registry
-        env:
-          GIT_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          # DinD runners set DOCKER_TLS_VERIFY=1 and DOCKER_CERT_PATH=/certs/client
-          # but the cert files may not exist in the runner container, causing:
-          #   "unable to resolve docker endpoint: open /certs/client/ca.pem: no such file or directory"
-          # Unsetting these lets the Docker client connect without TLS verification
-          # to the local daemon (which is safe — it's the same host via socket or localhost TCP).
-          unset DOCKER_TLS_VERIFY 2>/dev/null || true
-          unset DOCKER_CERT_PATH 2>/dev/null || true
-
-          echo "${GIT_TOKEN}" | docker login "${REGISTRY}" \
+          unset DOCKER_TLS_VERIFY DOCKER_CERT_PATH
+          echo "${{ github.token }}" | docker login forgejo.dojo-diminished.ts.net \
             --username "${{ github.repository_owner }}" \
-            --password-stdin \
-            && echo "Registry login successful" \
-            || echo "::warning::Registry login failed — image will be built locally but not pushed"
+            --password-stdin
 
-      - name: Build and push Docker image
+      - name: Build and push image
         timeout-minutes: 30
-        env:
-          GIT_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          # Unset DinD TLS vars for all docker operations in this step
-          unset DOCKER_TLS_VERIFY 2>/dev/null || true
-          unset DOCKER_CERT_PATH 2>/dev/null || true
-
-          # examples/ is gitignored (runtime data); create empty dir so Dockerfile COPY succeeds
+          unset DOCKER_TLS_VERIFY DOCKER_CERT_PATH
           mkdir -p examples/tracks
-          CACHE_REF="${REGISTRY}/${{ github.repository }}:buildcache"
 
-          # Try build with push; fall back to local-only build if push fails
           deploy/scripts/build.sh \
             --version-bump "${{ inputs.version_bump || 'auto' }}" \
-            --env-file deploy/.env \
-            --no-git-tag \
+            --env-file deploy/.env.ci \
             --push \
-            --cache-ref "${CACHE_REF}" \
-          || {
-            echo "::warning::Push failed — rebuilding for local deployment only"
-            deploy/scripts/build.sh \
-              --version-bump "none" \
-              --env-file deploy/.env \
-              --no-git-tag
-          }
-
-      - name: Deploy stack
-        timeout-minutes: 10
-        shell: bash
-        run: |
-          unset DOCKER_TLS_VERIFY 2>/dev/null || true
-          unset DOCKER_CERT_PATH 2>/dev/null || true
-          deploy/scripts/deploy.sh \
-            --env-file deploy/.env \
-            --compose-file deploy/docker-compose.yml
-
-      - name: Verify deployment
-        shell: bash
-        run: |
-          unset DOCKER_TLS_VERIFY 2>/dev/null || true
-          unset DOCKER_CERT_PATH 2>/dev/null || true
-          echo "Waiting for container 'tessiture' to be running..."
-          TIMEOUT=120
-          INTERVAL=10
-          ELAPSED=0
-          while true; do
-            STATUS=$(docker inspect --format '{{.State.Health.Status}}' tessiture 2>/dev/null || echo "missing")
-            if [[ "${STATUS}" == "healthy" ]]; then
-              echo "Container 'tessiture' is running"
-              break
-            fi
-            if (( ELAPSED >= TIMEOUT )); then
-              echo "ERROR: Deployment health check timed out after ${TIMEOUT}s (last status: ${STATUS})" >&2
-              docker ps
-              exit 1
-            fi
-            echo "Not yet running (${ELAPSED}s elapsed); retrying in ${INTERVAL}s..."
-            sleep "${INTERVAL}"
-            ELAPSED=$(( ELAPSED + INTERVAL ))
-          done
+            --cache-ref "forgejo.dojo-diminished.ts.net/${{ github.repository }}:buildcache"
 
       - name: Read release version
         id: version
         shell: bash
         run: |
-          if [[ ! -f .release-version ]]; then
-            echo "ERROR: .release-version not found after build" >&2
-            exit 1
-          fi
           VERSION="$(tr -d '[:space:]' < .release-version)"
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
           echo "Release version: ${VERSION}"
@@ -352,32 +134,108 @@ jobs:
       - name: Create and push git tag
         shell: bash
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          TAG="v${VERSION}"
+          TAG="v${{ steps.version.outputs.version }}"
           if git rev-parse "${TAG}" >/dev/null 2>&1; then
             echo "Tag ${TAG} already exists, skipping"
           else
             git tag -a "${TAG}" -m "Release ${TAG}"
             git push origin "${TAG}"
-            echo "Pushed tag ${TAG} to Forgejo"
           fi
+
+      - name: Log out of registry
+        if: always()
+        shell: bash
+        run: |
+          unset DOCKER_TLS_VERIFY DOCKER_CERT_PATH
+          docker logout forgejo.dojo-diminished.ts.net 2>/dev/null || true
+
+  deploy:
+    name: Deploy to SkyNet
+    runs-on: docker
+    needs: build-and-push
+
+    steps:
+      - name: Install bash + openssh
+        shell: sh
+        run: |
+          command -v bash >/dev/null 2>&1 || apk add --no-cache bash || apt-get install -y bash
+          command -v ssh >/dev/null 2>&1 || apk add --no-cache openssh-client || apt-get install -y openssh-client
+
+      - name: Checkout
+        shell: bash
+        run: |
+          AUTH_URL=$(echo "${{ github.server_url }}" | sed "s|://|://oauth2:${{ github.token }}@|")
+          git clone "${AUTH_URL}/${{ github.repository }}.git" .
+
+      - name: Configure SSH key
+        shell: bash
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "${{ secrets.SKYNET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 100.95.62.8 >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Write .env to SkyNet
+        shell: bash
+        run: |
+          # Push the env file to the deploy location on SkyNet
+          echo "${{ secrets.TESSITURE_ENV }}" | \
+            ssh -i ~/.ssh/id_ed25519 root@100.95.62.8 \
+            "cat > /mnt/user/public/tessiture/deploy/.env"
+
+      - name: Deploy on SkyNet
+        shell: bash
+        run: |
+          REGISTRY="forgejo.dojo-diminished.ts.net"
+          IMAGE="${REGISTRY}/${{ github.repository }}:latest"
+
+          ssh -i ~/.ssh/id_ed25519 root@100.95.62.8 bash <<EOF
+            set -euo pipefail
+
+            # Pull latest image from Forgejo registry
+            echo "${{ github.token }}" | docker login ${REGISTRY} \
+              --username "${{ github.repository_owner }}" \
+              --password-stdin
+
+            docker pull ${IMAGE}
+            docker logout ${REGISTRY}
+
+            # Redeploy via compose
+            cd /mnt/user/public/tessiture
+            TESSITURE_IMAGE=${IMAGE} deploy/scripts/deploy.sh \
+              --env-file deploy/.env \
+              --compose-file deploy/docker-compose.yml
+          EOF
+
+      - name: Verify deployment
+        shell: bash
+        run: |
+          ssh -i ~/.ssh/id_ed25519 root@100.95.62.8 bash <<'EOF'
+            TIMEOUT=120
+            ELAPSED=0
+            while true; do
+              STATUS=$(docker inspect --format '{{.State.Health.Status}}' tessiture 2>/dev/null || echo "missing")
+              if [[ "${STATUS}" == "healthy" ]]; then
+                echo "tessiture is healthy"
+                break
+              fi
+              if (( ELAPSED >= TIMEOUT )); then
+                echo "ERROR: health check timed out (last status: ${STATUS})" >&2
+                docker logs tessiture --tail 50
+                exit 1
+              fi
+              echo "Waiting... (${ELAPSED}s, status: ${STATUS})"
+              sleep 10
+              ELAPSED=$(( ELAPSED + 10 ))
+            done
+          EOF
 
       - name: Deployment summary
         shell: bash
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
           echo "========================================"
-          echo "  Tessiture Release Summary"
+          echo "  Tessiture deployed successfully"
+          echo "  Image : forgejo.dojo-diminished.ts.net/${{ github.repository }}:latest"
+          echo "  Time  : $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
           echo "========================================"
-          echo "  Version   : v${VERSION}"
-          echo "  Image     : $(grep TESSITURE_IMAGE deploy/.env | cut -d= -f2-)"
-          echo "  Timestamp : $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-          echo "========================================"
-
-      - name: Log out of container registry
-        if: always()
-        shell: bash
-        run: |
-          unset DOCKER_TLS_VERIFY 2>/dev/null || true
-          unset DOCKER_CERT_PATH 2>/dev/null || true
-          docker logout "${REGISTRY}" 2>/dev/null || true

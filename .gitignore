@@ -18,6 +18,7 @@ env/
 
 # Local environment files
 .env
+.env.ci
 .env.local
 .env.*.local
 .env.unraid
