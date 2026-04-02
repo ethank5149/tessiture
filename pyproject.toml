@@ -67,3 +67,6 @@ target-version = "py311"
 
 [tool.hatch.version]
 source = "vcs"
+
+[tool.hatch.build.targets.wheel]
+packages = ["analysis", "api", "calibration", "reporting"]
