@@ -37,16 +37,16 @@ def test_estimate_pitch_frames_outputs_f0_and_components() -> None:
     assert "analysis_diagnostics" in first.components, "Expected diagnostics payload in components."
     diagnostics = first.components["analysis_diagnostics"]
     assert diagnostics["primary_method_used"] in {
+        "pyin",
         "harmonic_candidates",
         "hps_fallback",
         "autocorrelation_fallback",
         "no_pitch_detected",
     }
-    assert diagnostics["attempted_methods"] == [
-        "harmonic_candidates",
-        "hps_peak_ratio_gate",
-        "autocorrelation",
-    ]
+    # When PYIN is available, it is prepended to the attempted methods list.
+    legacy_methods = ["harmonic_candidates", "hps_peak_ratio_gate", "autocorrelation"]
+    assert diagnostics["attempted_methods"] == legacy_methods or \
+           diagnostics["attempted_methods"] == ["pyin"] + legacy_methods
     assert "strategy_path" in diagnostics
     assert "fallback_reason" in diagnostics
 

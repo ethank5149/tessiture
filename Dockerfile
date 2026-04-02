@@ -58,11 +58,12 @@ COPY pyproject.toml ./pyproject.toml
 
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 
-RUN mkdir -p /data/uploads /data/outputs /data/stem_cache \
-    && groupadd -r tessiture && useradd -r -g tessiture tessiture \
-    && chown -R tessiture:tessiture /data
+RUN mkdir -p /data/uploads /data/outputs /data/stem_cache
 
-USER tessiture
+# Note: Running as root for Unraid volume mount compatibility.
+# Host paths (/mnt/user/appdata/tessiture/*) are owned by root;
+# a non-root user would fail to write uploads/outputs/logs.
+# For non-Unraid deployments, add: RUN useradd -r tessiture && USER tessiture
 
 EXPOSE 8000
 

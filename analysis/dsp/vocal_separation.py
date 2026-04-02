@@ -244,7 +244,7 @@ def detect_audio_type(
         frame = segment[i * hop: i * hop + n_fft]
         if frame.size < n_fft:
             frame = np.pad(frame, (0, n_fft - frame.size))
-        windowed = frame * np.hanning(n_fft)
+        windowed = frame * (0.5 - 0.5 * np.cos(2.0 * np.pi * np.arange(n_fft) / n_fft))
         spectrum = np.abs(np.fft.rfft(windowed)) ** 2
         power_frames.append(spectrum)
     power = np.mean(power_frames, axis=0)

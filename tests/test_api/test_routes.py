@@ -534,9 +534,9 @@ def test_build_evidence_payload_links_low_high_notes_and_guidance_refs() -> None
 
     pitch_frames = [
         {"time": 0.10, "f0_hz": 220.0, "midi": 57.0, "confidence": 0.95},
-        {"time": 0.40, "f0_hz": 246.94, "midi": 59.0, "confidence": 0.95},
-        {"time": 1.20, "f0_hz": 329.63, "midi": 64.0, "confidence": 0.95},
-        {"time": 2.60, "f0_hz": 440.0, "midi": 69.0, "confidence": 0.95},
+        {"time": 0.20, "f0_hz": 246.94, "midi": 59.0, "confidence": 0.95},
+        {"time": 0.30, "f0_hz": 329.63, "midi": 64.0, "confidence": 0.95},
+        {"time": 0.40, "f0_hz": 440.0, "midi": 69.0, "confidence": 0.95},
     ]
 
     evidence = _build_evidence_payload(

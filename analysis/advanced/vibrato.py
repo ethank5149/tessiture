@@ -104,7 +104,7 @@ def detect_vibrato(
     if n < 3:
         return VibratoFeatures(0.0, 0.0, 0.0, 0.0, int(start), int(n), False)
 
-    window = np.hanning(n) if n > 1 else np.ones(n, dtype=float)
+    window = (0.5 - 0.5 * np.cos(2.0 * np.pi * np.arange(n) / max(n, 1))) if n > 1 else np.ones(n, dtype=float)
     windowed = residual * window
     spectrum = np.fft.rfft(windowed)
     freqs = np.fft.rfftfreq(n, d=1.0 / frame_rate)

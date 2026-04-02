@@ -287,7 +287,10 @@ def estimate_formants_lpc(
         n_samples = sig.size
 
     n_frames = 1 + (n_samples - frame_length) // hop_length
-    window = np.hanning(frame_length)
+    window = np.hanning(frame_length) if frame_length > 0 else np.ones(1)
+    # Note: np.hanning is deprecated but tolerated here because this is
+    # the LPC internal path at 16kHz — the symmetric/periodic distinction
+    # has negligible impact on autocorrelation-based LPC.
 
     f1 = np.zeros(n_frames, dtype=np.float32)
     f2 = np.zeros(n_frames, dtype=np.float32)

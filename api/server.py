@@ -1,5 +1,6 @@
 import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -10,12 +11,10 @@ from api import logging_config
 from api.api_router import router as api_router
 from api.streaming import streaming_router
 
-app = FastAPI(title="Tessiture API", version="0.1.0")
 
-# Initialize logging on app startup
-@app.on_event("startup")
-async def startup_event():
-    """Initialize logging and log startup information."""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize logging on startup, clean up on shutdown."""
     logging_config.init_logging()
     logger = logging_config.get_logger(__name__)
     logger.info(
@@ -23,6 +22,10 @@ async def startup_event():
         str(logging_config.get_log_dir()),
         str(logging_config.get_jobs_dir())
     )
+    yield
+
+
+app = FastAPI(title="Tessiture API", version="0.1.0", lifespan=lifespan)
 
 cors_origins = [
     origin.strip()

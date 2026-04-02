@@ -11,6 +11,11 @@ from typing import Optional, Tuple
 
 import numpy as np
 
+try:
+    from scipy.signal.windows import hann as _scipy_hann
+except ImportError:  # pragma: no cover
+    _scipy_hann = None
+
 
 @dataclass
 class StftResult:
@@ -59,10 +64,14 @@ def compute_stft(
         stft = compute_stft(audio, sample_rate=44100, n_fft=2048, hop_length=256)
     """
     audio = np.asarray(audio, dtype=np.float32)
-    # Periodic Hann window is correct for DFT-even analysis (Smith, 2011)
-    # It provides optimal spectral leakage suppression without requiring COLA
+    # Periodic Hann window (sym=False) is correct for DFT-even analysis (Smith, 2011).
+    # np.hanning is deprecated and produces a symmetric window; use scipy's periodic variant.
     if window is None:
-        window = np.hanning(n_fft).astype(np.float32)
+        if _scipy_hann is not None:
+            window = _scipy_hann(n_fft, sym=False).astype(np.float32)
+        else:
+            # Fallback: manually construct periodic Hann
+            window = (0.5 - 0.5 * np.cos(2.0 * np.pi * np.arange(n_fft) / n_fft)).astype(np.float32)
     if window.shape[0] != n_fft:
         raise ValueError("window length must match n_fft")
 
@@ -73,12 +82,11 @@ def compute_stft(
     frequencies = np.fft.rfftfreq(n_fft, d=1.0 / sample_rate).astype(np.float32)
     times = (np.arange(frames.shape[0]) * hop_length / float(sample_rate)).astype(np.float32)
 
-    # σ_f = Δf/√12 is the theoretical frequency uncertainty for a bin-quantized
-    # frequency estimate (assuming uniform distribution within bin). In practice,
-    # parabolic peak interpolation in peak_detection.py reduces this error by ~10-20x.
-    # This σ_f serves as a conservative upper bound for uncertainty propagation.
+    # Frequency uncertainty for a Hann-windowed DFT.  The Hann main lobe
+    # has a -3 dB width of ~1.44 bins, giving σ_f ≈ 0.72 * Δf.
+    # (Previously used Δf/√12 ≈ 0.29 * Δf which underestimated uncertainty.)
     bin_spacing = sample_rate / float(n_fft)
-    sigma_f = np.full_like(frequencies, bin_spacing / np.sqrt(12.0), dtype=np.float32)
+    sigma_f = np.full_like(frequencies, 0.72 * bin_spacing, dtype=np.float32)
 
     # Window energy normalization coefficient for proper magnitude scaling
     window_energy = float(np.sum(window.astype(np.float64) ** 2) / n_fft)

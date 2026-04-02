@@ -1,3266 +1,476 @@
 diff --git a/Dockerfile b/Dockerfile
-index cd93a9a..1e4dafc 100644
+index 1e4dafc..c5e6cdd 100644
 --- a/Dockerfile
 +++ b/Dockerfile
-@@ -1,14 +1,16 @@
- # syntax=docker/dockerfile:1.7
- 
-+# ── Stage 1: Frontend build ──────────────────────────────────────────────────
- FROM node:20-alpine AS frontend-build
- WORKDIR /app/frontend
- ARG VITE_APP_VERSION
- ENV VITE_APP_VERSION=${VITE_APP_VERSION}
--COPY frontend/package.json ./package.json
--RUN npm install --no-audit --no-fund
-+COPY frontend/package.json frontend/package-lock.json ./
-+RUN npm ci --no-audit --no-fund
- COPY frontend/ ./
- RUN npm run build
- 
-+# ── Stage 2: Runtime ─────────────────────────────────────────────────────────
- FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 AS runtime
- 
- ENV PYTHONDONTWRITEBYTECODE=1 \
-@@ -32,18 +34,20 @@ RUN apt-get update \
-     && ln -sf python3.11 /usr/bin/python3 \
-     && rm -rf /var/lib/apt/lists/*
- 
--COPY requirements.txt ./requirements.txt
--
--# Install PyTorch with CUDA support first (separate index), then remaining deps
-+# Layer 1: PyTorch + CUDA (largest layer, changes least often)
- RUN python -m pip install --upgrade pip \
-     && python -m pip install torch==2.2.2 torchaudio==2.2.2 \
--       --index-url https://download.pytorch.org/whl/cu121 \
--    && python -m pip install demucs==4.0.1 \
--    && python -m pip install -r requirements.txt
-+       --index-url https://download.pytorch.org/whl/cu121
-+
-+# Layer 2: Demucs + model weights (changes rarely)
-+RUN python -m pip install demucs==4.0.1 \
-+    && python -c "from demucs.pretrained import get_model; get_model('htdemucs')"
- 
--# Pre-download Demucs model weights so they're baked into the image
--RUN python -c "from demucs.pretrained import get_model; get_model('htdemucs')"
-+# Layer 3: Application dependencies (changes when requirements.txt changes)
-+COPY requirements.txt ./requirements.txt
-+RUN python -m pip install -r requirements.txt
- 
-+# Application code (changes most often — last layer for cache efficiency)
- COPY analysis/ ./analysis/
- COPY api/ ./api/
- COPY calibration/ ./calibration/
-@@ -54,8 +58,15 @@ COPY pyproject.toml ./pyproject.toml
+@@ -58,11 +58,12 @@ COPY pyproject.toml ./pyproject.toml
  
  COPY --from=frontend-build /app/frontend/dist ./frontend/dist
  
--RUN mkdir -p /data/uploads /data/outputs
-+RUN mkdir -p /data/uploads /data/outputs /data/stem_cache \
-+    && groupadd -r tessiture && useradd -r -g tessiture tessiture \
-+    && chown -R tessiture:tessiture /data
-+
-+USER tessiture
+-RUN mkdir -p /data/uploads /data/outputs /data/stem_cache \
+-    && groupadd -r tessiture && useradd -r -g tessiture tessiture \
+-    && chown -R tessiture:tessiture /data
++RUN mkdir -p /data/uploads /data/outputs /data/stem_cache
+ 
+-USER tessiture
++# Note: Running as root for Unraid volume mount compatibility.
++# Host paths (/mnt/user/appdata/tessiture/*) are owned by root;
++# a non-root user would fail to write uploads/outputs/logs.
++# For non-Unraid deployments, add: RUN useradd -r tessiture && USER tessiture
  
  EXPOSE 8000
  
-+HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=15s \
-+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
-+
- CMD ["sh", "-c", "uvicorn api.server:app --host ${TESSITURE_HOST:-0.0.0.0} --port ${TESSITURE_PORT:-8000}"]
 diff --git a/analysis/advanced/formants.py b/analysis/advanced/formants.py
-index de054da..22fb02f 100644
+index 22fb02f..fcc4bce 100644
 --- a/analysis/advanced/formants.py
 +++ b/analysis/advanced/formants.py
-@@ -435,8 +435,32 @@ def estimate_formants_from_audio(
-     ),
-     min_db: float = -50.0,
-     smoothing_bins: int = 5,
-+    method: str = "lpc",
- ) -> FormantTrack:
--    """Estimate formants directly from audio by computing an STFT."""
-+    """Estimate formants directly from audio.
-+
-+    Args:
-+        method: "lpc" (default, recommended) uses LPC pole analysis — the
-+            standard approach in speech science.  "spectrum" uses the legacy
-+            smoothed-spectrum peak-picking method.  LPC is more robust for
-+            high-pitched voices where harmonics can masquerade as formants
-+            in the magnitude spectrum.
-+    """
-+    import logging as _logging
-+    _logger = _logging.getLogger(__name__)
-+
-+    if method == "lpc":
-+        try:
-+            return estimate_formants_lpc(
-+                audio,
-+                sample_rate,
-+                hop_length=hop_length,
-+            )
-+        except Exception as exc:
-+            _logger.debug("formant_lpc_failed, falling back to spectrum method: %s", exc)
-+            # Fall through to spectrum method
-+
-+    # Spectrum peak-picking fallback
-     if preprocess:
-         result = preprocess_audio(audio, sample_rate, target_sr=target_sr)
-         audio = result.audio
-diff --git a/analysis/chords/key_detector.py b/analysis/chords/key_detector.py
-index 63c7dd9..8969336 100644
---- a/analysis/chords/key_detector.py
-+++ b/analysis/chords/key_detector.py
-@@ -236,9 +236,156 @@ def detect_key(
-     )
+@@ -287,7 +287,10 @@ def estimate_formants_lpc(
+         n_samples = sig.size
  
+     n_frames = 1 + (n_samples - frame_length) // hop_length
+-    window = np.hanning(frame_length)
++    window = np.hanning(frame_length) if frame_length > 0 else np.ones(1)
++    # Note: np.hanning is deprecated but tolerated here because this is
++    # the LPC internal path at 16kHz — the symmetric/periodic distinction
++    # has negligible impact on autocorrelation-based LPC.
  
-+@dataclass(frozen=True)
-+class KeyTrajectoryEntry:
-+    """A single entry in a windowed key trajectory."""
-+    start_s: float
-+    end_s: float
-+    label: str
-+    confidence: float
-+    probabilities: Dict[str, float]
-+
-+
-+def detect_key_trajectory(
-+    observations: Sequence[float],
-+    timestamps_s: Sequence[float],
-+    *,
-+    input_unit: str = "midi",
-+    window_s: float = 8.0,
-+    hop_s: float = 4.0,
-+    softmax_beta: float = 1.0,
-+    transition_penalty: float = 2.0,
-+    profile_map: Optional[Dict[str, np.ndarray]] = None,
-+) -> List[KeyTrajectoryEntry]:
-+    """Detect a key trajectory using overlapping windows + Viterbi smoothing.
-+
-+    Slides a window across the observation sequence, computes per-window key
-+    probabilities using Krumhansl-Schmuckler correlation, then smooths the
-+    resulting label sequence with Viterbi dynamic programming to penalize
-+    implausible rapid modulations.
-+
-+    Args:
-+        observations: MIDI note values (or pitch classes if input_unit="pc").
-+        timestamps_s: Timestamp in seconds for each observation.
-+        input_unit: "midi" or "pc".
-+        window_s: Window duration in seconds.
-+        hop_s: Hop between window centres in seconds.
-+        softmax_beta: Inverse temperature for probability conversion.
-+        transition_penalty: Log-domain penalty for key changes in Viterbi.
-+        profile_map: Optional tonal profile map.
-+
-+    Returns:
-+        List of KeyTrajectoryEntry with one entry per smoothed window.
-+    """
-+    from analysis.chords._viterbi_shared import _viterbi_smooth_sequences
-+
-+    if len(observations) == 0 or len(timestamps_s) == 0:
-+        return []
-+
-+    obs_arr = np.asarray(observations, dtype=float)
-+    time_arr = np.asarray(timestamps_s, dtype=float)
-+
-+    if profile_map is None:
-+        profile_map = build_tonal_profile_map()
-+
-+    key_labels = [label for label in iter_key_labels() if label in profile_map]
-+    if not key_labels:
-+        key_labels = list(profile_map.keys())
-+
-+    duration = float(np.max(time_arr) - np.min(time_arr))
-+    if duration <= 0.0 or len(key_labels) == 0:
-+        # Fall back to global detection
-+        result = detect_key(observations, input_unit=input_unit,
-+                            softmax_beta=softmax_beta, profile_map=profile_map)
-+        if result.best_key is None:
-+            return []
-+        return [KeyTrajectoryEntry(
-+            start_s=float(np.min(time_arr)),
-+            end_s=float(np.max(time_arr)),
-+            label=result.best_key,
-+            confidence=result.confidence,
-+            probabilities=result.probabilities,
-+        )]
-+
-+    t_start = float(np.min(time_arr))
-+    t_end = float(np.max(time_arr))
-+
-+    # Build windows
-+    window_centres: List[float] = []
-+    c = t_start + window_s / 2.0
-+    while c - window_s / 2.0 < t_end:
-+        window_centres.append(c)
-+        c += hop_s
-+
-+    if not window_centres:
-+        window_centres = [(t_start + t_end) / 2.0]
-+
-+    # Compute per-window key probability frames
-+    prob_frames: List[np.ndarray] = []
-+    window_spans: List[Tuple[float, float]] = []
-+
-+    for centre in window_centres:
-+        w_start = centre - window_s / 2.0
-+        w_end = centre + window_s / 2.0
-+        mask = (time_arr >= w_start) & (time_arr < w_end)
-+        window_obs = obs_arr[mask]
-+
-+        if len(window_obs) < 2:
-+            # Not enough observations — uniform distribution
-+            prob_frames.append(np.ones(len(key_labels), dtype=float) / len(key_labels))
-+        else:
-+            _, probs = score_keys(
-+                list(window_obs),
-+                input_unit=input_unit,
-+                softmax_beta=softmax_beta,
-+                profile_map=profile_map,
-+            )
-+            prob_frames.append(probs)
-+
-+        window_spans.append((max(w_start, t_start), min(w_end, t_end)))
-+
-+    # Stack into (T, N) probability matrix and run Viterbi smoothing
-+    prob_matrix = np.array(prob_frames, dtype=np.float64)
-+    smoothed_labels = _viterbi_smooth_sequences(
-+        key_labels, prob_matrix, transition_penalty=transition_penalty
-+    )
-+
-+    # Build trajectory, merging adjacent windows with the same key
-+    trajectory: List[KeyTrajectoryEntry] = []
-+    for idx, label in enumerate(smoothed_labels):
-+        span_start, span_end = window_spans[idx]
-+        window_probs = {k: float(v) for k, v in zip(key_labels, prob_frames[idx])}
-+        conf = entropy_confidence(list(prob_frames[idx]))
-+
-+        if trajectory and trajectory[-1].label == label:
-+            # Merge with previous entry
-+            prev = trajectory[-1]
-+            merged_probs = {k: max(prev.probabilities.get(k, 0.0), window_probs.get(k, 0.0))
-+                           for k in key_labels}
-+            trajectory[-1] = KeyTrajectoryEntry(
-+                start_s=prev.start_s,
-+                end_s=span_end,
-+                label=label,
-+                confidence=max(prev.confidence, conf),
-+                probabilities=merged_probs,
-+            )
-+        else:
-+            trajectory.append(KeyTrajectoryEntry(
-+                start_s=span_start,
-+                end_s=span_end,
-+                label=label,
-+                confidence=conf,
-+                probabilities=window_probs,
-+            ))
-+
-+    return trajectory
-+
-+
- __all__ = [
-     "KeyDetectionResult",
-+    "KeyTrajectoryEntry",
-     "detect_key",
-+    "detect_key_trajectory",
-     "entropy_confidence",
-     "propagate_key_probabilities",
-     "score_keys",
-diff --git a/analysis/pitch/estimator.py b/analysis/pitch/estimator.py
-index ab7e9c8..a2cdcec 100644
---- a/analysis/pitch/estimator.py
-+++ b/analysis/pitch/estimator.py
-@@ -1,4 +1,4 @@
--"""Pitch estimation helpers (HPS, autocorrelation, salience).
-+"""Pitch estimation helpers (HPS, autocorrelation, salience, PYIN).
+     f1 = np.zeros(n_frames, dtype=np.float32)
+     f2 = np.zeros(n_frames, dtype=np.float32)
+diff --git a/analysis/advanced/vibrato.py b/analysis/advanced/vibrato.py
+index 79e7e59..14bbee2 100644
+--- a/analysis/advanced/vibrato.py
++++ b/analysis/advanced/vibrato.py
+@@ -104,7 +104,7 @@ def detect_vibrato(
+     if n < 3:
+         return VibratoFeatures(0.0, 0.0, 0.0, 0.0, int(start), int(n), False)
  
- Example:
-     frames = estimate_pitch_frames(spectrum, frequencies, harmonic_frames)
-@@ -6,6 +6,7 @@ Example:
+-    window = np.hanning(n) if n > 1 else np.ones(n, dtype=float)
++    window = (0.5 - 0.5 * np.cos(2.0 * np.pi * np.arange(n) / max(n, 1))) if n > 1 else np.ones(n, dtype=float)
+     windowed = residual * window
+     spectrum = np.fft.rfft(windowed)
+     freqs = np.fft.rfftfreq(n, d=1.0 / frame_rate)
+diff --git a/analysis/dsp/stft.py b/analysis/dsp/stft.py
+index 038e3b3..d218441 100644
+--- a/analysis/dsp/stft.py
++++ b/analysis/dsp/stft.py
+@@ -11,6 +11,11 @@ from typing import Optional, Tuple
  
- from __future__ import annotations
+ import numpy as np
  
-+import logging
- import os
- from dataclasses import dataclass
- from typing import Any, Dict, List, Optional, Tuple
-@@ -14,9 +15,46 @@ import numpy as np
- 
- from analysis.dsp.peak_detection import HarmonicFrame
- 
-+logger = logging.getLogger(__name__)
++try:
++    from scipy.signal.windows import hann as _scipy_hann
++except ImportError:  # pragma: no cover
++    _scipy_hann = None
 +
- _DEFAULT_VOICED_SALIENCE_THRESHOLD: float = float(os.getenv("TESSITURE_VOICED_MIN_SALIENCE", "0.3"))
- _DEFAULT_VOICED_MIN_F0_HZ: float = float(os.getenv("TESSITURE_VOICED_MIN_HZ", "80.0"))
- _DEFAULT_VOICED_MAX_F0_HZ: float = float(os.getenv("TESSITURE_VOICED_MAX_HZ", "1200.0"))
-+_USE_PYIN_PRIMARY: bool = os.getenv("TESSITURE_PITCH_METHOD", "pyin").lower() != "legacy"
-+
-+
-+def _pyin_estimate(
-+    audio: np.ndarray,
-+    sample_rate: int,
-+    hop_length: int,
-+    fmin: float = _DEFAULT_VOICED_MIN_F0_HZ,
-+    fmax: float = _DEFAULT_VOICED_MAX_F0_HZ,
-+) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
-+    """Run librosa PYIN pitch estimation.
-+
-+    Returns (f0, voiced_flag, voiced_probabilities) or None if librosa
-+    is unavailable.  PYIN provides probabilistic voicing decisions and
-+    sub-cent pitch resolution — significantly more accurate than HPS or
-+    naive autocorrelation.
-+    """
-+    try:
-+        import librosa
-+    except ImportError:
-+        return None
-+
-+    try:
-+        f0, voiced_flag, voiced_probs = librosa.pyin(
-+            audio,
-+            sr=sample_rate,
-+            hop_length=hop_length,
-+            fmin=float(fmin),
-+            fmax=float(fmax),
-+            fill_na=0.0,
-+        )
-+        return np.asarray(f0), np.asarray(voiced_flag), np.asarray(voiced_probs)
-+    except Exception:
-+        logger.debug("pyin_estimate_failed", exc_info=True)
-+        return None
- 
  
  @dataclass
-@@ -57,7 +95,11 @@ def autocorrelation_pitch(
-     fmin: float = 80.0,
-     fmax: float = 1200.0,
- ) -> float:
--    """Estimate pitch using autocorrelation for a single frame."""
-+    """Estimate pitch using autocorrelation for a single frame.
-+
-+    Uses parabolic interpolation around the correlation peak for sub-sample
-+    accuracy, reducing quantization error from ~17 cents to ~1–2 cents.
-+    """
-     frame = np.asarray(audio_frame, dtype=np.float32)
-     frame -= np.mean(frame)
-     if np.allclose(frame, 0.0):
-@@ -69,9 +111,22 @@ def autocorrelation_pitch(
-     if max_lag <= min_lag + 1:
-         return 0.0
-     search = corr[min_lag:max_lag]
--    lag = int(np.argmax(search)) + min_lag
-+    peak_idx = int(np.argmax(search))
-+    lag = peak_idx + min_lag
-     if lag <= 0:
-         return 0.0
-+    # Parabolic interpolation: fit a parabola through the peak and its
-+    # two neighbours to find the sub-sample peak location.
-+    if 0 < peak_idx < len(search) - 1:
-+        alpha = float(search[peak_idx - 1])
-+        beta = float(search[peak_idx])
-+        gamma = float(search[peak_idx + 1])
-+        denom = alpha - 2.0 * beta + gamma
-+        if abs(denom) > 1e-12:
-+            delta = 0.5 * (alpha - gamma) / denom
-+            lag = float(lag) + delta
-+    if lag <= 0.0:
-+        return 0.0
-     return float(sample_rate / lag)
- 
- 
-@@ -145,42 +200,68 @@ def estimate_pitch_frames(
-     hop_length: int = 512,
-     weights: Optional[Dict[str, float]] = None,
- ) -> List[PitchFrame]:
--    """Estimate pitch per frame using HPS, autocorrelation, and salience.
-+    """Estimate pitch per frame using PYIN (primary) with HPS/AC fallback.
-+
-+    When audio is available and PYIN is enabled (default), librosa PYIN
-+    provides the primary f0 estimate with sub-cent resolution and
-+    probabilistic voicing.  The legacy HPS + harmonic candidates pipeline
-+    runs in parallel as a cross-check and fills in diagnostics.
-+
-+    When PYIN is unavailable (no librosa, no audio, or env
-+    TESSITURE_PITCH_METHOD=legacy), the function falls back to the
-+    original HPS/autocorrelation/salience pipeline.
- 
-     Args:
-         spectrum: Magnitude spectrogram (freq x time).
-         frequencies: Frequency grid.
-         harmonic_frames: Harmonic candidates per frame.
--        audio: Optional mono audio array for autocorrelation.
-+        audio: Optional mono audio array for PYIN and autocorrelation.
-         sample_rate: Sampling rate in Hz.
-         hop_length: Hop length in samples for framing.
--        weights: Optional weights for salience terms. Accepts keys "H", "C", "S"
--            (and optionally "V" for backward compatibility, but V is not used).
-+        weights: Optional weights for salience terms (keys "H", "C", "S").
- 
-     Returns:
-         List of PitchFrame objects.
--
--    Example:
--        frames = estimate_pitch_frames(spectrum, frequencies, harmonic_frames, audio=audio)
+ class StftResult:
+@@ -59,10 +64,14 @@ def compute_stft(
+         stft = compute_stft(audio, sample_rate=44100, n_fft=2048, hop_length=256)
      """
-     if weights is None:
-         weights = {"H": 0.474, "C": 0.263, "S": 0.263}
- 
-+    n_frames = spectrum.shape[1]
-+
-+    # --- PYIN primary pass (when available) --------------------------------
-+    pyin_f0: Optional[np.ndarray] = None
-+    pyin_voiced: Optional[np.ndarray] = None
-+    pyin_probs: Optional[np.ndarray] = None
-+
-+    if _USE_PYIN_PRIMARY and audio is not None:
-+        pyin_result = _pyin_estimate(audio, sample_rate, hop_length)
-+        if pyin_result is not None:
-+            pyin_f0, pyin_voiced, pyin_probs = pyin_result
-+            logger.info(
-+                "pyin_primary_pass n_frames=%d pyin_frames=%d voiced=%d",
-+                n_frames,
-+                len(pyin_f0),
-+                int(np.sum(pyin_voiced)) if pyin_voiced is not None else 0,
-+            )
-+
-+    # --- Legacy HPS pass ---------------------------------------------------
-     hps_spec, hps_freqs = harmonic_product_spectrum(spectrum, frequencies)
-     frames: List[PitchFrame] = []
-     prev_f0 = 0.0
- 
--    for t in range(spectrum.shape[1]):
-+    for t in range(n_frames):
-+        # --- PYIN result for this frame ------------------------------------
-+        has_pyin = (pyin_f0 is not None and t < len(pyin_f0)
-+                    and pyin_voiced is not None and t < len(pyin_voiced))
-+        pyin_frame_f0 = float(pyin_f0[t]) if has_pyin else 0.0
-+        pyin_frame_voiced = bool(pyin_voiced[t]) if has_pyin else False
-+        pyin_frame_prob = float(pyin_probs[t]) if (has_pyin and pyin_probs is not None and t < len(pyin_probs)) else 0.0
-+
-+        # --- Legacy harmonic/HPS/AC path ----------------------------------
-         candidates = harmonic_frames[t].candidates if t < len(harmonic_frames) else []
-         hps_frame = hps_spec[:, t]
-         hps_idx = int(np.argmax(hps_frame)) if hps_frame.size else 0
-         hps_f0 = float(hps_freqs[hps_idx]) if hps_frame.size else 0.0
--        attempted_methods = [
--            "harmonic_candidates",
--            "hps_peak_ratio_gate",
--            "autocorrelation",
--        ]
--        strategy_path = "harmonic_candidates -> hps_peak_ratio_gate -> autocorrelation"
- 
-         ac_f0 = 0.0
-         if audio is not None:
-@@ -190,55 +271,68 @@ def estimate_pitch_frames(
-             if frame_audio.size > 0:
-                 ac_f0 = autocorrelation_pitch(frame_audio, sample_rate)
- 
--        best = None
--        best_score = -np.inf
-+        # Score legacy candidates
-+        legacy_best = None
-+        legacy_best_score = -np.inf
-         for cand in candidates:
-             f0 = cand.f0
-             h_score = cand.score
-             c_score = _continuity_score(prev_f0, f0)
-             s_score = spectral_prominence(spectrum[:, t], frequencies, f0)
--            score = (
--                weights.get("H", 0.0) * h_score
--                + weights.get("C", 0.0) * c_score
--                + weights.get("S", 0.0) * s_score
--            )
--            if score > best_score:
--                best_score = score
--                best = (f0, h_score, c_score, s_score)
--
--        # Fallback to HPS or autocorrelation if no harmonic candidates
--        if best is None:
--            # Only use HPS f0 if it shows clear harmonic dominance over noise floor
-+            score = (weights.get("H", 0.0) * h_score
-+                     + weights.get("C", 0.0) * c_score
-+                     + weights.get("S", 0.0) * s_score)
-+            if score > legacy_best_score:
-+                legacy_best_score = score
-+                legacy_best = (f0, h_score, c_score, s_score)
-+
-+        # Resolve legacy fallback f0
-+        if legacy_best is not None:
-+            legacy_f0, h_score, c_score, s_score = legacy_best
-+            legacy_method = "harmonic_candidates"
-+            fallback_reason: Optional[str] = None
+     audio = np.asarray(audio, dtype=np.float32)
+-    # Periodic Hann window is correct for DFT-even analysis (Smith, 2011)
+-    # It provides optimal spectral leakage suppression without requiring COLA
++    # Periodic Hann window (sym=False) is correct for DFT-even analysis (Smith, 2011).
++    # np.hanning is deprecated and produces a symmetric window; use scipy's periodic variant.
+     if window is None:
+-        window = np.hanning(n_fft).astype(np.float32)
++        if _scipy_hann is not None:
++            window = _scipy_hann(n_fft, sym=False).astype(np.float32)
 +        else:
-             if hps_f0 > 0.0 and hps_frame.size > 0:
-                 hps_peak = float(np.max(hps_frame))
-                 hps_median = float(np.median(hps_frame))
-                 hps_voiced = hps_median > 0.0 and (hps_peak / hps_median) >= 5.0
-             else:
-                 hps_voiced = False
-+
-             if hps_voiced and hps_f0 > 0.0:
--                f0 = hps_f0
--                method_used = "hps_fallback"
--                fallback_reason: Optional[str] = "no_harmonic_candidates"
-+                legacy_f0 = hps_f0
-+                legacy_method = "hps_fallback"
-+                fallback_reason = "no_harmonic_candidates"
-+            elif ac_f0 > 0.0:
-+                legacy_f0 = ac_f0
-+                legacy_method = "autocorrelation_fallback"
-+                fallback_reason = "no_harmonic_candidates_and_hps_not_voiced"
-             else:
--                f0 = ac_f0
--                if ac_f0 > 0.0:
--                    method_used = "autocorrelation_fallback"
--                    fallback_reason = "no_harmonic_candidates_and_hps_not_voiced"
--                else:
--                    method_used = "no_pitch_detected"
--                    fallback_reason = "no_harmonic_candidates_and_no_viable_fallback"
-+                legacy_f0 = 0.0
-+                legacy_method = "no_pitch_detected"
-+                fallback_reason = "no_harmonic_candidates_and_no_viable_fallback"
-+
-             h_score = float(np.max(hps_frame)) if hps_frame.size else 0.0
--            c_score = _continuity_score(prev_f0, f0)
--            s_score = spectral_prominence(spectrum[:, t], frequencies, f0)
--            best_score = (
--                weights.get("H", 0.0) * h_score
--                + weights.get("C", 0.0) * c_score
--                + weights.get("S", 0.0) * s_score
--            )
-+            c_score = _continuity_score(prev_f0, legacy_f0)
-+            s_score = spectral_prominence(spectrum[:, t], frequencies, legacy_f0)
-+            legacy_best_score = (weights.get("H", 0.0) * h_score
-+                                 + weights.get("C", 0.0) * c_score
-+                                 + weights.get("S", 0.0) * s_score)
-+
-+        # --- Select primary f0: PYIN > legacy ------------------------------
-+        if has_pyin and pyin_frame_voiced and pyin_frame_f0 > 0.0:
-+            f0 = pyin_frame_f0
-+            salience = float(max(pyin_frame_prob, legacy_best_score))
-+            method_used = "pyin"
-         else:
--            f0, h_score, c_score, s_score = best
--            method_used = "harmonic_candidates"
--            fallback_reason = None
-+            f0 = legacy_f0
-+            salience = float(legacy_best_score)
-+            method_used = legacy_method
-+
-+        attempted_methods = (["pyin"] if has_pyin else []) + [
-+            "harmonic_candidates", "hps_peak_ratio_gate", "autocorrelation",
-+        ]
-+        strategy_path = ("pyin -> " if has_pyin else "") + "harmonic_candidates -> hps_peak_ratio_gate -> autocorrelation"
++            # Fallback: manually construct periodic Hann
++            window = (0.5 - 0.5 * np.cos(2.0 * np.pi * np.arange(n_fft) / n_fft)).astype(np.float32)
+     if window.shape[0] != n_fft:
+         raise ValueError("window length must match n_fft")
  
-         components = {
-             "H": float(h_score),
-@@ -246,6 +340,8 @@ def estimate_pitch_frames(
-             "S": float(s_score),
-             "HPS_f0": float(hps_f0),
-             "AC_f0": float(ac_f0),
-+            "PYIN_f0": float(pyin_frame_f0) if has_pyin else None,
-+            "PYIN_prob": float(pyin_frame_prob) if has_pyin else None,
-             "analysis_diagnostics": {
-                 "primary_method_used": method_used,
-                 "attempted_methods": attempted_methods,
-@@ -253,7 +349,8 @@ def estimate_pitch_frames(
-                 "fallback_reason": fallback_reason,
-             },
-         }
--        frames.append(PitchFrame(time_index=t, f0_hz=float(f0), salience=float(best_score), components=components))
-+        frames.append(PitchFrame(time_index=t, f0_hz=float(f0),
-+                                 salience=float(salience), components=components))
-         prev_f0 = float(f0)
+@@ -73,12 +82,11 @@ def compute_stft(
+     frequencies = np.fft.rfftfreq(n_fft, d=1.0 / sample_rate).astype(np.float32)
+     times = (np.arange(frames.shape[0]) * hop_length / float(sample_rate)).astype(np.float32)
  
-     return frames
+-    # σ_f = Δf/√12 is the theoretical frequency uncertainty for a bin-quantized
+-    # frequency estimate (assuming uniform distribution within bin). In practice,
+-    # parabolic peak interpolation in peak_detection.py reduces this error by ~10-20x.
+-    # This σ_f serves as a conservative upper bound for uncertainty propagation.
++    # Frequency uncertainty for a Hann-windowed DFT.  The Hann main lobe
++    # has a -3 dB width of ~1.44 bins, giving σ_f ≈ 0.72 * Δf.
++    # (Previously used Δf/√12 ≈ 0.29 * Δf which underestimated uncertainty.)
+     bin_spacing = sample_rate / float(n_fft)
+-    sigma_f = np.full_like(frequencies, bin_spacing / np.sqrt(12.0), dtype=np.float32)
++    sigma_f = np.full_like(frequencies, 0.72 * bin_spacing, dtype=np.float32)
+ 
+     # Window energy normalization coefficient for proper magnitude scaling
+     window_energy = float(np.sum(window.astype(np.float64) ** 2) / n_fft)
+diff --git a/analysis/dsp/vocal_separation.py b/analysis/dsp/vocal_separation.py
+index 884489e..3337085 100644
+--- a/analysis/dsp/vocal_separation.py
++++ b/analysis/dsp/vocal_separation.py
+@@ -244,7 +244,7 @@ def detect_audio_type(
+         frame = segment[i * hop: i * hop + n_fft]
+         if frame.size < n_fft:
+             frame = np.pad(frame, (0, n_fft - frame.size))
+-        windowed = frame * np.hanning(n_fft)
++        windowed = frame * (0.5 - 0.5 * np.cos(2.0 * np.pi * np.arange(n_fft) / n_fft))
+         spectrum = np.abs(np.fft.rfft(windowed)) ** 2
+         power_frames.append(spectrum)
+     power = np.mean(power_frames, axis=0)
 diff --git a/api/analysis_core.py b/api/analysis_core.py
-index d33364d..51085f6 100644
+index 51085f6..a450149 100644
 --- a/api/analysis_core.py
 +++ b/api/analysis_core.py
-@@ -13,7 +13,7 @@ import numpy as np
- from analysis.advanced.formants import estimate_formants_from_audio
- from analysis.advanced.phrase_segmentation import segment_phrases_from_audio
- from analysis.advanced.vibrato import detect_vibrato
--from analysis.chords.key_detector import detect_key
-+from analysis.chords.key_detector import detect_key, detect_key_trajectory
- from analysis.dsp.peak_detection import detect_harmonics
- from analysis.dsp.preprocessing import preprocess_audio
- from analysis.dsp.stft import compute_stft
-@@ -285,7 +285,6 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
-     note_events = _build_note_events(pitch_frames)
-     chord_timeline = _build_chord_timeline(note_events)
+@@ -231,8 +231,8 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
+         stft_result.spectrum,
+         stft_result.frequencies,
+         n_harmonics=4,
+-        freq_tolerance=8.0,
+-        min_db=-60.0,
++        freq_tolerance=50.0,
++        min_db=-40.0,
+         max_candidates=6,
+     )
+     pitch_candidates = estimate_pitch_frames(
+diff --git a/api/routes/analysis.py b/api/routes/analysis.py
+index e5e410c..1b73c70 100644
+--- a/api/routes/analysis.py
++++ b/api/routes/analysis.py
+@@ -30,7 +30,7 @@ def get_status(job_id: str) -> Dict[str, Any]:
+ @router.get("/results/{job_id}")
+ def get_results(
+     job_id: str,
+-    format: str = Query("json", regex="^(json|json_report|csv|pdf)$"),
++    format: str = Query("json", pattern="^(json|json_report|csv|pdf)$"),
+ ) -> Any:
+     """Get the results of a completed analysis job.
  
--    report_progress(65, "key_detection", "Detecting musical key.")
-     # Spectrogram data is served via the dedicated GET /spectrogram/{job_id} endpoint;
-     # the legacy stft_raw is kept as an empty dict for backward compatibility with any
-     # consuming code that reads analysis_payload["spectrogram"] or ["spectrum"].
-@@ -321,7 +320,38 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
-             str(label): float(probability)
-             for label, probability in key_detection_result.probabilities.items()
-         }
--        if key_detection_result.best_key:
-+        # Attempt windowed key trajectory with Viterbi smoothing.
-+        # Falls back to a single global key entry when there aren't enough
-+        # observations or when the trajectory function is unavailable.
-+        voiced_timestamps = [
-+            float(frame.get("time", 0.0))
-+            for frame in voiced_pitch_frames
-+            if _safe_float(frame.get("time")) is not None
-+        ]
-+        if len(voiced_midi) >= 10 and len(voiced_timestamps) == len(voiced_midi):
-+            try:
-+                traj_entries = detect_key_trajectory(
-+                    voiced_midi,
-+                    voiced_timestamps,
-+                    input_unit="midi",
-+                    window_s=8.0,
-+                    hop_s=4.0,
-+                )
-+                if traj_entries:
-+                    key_trajectory = [
-+                        {
-+                            "start": entry.start_s,
-+                            "end": entry.end_s,
-+                            "label": entry.label,
-+                            "confidence": entry.confidence,
-+                        }
-+                        for entry in traj_entries
-+                    ]
-+            except Exception as exc:
-+                logger.debug("key_trajectory_failed error=%s", exc)
+diff --git a/api/server.py b/api/server.py
+index 9d4c796..4047c5d 100644
+--- a/api/server.py
++++ b/api/server.py
+@@ -1,5 +1,6 @@
+ import logging
+ import os
++from contextlib import asynccontextmanager
+ from pathlib import Path
+ 
+ from fastapi import FastAPI
+@@ -10,12 +11,10 @@ from api import logging_config
+ from api.api_router import router as api_router
+ from api.streaming import streaming_router
+ 
+-app = FastAPI(title="Tessiture API", version="0.1.0")
+ 
+-# Initialize logging on app startup
+-@app.on_event("startup")
+-async def startup_event():
+-    """Initialize logging and log startup information."""
++@asynccontextmanager
++async def lifespan(app: FastAPI):
++    """Initialize logging on startup, clean up on shutdown."""
+     logging_config.init_logging()
+     logger = logging_config.get_logger(__name__)
+     logger.info(
+@@ -23,6 +22,10 @@ async def startup_event():
+         str(logging_config.get_log_dir()),
+         str(logging_config.get_jobs_dir())
+     )
++    yield
 +
-+        # Fall back to single global key if trajectory is empty.
-+        if not key_trajectory and key_detection_result.best_key:
-             key_trajectory.append(
-                 {
-                     "start": 0.0,
-@@ -334,7 +364,6 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
-     report_progress(72, "tessitura", "Analyzing vocal range.")
-     if job_logger:
-         job_logger.debug("Stage: tessitura analysis")
--    report_progress(72, "tessitura", "Analyzing vocal range.")
-     tessitura_payload: Dict[str, Any] = {}
-     if voiced_midi:
-         try:
-diff --git a/api/evidence.py b/api/evidence.py
-index efd9ce8..5b2f4e5 100644
---- a/api/evidence.py
-+++ b/api/evidence.py
-@@ -135,7 +135,13 @@ def _build_evidence_payload(
-     if len(voiced_frames_data) >= 2:
-         ordered_frames = sorted(voiced_frames_data, key=lambda f: f["time"])
-         best_jump: Optional[Dict[str, Any]] = None
-+        # Maximum inter-frame time gap to count as a single-phrase transition.
-+        # Gaps larger than this are phrase boundaries, not pitch jumps.
-+        max_intra_phrase_gap_s = 0.25
-         for prev, curr in zip(ordered_frames, ordered_frames[1:]):
-+            time_gap = curr["time"] - prev["time"]
-+            if time_gap > max_intra_phrase_gap_s or time_gap <= 0.0:
-+                continue  # skip cross-phrase transitions
-             jump_midi = abs(curr["midi"] - prev["midi"])
-             if best_jump is None or jump_midi > float(best_jump["delta_midi"]):
-                 best_jump = {
-@@ -205,20 +211,71 @@ def _build_evidence_payload(
- 
- 
- def _build_chord_timeline(note_events: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
--    timeline: List[Dict[str, Any]] = []
-+    """Build a chord timeline by detecting chords from simultaneously-sounding notes.
 +
-+    Groups overlapping note events into time windows, then runs chord detection
-+    on each window's pitch set.  Single-note windows are labelled with the note
-+    name rather than a spurious chord label.
++app = FastAPI(title="Tessiture API", version="0.1.0", lifespan=lifespan)
+ 
+ cors_origins = [
+     origin.strip()
+diff --git a/api/streaming.py b/api/streaming.py
+index 3d1ec1e..f8afa3f 100644
+--- a/api/streaming.py
++++ b/api/streaming.py
+@@ -300,6 +300,7 @@ class ComparisonSession:
+         extractor: Per-session ``StreamingPitchExtractor`` instance.
+         current_position_s: Current playback position as reported by client.
+         start_time: Monotonic timestamp of session creation.
++        last_activity: Monotonic timestamp of last received message.
+         chunk_results: List of per-chunk feedback dicts (voiced only).
+         chunk_count: Total binary frames received (voiced + unvoiced).
+     """
+@@ -310,10 +311,32 @@ class ComparisonSession:
+     extractor: StreamingPitchExtractor
+     current_position_s: float = 0.0
+     start_time: float = field(default_factory=time.monotonic)
++    last_activity: float = field(default_factory=time.monotonic)
+     chunk_results: List[Dict[str, Any]] = field(default_factory=list)
+     chunk_count: int = 0
+ 
+ 
++# Maximum session inactivity before eviction (seconds).
++_SESSION_TIMEOUT_S: float = 600.0  # 10 minutes
++
++
++def _evict_stale_sessions() -> int:
++    """Remove sessions that have been inactive longer than _SESSION_TIMEOUT_S.
++
++    Returns the number of evicted sessions.
 +    """
-+    # --- collect valid events with start/end/midi --------------------------
-+    valid_events: List[Dict[str, Any]] = []
-     for event in note_events:
-         midi_value = _safe_float(event.get("midi"))
-+        start = _safe_float(event.get("start")) or 0.0
-+        end = _safe_float(event.get("end"))
-         if midi_value is None:
-             continue
--        detected = detect_chord([midi_value], input_unit="midi", max_notes=4, top_k=3)
--        label = detected.best_chord or str(event.get("note") or "Unknown")
--        probability = float(detected.probabilities.get(label, 0.0)) if detected.probabilities else 0.0
--        timeline.append(
--            {
--                "start": _safe_float(event.get("start")) or 0.0,
--                "end": _safe_float(event.get("end")),
--                "label": label,
--                "confidence": probability,
--            }
--        )
--    return timeline
-+        if end is None or end <= start:
-+            end = start + 0.1  # fallback duration
-+        valid_events.append({"start": start, "end": end, "midi": midi_value,
-+                             "note": event.get("note") or _midi_to_note_name(midi_value)})
++    now = time.monotonic()
++    stale_ids = [
++        sid for sid, session in _SESSIONS.items()
++        if (now - session.last_activity) > _SESSION_TIMEOUT_S
++    ]
++    for sid in stale_ids:
++        logger.info("session_evicted session_id=%s idle_s=%.0f", sid,
++                     now - _SESSIONS[sid].last_activity)
++        _SESSIONS.pop(sid, None)
++    return len(stale_ids)
 +
-+    if not valid_events:
-+        return []
 +
-+    # --- build boundary-point timeline -------------------------------------
-+    # Collect every unique start/end time as a boundary point, then for each
-+    # interval [boundary_i, boundary_{i+1}] find all notes sounding in that
-+    # interval.
-+    boundaries: List[float] = sorted({e["start"] for e in valid_events}
-+                                      | {e["end"] for e in valid_events})
-+
-+    raw_timeline: List[Dict[str, Any]] = []
-+    for i in range(len(boundaries) - 1):
-+        seg_start = boundaries[i]
-+        seg_end = boundaries[i + 1]
-+        if seg_end <= seg_start:
-+            continue
-+        # Collect MIDI values of all notes sounding during this segment.
-+        sounding_midi: List[float] = []
-+        for ev in valid_events:
-+            if ev["start"] < seg_end and ev["end"] > seg_start:
-+                sounding_midi.append(ev["midi"])
-+
-+        if not sounding_midi:
-+            continue
-+
-+        if len(sounding_midi) >= 2:
-+            # Multiple simultaneous notes — run real chord detection.
-+            detected = detect_chord(sounding_midi, input_unit="midi", max_notes=4, top_k=3)
-+            label = detected.best_chord or "N.C."
-+            confidence = float(detected.probabilities.get(label, 0.0)) if detected.probabilities else 0.0
-+        else:
-+            # Single note — label with note name, not a chord.
-+            label = str(_midi_to_note_name(sounding_midi[0]))
-+            confidence = 0.0
-+
-+        raw_timeline.append({"start": seg_start, "end": seg_end,
-+                             "label": label, "confidence": confidence})
-+
-+    # --- merge adjacent segments with the same label -----------------------
-+    merged: List[Dict[str, Any]] = []
-+    for entry in raw_timeline:
-+        if merged and merged[-1]["label"] == entry["label"]:
-+            merged[-1]["end"] = entry["end"]
-+            # Keep the higher confidence of the two segments.
-+            merged[-1]["confidence"] = max(merged[-1]["confidence"], entry["confidence"])
-+        else:
-+            merged.append(dict(entry))
-+
-+    return merged
-diff --git a/api/stats.py b/api/stats.py
-index b0e34ed..f516a5e 100644
---- a/api/stats.py
-+++ b/api/stats.py
-@@ -179,9 +179,51 @@ def _build_metric_inference(
-         sampled = rng.choice(samples, size=sample_size, replace=True)
-         replicates[idx] = float(reducer(sampled))
+ # ---------------------------------------------------------------------------
+ # Session aggregation helpers
+ # ---------------------------------------------------------------------------
+@@ -515,6 +538,10 @@ async def live_comparison(websocket: WebSocket, reference_id: str = Query(...))
+             hop_length=_STREAMING_HOP,
+         ),
+     )
++    # Evict any stale sessions before adding a new one.
++    evicted = _evict_stale_sessions()
++    if evicted:
++        logger.info("ws.stale_sessions_evicted count=%d", evicted)
+     _SESSIONS[session_id] = session
  
-+    # --- BCa (Bias-Corrected and Accelerated) confidence interval ----------
-+    # Falls back to percentile bootstrap if BCa computation fails.
-+    from scipy import stats as _scipy_stats
-+
-     tail = (1.0 - float(confidence_level)) / 2.0
--    ci_low = float(np.quantile(replicates, tail))
--    ci_high = float(np.quantile(replicates, 1.0 - tail))
-+    alpha_lo = tail
-+    alpha_hi = 1.0 - tail
-+
-+    try:
-+        # Bias correction factor z0: proportion of replicates below the
-+        # point estimate, mapped through the inverse normal CDF.
-+        prop_below = float(np.mean(replicates < estimate))
-+        prop_below = np.clip(prop_below, 1e-10, 1.0 - 1e-10)
-+        z0 = float(_scipy_stats.norm.ppf(prop_below))
-+
-+        # Acceleration factor a: estimated from jackknife influence values.
-+        jackknife_values = np.empty(sample_size, dtype=float)
-+        for i in range(sample_size):
-+            jack_sample = np.concatenate([samples[:i], samples[i + 1:]])
-+            jackknife_values[i] = float(reducer(jack_sample))
-+        jack_mean = float(np.mean(jackknife_values))
-+        jack_diff = jack_mean - jackknife_values
-+        sum_cubed = float(np.sum(jack_diff ** 3))
-+        sum_squared = float(np.sum(jack_diff ** 2))
-+        if sum_squared > 0.0:
-+            a = sum_cubed / (6.0 * (sum_squared ** 1.5))
-+        else:
-+            a = 0.0
-+
-+        # Adjusted quantiles
-+        z_lo = float(_scipy_stats.norm.ppf(alpha_lo))
-+        z_hi = float(_scipy_stats.norm.ppf(alpha_hi))
-+
-+        def _bca_quantile(z_alpha: float) -> float:
-+            numerator = z0 + z_alpha
-+            adjusted = z0 + numerator / (1.0 - a * numerator)
-+            return float(np.clip(_scipy_stats.norm.cdf(adjusted), 1e-10, 1.0 - 1e-10))
-+
-+        ci_low = float(np.quantile(replicates, _bca_quantile(z_lo)))
-+        ci_high = float(np.quantile(replicates, _bca_quantile(z_hi)))
-+    except Exception:
-+        # Fallback to plain percentile bootstrap
-+        logger.debug("bca_bootstrap_fallback metric=%s", metric_name)
-+        ci_low = float(np.quantile(replicates, alpha_lo))
-+        ci_high = float(np.quantile(replicates, alpha_hi))
+     logger.info("ws.live_comparison.start session=%s reference=%s", session_id, reference_id)
+@@ -552,6 +579,7 @@ async def live_comparison(websocket: WebSocket, reference_id: str = Query(...))
  
-     payload = {
-         "estimate": estimate,
-diff --git a/frontend/src/api.js b/frontend/src/api.js
-index 91bb173..4140fe1 100644
---- a/frontend/src/api.js
-+++ b/frontend/src/api.js
-@@ -33,6 +33,38 @@ const parseErrorMessage = async (response) => {
-   return response.statusText || "Request failed.";
- };
+                 audio_chunk = np.frombuffer(raw_bytes, dtype=np.float32)
+                 session.chunk_count += 1
++                session.last_activity = time.monotonic()
  
-+/**
-+ * Retry a fetch-returning function with exponential backoff.
-+ * Retries on network errors and 5xx status codes.
-+ * Does NOT retry on 4xx (client errors) — those are permanent.
-+ */
-+const withRetry = async (fn, { maxAttempts = 3, baseDelayMs = 1000 } = {}) => {
-+  let lastError;
-+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-+    try {
-+      const response = await fn();
-+      // Retry on server errors (5xx), not client errors (4xx)
-+      if (response.ok || (response.status >= 400 && response.status < 500)) {
-+        return response;
-+      }
-+      if (attempt < maxAttempts - 1) {
-+        const delay = baseDelayMs * Math.pow(2, attempt);
-+        await new Promise((resolve) => setTimeout(resolve, delay));
-+        continue;
-+      }
-+      return response; // final attempt — return the 5xx response for caller to handle
-+    } catch (err) {
-+      lastError = err;
-+      if (attempt < maxAttempts - 1) {
-+        const delay = baseDelayMs * Math.pow(2, attempt);
-+        await new Promise((resolve) => setTimeout(resolve, delay));
-+        continue;
-+      }
-+    }
-+  }
-+  throw lastError;
-+};
-+
- const ensureOk = async (response) => {
-   if (response.ok) {
-     return response;
-@@ -288,9 +320,7 @@ export const fetchJobStatus = async (jobId) => {
-     throw new Error("Job ID is required.");
-   }
-   const response = await ensureOk(
--    await fetch(buildUrl(`/status/${jobId}`), {
--      method: "GET",
--    })
-+    await withRetry(() => fetch(buildUrl(`/status/${jobId}`), { method: "GET" }))
-   );
-   return normalizeJobStatus(await response.json());
- };
-@@ -301,9 +331,7 @@ export const fetchJobResults = async (jobId, format = "json") => {
-   }
-   const query = new URLSearchParams({ format }).toString();
-   const response = await ensureOk(
--    await fetch(buildUrl(`/results/${jobId}?${query}`), {
--      method: "GET",
--    })
-+    await withRetry(() => fetch(buildUrl(`/results/${jobId}?${query}`), { method: "GET" }))
-   );
-   if (format === "json") {
-     return normalizeAnalysisResult(await response.json());
-diff --git a/frontend/src/components/AnalysisResults.jsx b/frontend/src/components/AnalysisResults.jsx
-index 1272b46..7959de5 100644
---- a/frontend/src/components/AnalysisResults.jsx
-+++ b/frontend/src/components/AnalysisResults.jsx
-@@ -1,4 +1,4 @@
--import { useEffect, useId, useMemo, useRef, useState } from "react";
-+import { useId, useMemo, useRef, useState } from "react";
- import ReportExporter from "./ReportExporter";
- import SpectrogramInspector from "./SpectrogramInspector";
- import SummaryMetrics from "./SummaryMetrics";
-@@ -6,40 +6,35 @@ import EvidenceReferences from "./EvidenceReferences";
- import PracticeGuidance from "./PracticeGuidance";
- import InferentialStatistics from "./InferentialStatistics";
- import CalibrationSummary from "./CalibrationSummary";
-+import PitchTimeline from "./PitchTimeline";
-+import VocalProfileCard from "./VocalProfileCard";
-+import SongSuggestions from "./SongSuggestions";
-+import WarmUpRoutine from "./WarmUpRoutine";
-+import SessionHistory from "./SessionHistory";
- import {
-   normalizeQualityWarnings,
-   normalizeEvidencePayload,
-   isPlainObject,
- } from "./AnalysisFormatters";
+                 pitch_estimate = session.extractor.push(audio_chunk)
  
--const RESULTS_VIEWS = {
--  analysis: "analysis",
--  calibration: "calibration",
+diff --git a/frontend/src/components/LiveComparisonView.jsx b/frontend/src/components/LiveComparisonView.jsx
+index 96f53a2..3dea7ec 100644
+--- a/frontend/src/components/LiveComparisonView.jsx
++++ b/frontend/src/components/LiveComparisonView.jsx
+@@ -2,26 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
+ import useComparisonWebSocket from "../hooks/useComparisonWebSocket";
+ import useMicrophoneCapture from "../hooks/useMicrophoneCapture";
+ import ComparisonMetricsPanel from "./ComparisonMetricsPanel";
++import PitchMeter from "./PitchMeter";
+ 
+-const DEVIATION_RANGE = 100; // cents, full scale
+-
+-/**
+- * Compute the CSS left % for the deviation needle (0–100).
+- * 0 cents → 50%, -100 → 0%, +100 → 100%.
+- */
+-const deviationToPercent = (cents) => {
+-  if (cents === null || cents === undefined) return 50;
+-  const clamped = Math.max(-DEVIATION_RANGE, Math.min(DEVIATION_RANGE, cents));
+-  return 50 + (clamped / DEVIATION_RANGE) * 50;
 -};
 -
+-const deviationColorClass = (cents) => {
+-  if (cents === null || cents === undefined) return "";
+-  const abs = Math.abs(cents);
+-  if (abs <= 25) return "note-in-tune";
+-  if (abs <= 50) return "note-warning";
+-  return "note-off-pitch";
+-};
+ 
  /**
-- * AdvancedInspectorToggle
-- * Renders the SpectrogramInspector as a collapsible section.
-- * The user can expand to view the spectrogram visualization.
-+ * AdvancedInspectorToggle — collapsible spectrogram section.
-  */
- function AdvancedInspectorToggle({ jobId, audioRef, results, duration }) {
-   const [isOpen, setIsOpen] = useState(false);
-   return (
-     <details
--      className="spectrogram-inspector-toggle"
-+      className="results__disclosure"
-       open={isOpen}
-       onToggle={(e) => setIsOpen(e.currentTarget.open)}
-     >
--      <summary className="spectrogram-inspector-toggle__summary">
--        🔍 Audio spectrogram (advanced)
--      </summary>
-+      <summary>Audio spectrogram (advanced)</summary>
-       {isOpen ? (
--        <>
--          <p className="spectrogram-inspector-toggle__description">
-+        <div className="results__disclosure__body">
-+          <p className="results__section-copy">
-             This shows the frequency content of your recording over time. 
-             The horizontal axis is time, the vertical axis is frequency (pitch), 
--            and the white line is your detected pitch. Colored markers show key moments.
--            Brighter colors mean louder frequencies.
-+            and the white line is your detected pitch. Brighter colors mean louder frequencies.
-           </p>
-           <SpectrogramInspector
-             jobId={jobId}
-@@ -48,12 +43,48 @@ function AdvancedInspectorToggle({ jobId, audioRef, results, duration }) {
-             durationSeconds={duration ?? 0}
-             pitchFrames={results?.pitch?.frames ?? results?.pitch_frames ?? []}
-           />
--        </>
-+        </div>
-       ) : null}
-     </details>
-   );
- }
+  * Main live comparison session view.
+@@ -93,7 +75,6 @@ const LiveComparisonView = ({ referenceId, referenceInfo, onSessionComplete, onC
  
-+/**
-+ * ConfidenceBadge — one-glance analysis quality indicator derived from
-+ * calibration metrics.  Replaces the raw calibration table for most users.
-+ */
-+function ConfidenceBadge({ calibrationSummary }) {
-+  if (!calibrationSummary) return null;
-+
-+  const bias = Math.abs(calibrationSummary.mean_pitch_bias_cents ?? 0);
-+  const std = calibrationSummary.pitch_error_std_cents ?? 0;
-+  const samples = calibrationSummary.voiced_frame_count ?? 0;
-+
-+  let level = "high";
-+  let label = "High confidence";
-+  let description = "Stable, well-calibrated results across the detected frequency range.";
-+
-+  if (samples < 5 || std > 15 || bias > 10) {
-+    level = "low";
-+    label = "Low confidence";
-+    description = "Limited data or high variance — treat these results as rough estimates.";
-+  } else if (std > 5 || bias > 3) {
-+    level = "medium";
-+    label = "Moderate confidence";
-+    description = "Reasonable results with some measurement uncertainty in extreme ranges.";
-+  }
-+
-+  return (
-+    <div className={`confidence-badge confidence-badge--${level}`} role="status" aria-label={`Analysis confidence: ${label}`}>
-+      <span aria-hidden="true">{level === "high" ? "✓" : level === "medium" ? "~" : "!"}</span>
-+      <span>{label}</span>
-+      <span style={{ fontWeight: 400, fontSize: "0.8rem", opacity: 0.8, marginLeft: 4 }}>
-+        — {description}
-+      </span>
-+    </div>
-+  );
-+}
-+
- function AnalysisResults({
-   results = null,
-   status = null,
-@@ -67,14 +98,15 @@ function AnalysisResults({
-   jobId = null,
- }) {
-   const titleId = useId();
--  const [activeResultsView, setActiveResultsView] = useState(RESULTS_VIEWS.analysis);
-   const hasResults = Boolean(results && Object.keys(results).length > 0);
-   const audioRef = useRef(null);
+   const deviation = ws.latestFeedback?.pitch_deviation_cents ?? null;
+   const userNote = ws.latestFeedback?.user_note_name ?? null;
+-  const needlePercent = deviationToPercent(deviation);
  
--  // Extract data from results
--  const hasPitchFrames =
--    (Array.isArray(results?.pitch?.frames) && results.pitch.frames.length > 0) ||
--    (Array.isArray(results?.pitch_frames) && results.pitch_frames.length > 0);
-+  // --- Extract data from results ------------------------------------------
-+  const pitchFrames =
-+    (Array.isArray(results?.pitch?.frames) && results.pitch.frames) ||
-+    (Array.isArray(results?.pitch_frames) && results.pitch_frames) ||
-+    [];
-+  const hasPitchFrames = pitchFrames.length > 0;
-   const hasNoteEvents =
-     (Array.isArray(results?.note_events) && results.note_events.length > 0) ||
-     (Array.isArray(results?.notes?.events) && results.notes.events.length > 0);
-@@ -121,24 +153,15 @@ function AnalysisResults({
-   const calibrationSummary = isPlainObject(results?.calibration?.summary)
-     ? results.calibration.summary
-     : null;
--  const hasCalibrationSummary = Boolean(
--    calibrationSummary && Object.keys(calibrationSummary).length > 0
--  );
--  const showResultsViewTabs = hasCalibrationSummary;
+   // Reference audio: only available for example tracks (served at /examples/{filename})
+   // Uploaded references do not have a direct audio playback URL yet.
+@@ -146,40 +127,14 @@ const LiveComparisonView = ({ referenceId, referenceInfo, onSessionComplete, onC
+         </p>
+       )}
+ 
+-      {/* Live pitch display */}
+-      <div className="live-pitch-display" aria-live="polite" aria-atomic="true">
+-        <div
+-          className={`live-pitch-display__note ${deviationColorClass(deviation)}`}
+-          aria-label={userNote ? `Singing: ${userNote}` : "No pitch detected"}
+-        >
+-          {userNote ?? "—"}
+-        </div>
 -
--  useEffect(() => {
--    if (!hasCalibrationSummary && activeResultsView === RESULTS_VIEWS.calibration) {
--      setActiveResultsView(RESULTS_VIEWS.analysis);
--    }
--  }, [activeResultsView, hasCalibrationSummary]);
- 
-+  const duration = results?.metadata?.duration_seconds ?? results?.duration_seconds ?? results?.summary?.duration_seconds;
-   const readableStatus = (status?.status ?? "waiting").replace(/_/g, " ");
--  const analysisTabId = `${titleId}-tab-analysis`;
--  const analysisPanelId = `${titleId}-panel-analysis`;
--  const calibrationTabId = `${titleId}-tab-calibration`;
--  const calibrationPanelId = `${titleId}-panel-calibration`;
- 
--  const duration = results?.metadata?.duration_seconds ?? results?.duration_seconds ?? results?.summary?.duration_seconds;
-+  // Tessitura bounds for pitch timeline
-+  const tessituraLow = results?.tessitura?.metrics?.tessitura_band?.[0]
-+    ?? results?.summary?.tessitura_range?.[0];
-+  const tessituraHigh = results?.tessitura?.metrics?.tessitura_band?.[1]
-+    ?? results?.summary?.tessitura_range?.[1];
- 
-   return (
-     <section className="card results" aria-labelledby={titleId} aria-busy={isFetchingResults}>
-@@ -147,7 +170,7 @@ function AnalysisResults({
-           <h2 id={titleId} className="card__title">Analysis results</h2>
-           <p className={`results__status results__status--${status?.status ?? "idle"}`}>{readableStatus}</p>
-         </div>
--        <p className="card__meta">Key outcomes are shown first, followed by plain-language practice guidance and supporting statistics.</p>
-+        <ConfidenceBadge calibrationSummary={calibrationSummary} />
-       </header>
- 
-       {error ? <p className="results__error" role="alert">{error}</p> : null}
-@@ -156,64 +179,48 @@ function AnalysisResults({
-         <p className="results__empty">Results will appear here after the job completes.</p>
-       ) : (
-         <>
--          {hasCalibrationSummary ? (
--            <div className="results__view-tabs" role="tablist" aria-label="Analysis result views">
--              <button
--                id={analysisTabId}
--                className="button results__view-tab"
--                type="button"
--                role="tab"
--                aria-selected={activeResultsView === RESULTS_VIEWS.analysis}
--                aria-controls={analysisPanelId}
--                onClick={() => setActiveResultsView(RESULTS_VIEWS.analysis)}
--              >
--                General analysis
--              </button>
--              <button
--                id={calibrationTabId}
--                className="button results__view-tab"
--                type="button"
--                role="tab"
--                aria-selected={activeResultsView === RESULTS_VIEWS.calibration}
--                aria-controls={calibrationPanelId}
--                onClick={() => setActiveResultsView(RESULTS_VIEWS.calibration)}
--              >
--                Reference calibration
--              </button>
--            </div>
-+          {isSparseCompletedResults ? (
-+            <p className="results__empty" role="status">
-+              Analysis completed, but the file did not contain enough detectable pitch activity for detailed personalized guidance.
-+            </p>
-+          ) : null}
-+
-+          {qualityWarnings.length ? (
-+            <section className="results__section" aria-label="Analysis quality warnings">
-+              <h3 className="results__section-title">Analysis quality notes</h3>
-+              <ul>
-+                {qualityWarnings.map((warning, index) => (
-+                  <li key={`${warning}-${index}`}>{warning}</li>
-+                ))}
-+              </ul>
-+            </section>
-           ) : null}
- 
--          {activeResultsView === RESULTS_VIEWS.analysis ? (
+-        {/* Deviation meter */}
+-        <div
+-          className="pitch-deviation-meter"
+-          role="meter"
+-          aria-label={`Pitch deviation: ${deviation !== null ? `${Math.round(deviation)} cents` : "unknown"}`}
+-          aria-valuenow={deviation ?? 0}
+-          aria-valuemin={-DEVIATION_RANGE}
+-          aria-valuemax={DEVIATION_RANGE}
+-        >
+-          <span className="pitch-deviation-meter__label pitch-deviation-meter__label--left">
+-            −{DEVIATION_RANGE}¢
+-          </span>
+-          <div className="pitch-deviation-meter__track">
 -            <div
--              id={showResultsViewTabs ? analysisPanelId : undefined}
--              role={showResultsViewTabs ? "tabpanel" : undefined}
--              aria-labelledby={showResultsViewTabs ? analysisTabId : undefined}
--            >
--              {isSparseCompletedResults ? (
--                <p className="results__empty" role="status">
--                  Analysis completed, but the file did not contain enough detectable pitch activity for detailed personalized guidance.
--                </p>
--              ) : null}
--
--              <section className="results__section" aria-label="How to interpret analysis results">
--                <h3 className="results__section-title">Interpretation help</h3>
--                <p className="results__section-copy">
--                  Use summary metrics as your quick snapshot, then follow the guidance cards below to pick one clear practice action.
--                </p>
--              </section>
--
--              {qualityWarnings.length ? (
--                <section className="results__section" aria-label="Analysis quality warnings">
--                  <h3 className="results__section-title">Analysis quality notes</h3>
--                  <ul>
--                    {qualityWarnings.map((warning, index) => (
--                      <li key={`${warning}-${index}`}>{warning}</li>
--                    ))}
--                  </ul>
--                </section>
--              ) : null}
--
--              <SummaryMetrics results={results} />
-+          {/* ── LAYER 1: Dashboard (always visible) ─────────────────── */}
-+          {/* Identity + key outcomes — what every user sees first.       */}
-+
-+          <SessionHistory results={results} />
-+
-+          <VocalProfileCard results={results} />
-+
-+          <SummaryMetrics results={results} />
-+
-+          {hasPitchFrames && (
-+            <PitchTimeline
-+              pitchFrames={pitchFrames}
-+              durationSeconds={duration ?? 0}
-+              tessituraLow={tessituraLow}
-+              tessituraHigh={tessituraHigh}
-+            />
-+          )}
-+
-+          {/* ── LAYER 2: Coaching (expandable, open by default) ─────── */}
-+          {/* Actionable guidance — what to practice, sing, and warm up.  */}
-+
-+          <details className="results__disclosure" open>
-+            <summary>What to do next</summary>
-+            <div className="results__disclosure__body">
-+              <SongSuggestions results={results} />
- 
-               <EvidenceReferences
-                 results={results}
-@@ -224,23 +231,37 @@ function AnalysisResults({
-                 audioSourceUrl={audioSourceUrl}
-                 audioSourceLabel={audioSourceLabel}
-               />
--
-               <PracticeGuidance results={results} evidence={evidence} />
- 
--              <InferentialStatistics
--                inferentialStatistics={inferentialStatistics}
--                inferentialMetrics={inferentialMetrics}
--              />
-+              <WarmUpRoutine results={results} />
-             </div>
--          ) : null}
-+          </details>
- 
--          {hasCalibrationSummary && activeResultsView === RESULTS_VIEWS.calibration ? (
--            <CalibrationSummary
--              calibrationSummary={calibrationSummary}
--              calibrationTabId={calibrationPanelId}
--              titleId={calibrationTabId}
+-              className={`pitch-deviation-needle ${deviationColorClass(deviation)}`}
+-              style={{ left: `${needlePercent}%` }}
+-              aria-hidden="true"
 -            />
--          ) : null}
-+          {/* ── LAYER 3: Technical details (opt-in, closed) ─────────── */}
-+          {/* Statistical inference and calibration — power users only.   */}
-+
-+          {(hasInferentialMetrics || calibrationSummary) && (
-+            <details className="results__disclosure">
-+              <summary>Technical statistics & calibration</summary>
-+              <div className="results__disclosure__body">
-+                {hasInferentialMetrics && (
-+                  <InferentialStatistics
-+                    inferentialStatistics={inferentialStatistics}
-+                    inferentialMetrics={inferentialMetrics}
-+                  />
-+                )}
-+                {calibrationSummary && (
-+                  <CalibrationSummary
-+                    calibrationSummary={calibrationSummary}
-+                    calibrationTabId={`${titleId}-calib`}
-+                    titleId={`${titleId}-calib-title`}
-+                  />
-+                )}
-+              </div>
-+            </details>
-+          )}
-+
-+          {/* ── Advanced: spectrogram inspector ─────────────────────── */}
+-            <div className="pitch-deviation-meter__center-mark" aria-hidden="true" />
+-          </div>
+-          <span className="pitch-deviation-meter__label pitch-deviation-meter__label--right">
+-            +{DEVIATION_RANGE}¢
+-          </span>
+-        </div>
+-      </div>
++      {/* Live pitch display — uses PitchMeter component */}
++      <PitchMeter
++        currentDeviation={deviation}
++        userNote={userNote}
++        referenceNote={ws.latestFeedback?.reference_note_name ?? null}
++        accuracyRatio={ws.runningSummary?.pitch_accuracy_ratio ?? null}
++        isVoiced={deviation !== null && userNote !== null}
++      />
  
-           {jobId ? (
-             <AdvancedInspectorToggle
-diff --git a/frontend/src/components/PitchMeter.jsx b/frontend/src/components/PitchMeter.jsx
-new file mode 100644
-index 0000000..5ab844a
---- /dev/null
-+++ b/frontend/src/components/PitchMeter.jsx
-@@ -0,0 +1,132 @@
-+/**
-+ * PitchMeter — Real-time pitch deviation display for live comparison.
-+ *
-+ * Shows:
-+ * - A horizontal deviation bar centered on "in tune" (0 cents)
-+ * - Current note name and reference note name side by side
-+ * - Running accuracy percentage
-+ * - Color-coded feedback: green (in tune), yellow (slightly off), red (way off)
-+ *
-+ * Receives chunk feedback from the WebSocket via props.
-+ */
-+
-+import { useEffect, useRef, useMemo } from "react";
-+
-+const CENTS_RANGE = 100; // ±100 cents displayed
-+
-+function clamp(value, min, max) {
-+  return Math.max(min, Math.min(max, value));
-+}
-+
-+function centsToColor(absCents) {
-+  if (absCents < 15) return "var(--success, #4ade80)";
-+  if (absCents < 50) return "#fbbf24";
-+  return "var(--danger, #fb7185)";
-+}
-+
-+function centsToLabel(cents) {
-+  if (Math.abs(cents) < 5) return "In tune";
-+  if (cents > 0) return `${Math.round(cents)}¢ sharp`;
-+  return `${Math.round(Math.abs(cents))}¢ flat`;
-+}
-+
-+function PitchMeter({
-+  currentDeviation = null,    // cents deviation from reference (signed)
-+  userNote = null,            // current user note name string
-+  referenceNote = null,       // current reference note name string
-+  accuracyRatio = null,       // running accuracy ratio 0–1
-+  isVoiced = false,           // whether current frame is voiced
-+}) {
-+  const barRef = useRef(null);
-+
-+  // Animate the bar smoothly
-+  useEffect(() => {
-+    const bar = barRef.current;
-+    if (!bar) return;
-+
-+    if (!isVoiced || currentDeviation === null || !Number.isFinite(currentDeviation)) {
-+      bar.style.opacity = "0.2";
-+      bar.style.left = "50%";
-+      bar.style.backgroundColor = "var(--text-soft, #8d9ab8)";
-+      return;
-+    }
-+
-+    const clamped = clamp(currentDeviation, -CENTS_RANGE, CENTS_RANGE);
-+    const pct = 50 + (clamped / CENTS_RANGE) * 50;
-+    bar.style.opacity = "1";
-+    bar.style.left = `${pct}%`;
-+    bar.style.backgroundColor = centsToColor(Math.abs(currentDeviation));
-+  }, [currentDeviation, isVoiced]);
-+
-+  const accuracyPct = useMemo(() => {
-+    if (accuracyRatio === null || !Number.isFinite(accuracyRatio)) return null;
-+    return Math.round(accuracyRatio * 100);
-+  }, [accuracyRatio]);
-+
-+  const deviationLabel = useMemo(() => {
-+    if (!isVoiced || currentDeviation === null || !Number.isFinite(currentDeviation)) {
-+      return "—";
-+    }
-+    return centsToLabel(currentDeviation);
-+  }, [currentDeviation, isVoiced]);
-+
-+  return (
-+    <div className="pitch-meter" role="status" aria-live="polite" aria-label="Real-time pitch feedback">
-+      {/* Note names side by side */}
-+      <div className="pitch-meter__notes">
-+        <div className="pitch-meter__note-col">
-+          <span className="pitch-meter__note-label">You</span>
-+          <span className="pitch-meter__note-value" style={{ fontSize: "1.8rem", fontWeight: 700 }}>
-+            {isVoiced && userNote ? userNote : "—"}
-+          </span>
-+        </div>
-+        <div className="pitch-meter__note-col" style={{ opacity: 0.6 }}>
-+          <span className="pitch-meter__note-label">Reference</span>
-+          <span className="pitch-meter__note-value" style={{ fontSize: "1.8rem", fontWeight: 700 }}>
-+            {referenceNote || "—"}
-+          </span>
-+        </div>
-+      </div>
-+
-+      {/* Deviation bar */}
-+      <div className="pitch-meter__bar-container">
-+        <div className="pitch-meter__bar-track">
-+          {/* Center line */}
-+          <div className="pitch-meter__bar-center" />
-+          {/* Indicator */}
-+          <div
-+            ref={barRef}
-+            className="pitch-meter__bar-indicator"
-+            style={{
-+              transition: "left 80ms ease-out, background-color 120ms ease",
-+            }}
-+          />
-+        </div>
-+        <div className="pitch-meter__bar-labels">
-+          <span>Flat</span>
-+          <span style={{ fontWeight: 600 }}>{deviationLabel}</span>
-+          <span>Sharp</span>
-+        </div>
-+      </div>
-+
-+      {/* Running accuracy */}
-+      {accuracyPct !== null && (
-+        <div className="pitch-meter__accuracy">
-+          <span className="pitch-meter__accuracy-label">Pitch accuracy</span>
-+          <span
-+            className="pitch-meter__accuracy-value"
-+            style={{
-+              color: accuracyPct >= 70 ? "var(--success)" : accuracyPct >= 40 ? "#fbbf24" : "var(--danger)",
-+              fontSize: "1.4rem",
-+              fontWeight: 700,
-+            }}
-+          >
-+            {accuracyPct}%
-+          </span>
-+        </div>
-+      )}
-+    </div>
-+  );
-+}
-+
-+export default PitchMeter;
+       {/* Metrics panel */}
+       <ComparisonMetricsPanel
 diff --git a/frontend/src/components/PitchTimeline.jsx b/frontend/src/components/PitchTimeline.jsx
-new file mode 100644
-index 0000000..278144e
---- /dev/null
+index 0f2bf2f..89769a5 100644
+--- a/frontend/src/components/PitchTimeline.jsx
 +++ b/frontend/src/components/PitchTimeline.jsx
-@@ -0,0 +1,270 @@
-+/**
-+ * PitchTimeline — Interactive pitch-over-time canvas visualization.
-+ *
-+ * Shows the detected f0 trajectory colored by confidence, with horizontal
-+ * guide lines at note boundaries and hover tooltips showing note name,
-+ * frequency, and confidence at the cursor position.
-+ *
-+ * This replaces the "text-only" analysis for the most important visual:
-+ * seeing your pitch over time.
-+ */
-+
-+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-+
-+const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-+
-+function midiToNoteName(midi) {
-+  if (!Number.isFinite(midi)) return "—";
-+  const rounded = Math.round(midi);
-+  const pc = ((rounded % 12) + 12) % 12;
-+  const octave = Math.floor(rounded / 12) - 1;
-+  return `${NOTE_NAMES[pc]}${octave}`;
-+}
-+
-+function midiToHz(midi) {
-+  return 440.0 * Math.pow(2, (midi - 69) / 12);
-+}
-+
-+/** Map a confidence value [0, 1] to an RGBA color string.
-+ *  Low confidence → dim red, high confidence → bright cyan/green. */
-+function confidenceColor(confidence, alpha = 1.0) {
-+  const c = Math.max(0, Math.min(1, confidence));
-+  // Red → Yellow → Green → Cyan
-+  const r = Math.round(255 * Math.max(0, 1 - 2 * c));
-+  const g = Math.round(255 * Math.min(1, 2 * c));
-+  const b = Math.round(100 * c);
-+  return `rgba(${r},${g},${b},${alpha})`;
-+}
-+
-+function PitchTimeline({ pitchFrames = [], durationSeconds = 0, tessituraLow, tessituraHigh }) {
-+  const canvasRef = useRef(null);
-+  const containerRef = useRef(null);
-+  const [tooltip, setTooltip] = useState(null);
-+  const [canvasSize, setCanvasSize] = useState({ width: 800, height: 280 });
-+
-+  // Extract voiced frames with valid data
-+  const voicedFrames = useMemo(() => {
-+    return pitchFrames
-+      .filter((f) => {
-+        const midi = f?.midi;
-+        return Number.isFinite(midi) && midi > 0 && Number.isFinite(f?.time);
-+      })
-+      .map((f) => ({
-+        time: f.time,
-+        midi: f.midi,
-+        f0: f.f0_hz || f.f0 || midiToHz(f.midi),
-+        confidence: Number.isFinite(f.confidence) ? f.confidence : 0.5,
-+        note: f.note || midiToNoteName(f.midi),
-+      }));
-+  }, [pitchFrames]);
-+
-+  // Compute MIDI range for Y axis
-+  const { midiMin, midiMax } = useMemo(() => {
-+    if (voicedFrames.length === 0) return { midiMin: 48, midiMax: 72 };
-+    const midis = voicedFrames.map((f) => f.midi);
-+    const lo = Math.floor(Math.min(...midis)) - 2;
-+    const hi = Math.ceil(Math.max(...midis)) + 2;
-+    return { midiMin: lo, midiMax: Math.max(hi, lo + 6) };
-+  }, [voicedFrames]);
-+
-+  // Responsive resize
-+  useEffect(() => {
-+    const container = containerRef.current;
-+    if (!container) return;
-+    const observer = new ResizeObserver((entries) => {
-+      for (const entry of entries) {
-+        const w = Math.round(entry.contentRect.width);
-+        if (w > 100) setCanvasSize({ width: w, height: 280 });
-+      }
-+    });
-+    observer.observe(container);
-+    return () => observer.disconnect();
-+  }, []);
-+
-+  // Draw
-+  useEffect(() => {
-+    const canvas = canvasRef.current;
-+    if (!canvas) return;
-+    const ctx = canvas.getContext("2d");
-+    const { width, height } = canvasSize;
-+    const dpr = window.devicePixelRatio || 1;
-+    canvas.width = width * dpr;
-+    canvas.height = height * dpr;
-+    canvas.style.width = `${width}px`;
-+    canvas.style.height = `${height}px`;
-+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-+
-+    const pad = { top: 10, right: 16, bottom: 28, left: 48 };
-+    const plotW = width - pad.left - pad.right;
-+    const plotH = height - pad.top - pad.bottom;
-+
-+    const maxTime = durationSeconds > 0 ? durationSeconds : Math.max(...voicedFrames.map((f) => f.time), 1);
-+    const timeToX = (t) => pad.left + (t / maxTime) * plotW;
-+    const midiToY = (m) => pad.top + plotH - ((m - midiMin) / (midiMax - midiMin)) * plotH;
-+
-+    // Clear
-+    ctx.clearRect(0, 0, width, height);
-+
-+    // Tessitura band background
-+    if (Number.isFinite(tessituraLow) && Number.isFinite(tessituraHigh)) {
-+      ctx.fillStyle = "rgba(96, 165, 250, 0.08)";
-+      const y1 = midiToY(tessituraHigh);
-+      const y2 = midiToY(tessituraLow);
-+      ctx.fillRect(pad.left, y1, plotW, y2 - y1);
-+    }
-+
-+    // Note guide lines (one per semitone for natural notes, dashed for others)
-+    ctx.textAlign = "right";
-+    ctx.textBaseline = "middle";
-+    ctx.font = "10px system-ui, sans-serif";
-+    for (let midi = Math.ceil(midiMin); midi <= Math.floor(midiMax); midi++) {
-+      const pc = ((midi % 12) + 12) % 12;
-+      const isNatural = [0, 2, 4, 5, 7, 9, 11].includes(pc);
-+      if (!isNatural && (midiMax - midiMin) > 18) continue; // skip accidentals for wide ranges
-+      const y = midiToY(midi);
-+      ctx.strokeStyle = isNatural ? "rgba(167, 179, 209, 0.18)" : "rgba(167, 179, 209, 0.07)";
-+      ctx.lineWidth = isNatural ? 0.8 : 0.4;
-+      ctx.setLineDash(isNatural ? [] : [3, 4]);
-+      ctx.beginPath();
-+      ctx.moveTo(pad.left, y);
-+      ctx.lineTo(pad.left + plotW, y);
-+      ctx.stroke();
-+      ctx.setLineDash([]);
-+      // Label
-+      if (isNatural || (midiMax - midiMin) <= 12) {
-+        ctx.fillStyle = "rgba(167, 179, 209, 0.55)";
-+        ctx.fillText(midiToNoteName(midi), pad.left - 5, y);
-+      }
-+    }
-+
-+    // Time axis labels
-+    ctx.textAlign = "center";
-+    ctx.textBaseline = "top";
-+    ctx.fillStyle = "rgba(167, 179, 209, 0.55)";
-+    const nTicks = Math.min(10, Math.ceil(maxTime));
-+    const tickStep = maxTime / nTicks;
-+    for (let i = 0; i <= nTicks; i++) {
-+      const t = i * tickStep;
-+      const x = timeToX(t);
-+      ctx.fillText(`${t.toFixed(1)}s`, x, pad.top + plotH + 6);
-+      ctx.strokeStyle = "rgba(167, 179, 209, 0.08)";
-+      ctx.lineWidth = 0.5;
-+      ctx.beginPath();
-+      ctx.moveTo(x, pad.top);
-+      ctx.lineTo(x, pad.top + plotH);
-+      ctx.stroke();
-+    }
-+
-+    // Plot pitch points (draw as connected line segments colored by confidence)
-+    if (voicedFrames.length > 1) {
-+      const sorted = [...voicedFrames].sort((a, b) => a.time - b.time);
-+      for (let i = 1; i < sorted.length; i++) {
-+        const prev = sorted[i - 1];
-+        const curr = sorted[i];
-+        // Skip gaps > 0.3s (phrase breaks)
-+        if (curr.time - prev.time > 0.3) continue;
-+        const avgConf = (prev.confidence + curr.confidence) / 2;
-+        ctx.strokeStyle = confidenceColor(avgConf, 0.85);
-+        ctx.lineWidth = 2;
-+        ctx.beginPath();
-+        ctx.moveTo(timeToX(prev.time), midiToY(prev.midi));
-+        ctx.lineTo(timeToX(curr.time), midiToY(curr.midi));
-+        ctx.stroke();
-+      }
-+    }
-+
-+    // Draw individual points for sparse data
-+    if (voicedFrames.length > 0 && voicedFrames.length < 200) {
-+      for (const f of voicedFrames) {
-+        ctx.fillStyle = confidenceColor(f.confidence, 0.9);
-+        ctx.beginPath();
-+        ctx.arc(timeToX(f.time), midiToY(f.midi), 2.5, 0, Math.PI * 2);
-+        ctx.fill();
-+      }
-+    }
-+  }, [voicedFrames, canvasSize, durationSeconds, midiMin, midiMax, tessituraLow, tessituraHigh]);
-+
-+  // Hover tooltip
+@@ -184,21 +184,20 @@ function PitchTimeline({ pitchFrames = [], durationSeconds = 0, tessituraLow, te
+     }
+   }, [voicedFrames, canvasSize, durationSeconds, midiMin, midiMax, tessituraLow, tessituraHigh]);
+ 
+-  // Hover tooltip
+-  const handleMouseMove = useCallback(
+-    (e) => {
++  // Shared tooltip hit-test logic for both mouse and touch
++  const updateTooltipAtPosition = useCallback(
++    (clientX, clientY) => {
+       const canvas = canvasRef.current;
+       if (!canvas || voicedFrames.length === 0) return;
+       const rect = canvas.getBoundingClientRect();
+-      const mx = e.clientX - rect.left;
+-      const my = e.clientY - rect.top;
+-      const { width, height } = canvasSize;
++      const mx = clientX - rect.left;
++      const my = clientY - rect.top;
++      const { width } = canvasSize;
+       const pad = { top: 10, right: 16, bottom: 28, left: 48 };
+       const plotW = width - pad.left - pad.right;
+       const maxTime = durationSeconds > 0 ? durationSeconds : Math.max(...voicedFrames.map((f) => f.time), 1);
+       const hoverTime = ((mx - pad.left) / plotW) * maxTime;
+ 
+-      // Find nearest frame within ±0.1s
+       let nearest = null;
+       let nearestDist = Infinity;
+       for (const f of voicedFrames) {
+@@ -224,7 +223,23 @@ function PitchTimeline({ pitchFrames = [], durationSeconds = 0, tessituraLow, te
+     [voicedFrames, canvasSize, durationSeconds]
+   );
+ 
 +  const handleMouseMove = useCallback(
-+    (e) => {
-+      const canvas = canvasRef.current;
-+      if (!canvas || voicedFrames.length === 0) return;
-+      const rect = canvas.getBoundingClientRect();
-+      const mx = e.clientX - rect.left;
-+      const my = e.clientY - rect.top;
-+      const { width, height } = canvasSize;
-+      const pad = { top: 10, right: 16, bottom: 28, left: 48 };
-+      const plotW = width - pad.left - pad.right;
-+      const maxTime = durationSeconds > 0 ? durationSeconds : Math.max(...voicedFrames.map((f) => f.time), 1);
-+      const hoverTime = ((mx - pad.left) / plotW) * maxTime;
++    (e) => updateTooltipAtPosition(e.clientX, e.clientY),
++    [updateTooltipAtPosition]
++  );
 +
-+      // Find nearest frame within ±0.1s
-+      let nearest = null;
-+      let nearestDist = Infinity;
-+      for (const f of voicedFrames) {
-+        const dist = Math.abs(f.time - hoverTime);
-+        if (dist < nearestDist && dist < 0.15) {
-+          nearest = f;
-+          nearestDist = dist;
-+        }
-+      }
-+      if (nearest) {
-+        setTooltip({
-+          x: mx,
-+          y: my,
-+          note: nearest.note,
-+          hz: nearest.f0.toFixed(1),
-+          confidence: (nearest.confidence * 100).toFixed(0),
-+          time: nearest.time.toFixed(2),
-+        });
-+      } else {
-+        setTooltip(null);
++  const handleTouchMove = useCallback(
++    (e) => {
++      if (e.touches.length > 0) {
++        e.preventDefault();
++        updateTooltipAtPosition(e.touches[0].clientX, e.touches[0].clientY);
 +      }
 +    },
-+    [voicedFrames, canvasSize, durationSeconds]
++    [updateTooltipAtPosition]
 +  );
 +
-+  const handleMouseLeave = useCallback(() => setTooltip(null), []);
-+
-+  if (voicedFrames.length === 0) {
-+    return null;
-+  }
-+
-+  return (
-+    <section className="results__section results__section--pitch-timeline" aria-label="Pitch timeline">
-+      <h3 className="results__section-title">Pitch timeline</h3>
-+      <p className="results__section-copy">
-+        Your detected pitch over time. Brighter colors mean higher confidence. 
-+        {Number.isFinite(tessituraLow) && " The shaded band shows your comfortable singing range (tessitura)."}
-+        {" "}Hover for details.
-+      </p>
-+      <div ref={containerRef} style={{ position: "relative", width: "100%" }}>
-+        <canvas
-+          ref={canvasRef}
-+          style={{ display: "block", width: "100%", cursor: "crosshair" }}
-+          onMouseMove={handleMouseMove}
-+          onMouseLeave={handleMouseLeave}
-+          role="img"
-+          aria-label="Pitch trajectory chart showing detected pitch over time"
-+        />
-+        {tooltip && (
-+          <div
-+            className="pitch-timeline__tooltip"
-+            style={{
-+              position: "absolute",
-+              left: Math.min(tooltip.x + 12, canvasSize.width - 160),
-+              top: Math.max(tooltip.y - 48, 4),
-+              pointerEvents: "none",
-+            }}
-+          >
-+            <strong>{tooltip.note}</strong> — {tooltip.hz} Hz
-+            <br />
-+            Confidence: {tooltip.confidence}% · {tooltip.time}s
-+          </div>
-+        )}
-+      </div>
-+    </section>
-+  );
-+}
-+
-+export default PitchTimeline;
-diff --git a/frontend/src/components/SessionHistory.jsx b/frontend/src/components/SessionHistory.jsx
-new file mode 100644
-index 0000000..7cff8dd
---- /dev/null
-+++ b/frontend/src/components/SessionHistory.jsx
-@@ -0,0 +1,221 @@
-+/**
-+ * SessionHistory — Track progress across analysis sessions.
-+ *
-+ * Uses localStorage to save key metrics from each analysis and shows
-+ * how the singer is improving over time. This is critical for beginner
-+ * retention — people come back when they can see progress.
-+ */
-+
-+import { useCallback, useEffect, useMemo, useState } from "react";
-+import { hzToMidi } from "./VoiceTypeClassifier";
-+
-+const STORAGE_KEY = "tessiture_session_history";
-+const MAX_SESSIONS = 50;
-+
-+const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-+
-+function midiToNote(midi) {
-+  if (!Number.isFinite(midi)) return "—";
-+  const rounded = Math.round(midi);
-+  const pc = ((rounded % 12) + 12) % 12;
-+  const octave = Math.floor(rounded / 12) - 1;
-+  return `${NOTE_NAMES[pc]}${octave}`;
-+}
-+
-+function loadHistory() {
-+  try {
-+    const raw = localStorage.getItem(STORAGE_KEY);
-+    if (!raw) return [];
-+    const parsed = JSON.parse(raw);
-+    return Array.isArray(parsed) ? parsed : [];
-+  } catch {
-+    return [];
-+  }
-+}
-+
-+function saveHistory(sessions) {
-+  try {
-+    const trimmed = sessions.slice(-MAX_SESSIONS);
-+    localStorage.setItem(STORAGE_KEY, JSON.stringify(trimmed));
-+  } catch {
-+    // localStorage full or unavailable — silently fail
-+  }
-+}
-+
-+function extractSessionMetrics(results) {
-+  if (!results || typeof results !== "object") return null;
-+
-+  const f0Min = results?.pitch?.f0_min ?? results?.summary?.f0_min;
-+  const f0Max = results?.pitch?.f0_max ?? results?.summary?.f0_max;
-+  const comfortCenter = results?.tessitura?.metrics?.comfort_center;
-+  const pitchError = results?.inferential_statistics?.metrics?.pitch_error_mean_cents?.estimate;
-+  const duration = results?.metadata?.duration_seconds ?? results?.summary?.duration_seconds;
-+  const key = results?.keys?.best_key ?? results?.keys?.trajectory?.[0]?.label;
-+
-+  if (!Number.isFinite(f0Min) || !Number.isFinite(f0Max)) return null;
-+
-+  const midiMin = hzToMidi(f0Min);
-+  const midiMax = hzToMidi(f0Max);
-+
-+  return {
-+    timestamp: new Date().toISOString(),
-+    f0MinHz: f0Min,
-+    f0MaxHz: f0Max,
-+    midiMin,
-+    midiMax,
-+    rangeSemitones: Number.isFinite(midiMin) && Number.isFinite(midiMax) ? Math.round(midiMax - midiMin) : null,
-+    comfortCenter: Number.isFinite(comfortCenter) ? comfortCenter : null,
-+    pitchErrorCents: Number.isFinite(pitchError) ? pitchError : null,
-+    durationS: Number.isFinite(duration) ? duration : null,
-+    key: key || null,
-+  };
-+}
-+
-+function computeProgress(current, previous) {
-+  const insights = [];
-+
-+  if (current.rangeSemitones !== null && previous.rangeSemitones !== null) {
-+    const diff = current.rangeSemitones - previous.rangeSemitones;
-+    if (diff > 0) {
-+      insights.push({ type: "positive", text: `Your range grew by ${diff} note${diff > 1 ? "s" : ""} since last session.` });
-+    } else if (diff < 0) {
-+      insights.push({ type: "neutral", text: `Your range was ${Math.abs(diff)} note${Math.abs(diff) > 1 ? "s" : ""} narrower than last session — that's normal day-to-day variation.` });
-+    } else {
-+      insights.push({ type: "neutral", text: "Your range is consistent with last session." });
-+    }
-+  }
-+
-+  if (current.pitchErrorCents !== null && previous.pitchErrorCents !== null) {
-+    const diff = Math.abs(current.pitchErrorCents) - Math.abs(previous.pitchErrorCents);
-+    if (diff < -3) {
-+      insights.push({ type: "positive", text: "Your pitch accuracy improved since last time." });
-+    } else if (diff > 5) {
-+      insights.push({ type: "neutral", text: "Pitch accuracy shifted a bit — try a slower tempo next session." });
-+    }
-+  }
-+
-+  if (current.midiMax !== null && previous.midiMax !== null) {
-+    const highDiff = Math.round(current.midiMax - previous.midiMax);
-+    if (highDiff >= 1) {
-+      insights.push({
-+        type: "positive",
-+        text: `New high note! You reached ${midiToNote(current.midiMax)} — ${highDiff} note${highDiff > 1 ? "s" : ""} higher than last time.`,
-+      });
-+    }
-+  }
-+
-+  if (current.midiMin !== null && previous.midiMin !== null) {
-+    const lowDiff = Math.round(previous.midiMin - current.midiMin);
-+    if (lowDiff >= 1) {
-+      insights.push({
-+        type: "positive",
-+        text: `New low note! You reached ${midiToNote(current.midiMin)} — ${lowDiff} note${lowDiff > 1 ? "s" : ""} lower than last time.`,
-+      });
-+    }
-+  }
-+
-+  return insights;
-+}
-+
-+function SessionHistory({ results }) {
-+  const [history, setHistory] = useState(() => loadHistory());
-+  const [saved, setSaved] = useState(false);
-+
-+  const currentMetrics = useMemo(() => extractSessionMetrics(results), [results]);
-+
-+  // Save current session to history (once per result set)
-+  const saveSession = useCallback(() => {
-+    if (!currentMetrics || saved) return;
-+    const updated = [...history, currentMetrics];
-+    setHistory(updated);
-+    saveHistory(updated);
-+    setSaved(true);
-+  }, [currentMetrics, history, saved]);
-+
-+  // Auto-save when results arrive
-+  useEffect(() => {
-+    if (currentMetrics && !saved) {
-+      saveSession();
-+    }
-+  }, [currentMetrics, saved, saveSession]);
-+
-+  // Reset saved flag when results change
-+  useEffect(() => {
-+    setSaved(false);
-+  }, [results]);
-+
-+  const progress = useMemo(() => {
-+    if (!currentMetrics || history.length < 2) return [];
-+    const previous = history[history.length - 2]; // second-to-last (last is current)
-+    if (!previous) return [];
-+    return computeProgress(currentMetrics, previous);
-+  }, [currentMetrics, history]);
-+
-+  const sessionCount = history.length;
-+
-+  if (!currentMetrics) return null;
-+
-+  return (
-+    <section className="session-history" aria-label="Session progress">
-+      <h3 className="session-history__title">
-+        Session #{sessionCount}
-+      </h3>
-+
-+      {sessionCount === 1 && (
-+        <p className="session-history__first">
-+          This is your first session! Come back after your next practice to see how you've improved.
-+        </p>
-+      )}
-+
-+      {progress.length > 0 && (
-+        <ul className="session-history__insights">
-+          {progress.map((insight, idx) => (
-+            <li
-+              key={idx}
-+              className={`session-history__insight session-history__insight--${insight.type}`}
-+            >
-+              <span aria-hidden="true">{insight.type === "positive" ? "🎉" : "📊"}</span>
-+              <span>{insight.text}</span>
-+            </li>
-+          ))}
-+        </ul>
-+      )}
-+
-+      {sessionCount >= 3 && (
-+        <details className="results__disclosure">
-+          <summary>View session history ({sessionCount} sessions)</summary>
-+          <div className="results__disclosure__body">
-+            <table className="session-history__table">
-+              <thead>
-+                <tr>
-+                  <th>#</th>
-+                  <th>Date</th>
-+                  <th>Range</th>
-+                  <th>Span</th>
-+                </tr>
-+              </thead>
-+              <tbody>
-+                {[...history].reverse().slice(0, 10).map((session, idx) => {
-+                  const date = new Date(session.timestamp);
-+                  const dateStr = date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-+                  return (
-+                    <tr key={idx}>
-+                      <td>{sessionCount - idx}</td>
-+                      <td>{dateStr}</td>
-+                      <td>
-+                        {midiToNote(session.midiMin)}–{midiToNote(session.midiMax)}
-+                      </td>
-+                      <td>{session.rangeSemitones ?? "—"} st</td>
-+                    </tr>
-+                  );
-+                })}
-+              </tbody>
-+            </table>
-+          </div>
-+        </details>
-+      )}
-+    </section>
-+  );
-+}
-+
-+export default SessionHistory;
-diff --git a/frontend/src/components/SongSuggestions.jsx b/frontend/src/components/SongSuggestions.jsx
-new file mode 100644
-index 0000000..0d80432
---- /dev/null
-+++ b/frontend/src/components/SongSuggestions.jsx
-@@ -0,0 +1,128 @@
-+/**
-+ * SongSuggestions — Recommends songs that fit the singer's range.
-+ *
-+ * This is the feature that makes "your range is D3–G4" meaningful
-+ * to a beginner. Instead of abstract note names, they see
-+ * "You could sing Hallelujah by Leonard Cohen."
-+ *
-+ * Song data is a curated static list — no API calls needed.
-+ * Songs are filtered by range overlap with the detected vocal range.
-+ */
-+
-+import { useMemo } from "react";
-+import { hzToMidi } from "./VoiceTypeClassifier";
-+
-+// Curated song database with approximate vocal ranges (MIDI values).
-+// Range represents the notes the singer needs to hit (melody range),
-+// not the full orchestral range.
-+const SONG_DATABASE = [
-+  // Low range (bass/baritone)
-+  { title: "Ring of Fire", artist: "Johnny Cash", midiLow: 43, midiHigh: 60, genre: "Country" },
-+  { title: "Hallelujah", artist: "Leonard Cohen", midiLow: 45, midiHigh: 62, genre: "Folk" },
-+  { title: "Can't Help Falling in Love", artist: "Elvis Presley", midiLow: 47, midiHigh: 64, genre: "Pop" },
-+  { title: "Stand By Me", artist: "Ben E. King", midiLow: 47, midiHigh: 62, genre: "Soul" },
-+  { title: "House of the Rising Sun", artist: "The Animals", midiLow: 45, midiHigh: 65, genre: "Rock" },
-+  { title: "Unchained Melody", artist: "The Righteous Brothers", midiLow: 47, midiHigh: 67, genre: "Pop" },
-+
-+  // Mid range (baritone/tenor)
-+  { title: "Hey Jude", artist: "The Beatles", midiLow: 50, midiHigh: 67, genre: "Rock" },
-+  { title: "Wonderwall", artist: "Oasis", midiLow: 50, midiHigh: 66, genre: "Rock" },
-+  { title: "Let It Be", artist: "The Beatles", midiLow: 48, midiHigh: 65, genre: "Rock" },
-+  { title: "Thinking Out Loud", artist: "Ed Sheeran", midiLow: 50, midiHigh: 69, genre: "Pop" },
-+  { title: "Yesterday", artist: "The Beatles", midiLow: 52, midiHigh: 67, genre: "Pop" },
-+  { title: "Wish You Were Here", artist: "Pink Floyd", midiLow: 48, midiHigh: 64, genre: "Rock" },
-+  { title: "Hotel California", artist: "Eagles", midiLow: 50, midiHigh: 67, genre: "Rock" },
-+  { title: "Perfect", artist: "Ed Sheeran", midiLow: 47, midiHigh: 67, genre: "Pop" },
-+  { title: "Someone Like You", artist: "Adele", midiLow: 50, midiHigh: 68, genre: "Pop" },
-+
-+  // Higher range (tenor/alto/mezzo)
-+  { title: "Bohemian Rhapsody", artist: "Queen", midiLow: 48, midiHigh: 76, genre: "Rock" },
-+  { title: "Take Me to Church", artist: "Hozier", midiLow: 50, midiHigh: 72, genre: "Alternative" },
-+  { title: "Creep", artist: "Radiohead", midiLow: 52, midiHigh: 72, genre: "Alternative" },
-+  { title: "Shallow", artist: "Lady Gaga & Bradley Cooper", midiLow: 50, midiHigh: 74, genre: "Pop" },
-+  { title: "Jolene", artist: "Dolly Parton", midiLow: 55, midiHigh: 74, genre: "Country" },
-+  { title: "Rolling in the Deep", artist: "Adele", midiLow: 53, midiHigh: 74, genre: "Pop" },
-+  { title: "I Will Always Love You", artist: "Whitney Houston", midiLow: 52, midiHigh: 77, genre: "Pop" },
-+
-+  // High range (mezzo/soprano)
-+  { title: "Chandelier", artist: "Sia", midiLow: 55, midiHigh: 79, genre: "Pop" },
-+  { title: "No Tears Left to Cry", artist: "Ariana Grande", midiLow: 58, midiHigh: 80, genre: "Pop" },
-+  { title: "Wrecking Ball", artist: "Miley Cyrus", midiLow: 55, midiHigh: 77, genre: "Pop" },
-+  { title: "Halo", artist: "Beyoncé", midiLow: 55, midiHigh: 79, genre: "Pop" },
-+];
-+
-+function scoreSong(song, userMidiMin, userMidiMax) {
-+  // How well does this song fit the singer's range?
-+  const overlapLow = Math.max(song.midiLow, userMidiMin);
-+  const overlapHigh = Math.min(song.midiHigh, userMidiMax);
-+  const overlap = Math.max(0, overlapHigh - overlapLow);
-+  const songSpan = song.midiHigh - song.midiLow;
-+  if (songSpan <= 0) return 0;
-+
-+  // Fraction of the song's range covered by the singer
-+  const coverage = overlap / songSpan;
-+
-+  // Penalize songs that require notes outside the singer's range
-+  const overshootLow = Math.max(0, userMidiMin - song.midiLow);
-+  const overshootHigh = Math.max(0, song.midiHigh - userMidiMax);
-+  const overshootPenalty = (overshootLow + overshootHigh) / songSpan;
-+
-+  // Combined score: high coverage, low overshoot
-+  return Math.max(0, coverage - overshootPenalty * 0.5);
-+}
-+
-+function SongSuggestions({ results, maxSuggestions = 5 }) {
-+  const suggestions = useMemo(() => {
-+    const f0Min = results?.pitch?.f0_min ?? results?.summary?.f0_min;
-+    const f0Max = results?.pitch?.f0_max ?? results?.summary?.f0_max;
-+
-+    if (!Number.isFinite(f0Min) || !Number.isFinite(f0Max)) return [];
-+
-+    const userMidiMin = hzToMidi(f0Min);
-+    const userMidiMax = hzToMidi(f0Max);
-+    if (userMidiMin === null || userMidiMax === null) return [];
-+
-+    const scored = SONG_DATABASE
-+      .map((song) => ({ ...song, score: scoreSong(song, userMidiMin, userMidiMax) }))
-+      .filter((s) => s.score >= 0.6) // At least 60% coverage
-+      .sort((a, b) => b.score - a.score)
-+      .slice(0, maxSuggestions);
-+
-+    return scored;
-+  }, [results, maxSuggestions]);
-+
-+  if (suggestions.length === 0) return null;
-+
-+  return (
-+    <section className="song-suggestions" aria-label="Song suggestions based on your range">
-+      <h3 className="song-suggestions__title">Songs that fit your voice</h3>
-+      <p className="song-suggestions__subtitle">
-+        Based on your detected range, these songs should sit comfortably in your voice.
-+      </p>
-+      <ul className="song-suggestions__list">
-+        {suggestions.map((song) => {
-+          const fitPct = Math.round(song.score * 100);
-+          return (
-+            <li key={`${song.title}-${song.artist}`} className="song-suggestions__item">
-+              <div className="song-suggestions__info">
-+                <span className="song-suggestions__song-title">{song.title}</span>
-+                <span className="song-suggestions__artist">{song.artist}</span>
-+              </div>
-+              <div className="song-suggestions__meta">
-+                <span className="song-suggestions__genre">{song.genre}</span>
-+                <span
-+                  className="song-suggestions__fit"
-+                  style={{ color: fitPct >= 90 ? "var(--success)" : fitPct >= 75 ? "#fbbf24" : "var(--text-muted)" }}
-+                >
-+                  {fitPct}% fit
-+                </span>
-+              </div>
-+            </li>
-+          );
-+        })}
-+      </ul>
-+    </section>
-+  );
-+}
-+
-+export default SongSuggestions;
-diff --git a/frontend/src/components/VocalProfileCard.jsx b/frontend/src/components/VocalProfileCard.jsx
-new file mode 100644
-index 0000000..7861b7a
---- /dev/null
-+++ b/frontend/src/components/VocalProfileCard.jsx
-@@ -0,0 +1,147 @@
-+/**
-+ * VocalProfileCard — Visual summary of the singer's voice.
-+ *
-+ * Turns raw analysis data into identity, context, and encouragement.
-+ * Designed to be screenshot-worthy — the first thing a beginner
-+ * wants to show a friend is "look what my voice is."
-+ */
-+
-+import { useMemo } from "react";
-+import { hzToMidi, classifyVoiceType } from "./VoiceTypeClassifier";
-+
-+const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-+
-+function midiToNoteName(midi) {
-+  if (!Number.isFinite(midi)) return "—";
-+  const rounded = Math.round(midi);
-+  const pc = ((rounded % 12) + 12) % 12;
-+  const octave = Math.floor(rounded / 12) - 1;
-+  return `${NOTE_NAMES[pc]}${octave}`;
-+}
-+
-+// Famous singers by voice type — gives beginners immediate context
-+const VOICE_TYPE_CONTEXT = {
-+  Bass: { icon: "🎸", examples: "Johnny Cash, Barry White, Avi Kaplan", color: "#8b6f47" },
-+  Baritone: { icon: "🎤", examples: "Frank Sinatra, Elvis Presley, Hozier", color: "#a0826d" },
-+  Tenor: { icon: "🎶", examples: "Freddie Mercury, Sam Smith, Ed Sheeran", color: "#60a5fa" },
-+  Alto: { icon: "🎵", examples: "Amy Winehouse, Tracy Chapman, Annie Lennox", color: "#c084fc" },
-+  "Mezzo-Soprano": { icon: "✨", examples: "Adele, Lady Gaga, Beyoncé", color: "#f472b6" },
-+  Soprano: { icon: "🌟", examples: "Ariana Grande, Mariah Carey, Whitney Houston", color: "#fb923c" },
-+  Unknown: { icon: "🎤", examples: "", color: "#8d9ab8" },
-+};
-+
-+function computeRangeSpan(f0Min, f0Max) {
-+  if (!Number.isFinite(f0Min) || !Number.isFinite(f0Max)) return null;
-+  const midiMin = hzToMidi(f0Min);
-+  const midiMax = hzToMidi(f0Max);
-+  if (midiMin === null || midiMax === null) return null;
-+  const semitones = Math.round(midiMax - midiMin);
-+  const octaves = Math.floor(semitones / 12);
-+  const remaining = semitones % 12;
-+  if (octaves >= 1 && remaining > 0) return `${octaves} octave${octaves > 1 ? "s" : ""} and ${remaining} note${remaining > 1 ? "s" : ""}`;
-+  if (octaves >= 1) return `${octaves} octave${octaves > 1 ? "s" : ""}`;
-+  return `${semitones} semitone${semitones !== 1 ? "s" : ""}`;
-+}
-+
-+function computeStabilityLabel(results) {
-+  const pitchError = results?.inferential_statistics?.metrics?.pitch_error_mean_cents?.estimate;
-+  if (!Number.isFinite(pitchError)) return null;
-+  const abs = Math.abs(pitchError);
-+  if (abs < 10) return { label: "Very steady", emoji: "🎯", detail: "Your pitch stayed close to center throughout." };
-+  if (abs < 25) return { label: "Steady", emoji: "👍", detail: "Good pitch control with minor drift." };
-+  if (abs < 50) return { label: "Developing", emoji: "📈", detail: "Some pitch wandering — focus on sustaining notes longer." };
-+  return { label: "Expressive range", emoji: "🌊", detail: "Wide pitch variation — great for stylistic singing, practice centering for accuracy work." };
-+}
-+
-+function VocalProfileCard({ results }) {
-+  const profile = useMemo(() => {
-+    const f0Min = results?.pitch?.f0_min ?? results?.summary?.f0_min;
-+    const f0Max = results?.pitch?.f0_max ?? results?.summary?.f0_max;
-+    const f0MinNote = results?.summary?.f0_min_note;
-+    const f0MaxNote = results?.summary?.f0_max_note;
-+    const duration = results?.metadata?.duration_seconds ?? results?.summary?.duration_seconds;
-+    const key = results?.keys?.best_key ?? results?.keys?.trajectory?.[0]?.label;
-+
-+    if (!Number.isFinite(f0Min) || !Number.isFinite(f0Max)) return null;
-+
-+    const voiceType = classifyVoiceType(f0Min, f0Max);
-+    const context = VOICE_TYPE_CONTEXT[voiceType.label] || VOICE_TYPE_CONTEXT.Unknown;
-+    const rangeSpan = computeRangeSpan(f0Min, f0Max);
-+    const stability = computeStabilityLabel(results);
-+
-+    // Comfort center note
-+    const comfortCenter = results?.tessitura?.metrics?.comfort_center;
-+    const comfortNote = Number.isFinite(comfortCenter) ? midiToNoteName(comfortCenter) : null;
-+
-+    return {
-+      voiceType,
-+      context,
-+      rangeSpan,
-+      stability,
-+      f0MinNote: f0MinNote || midiToNoteName(hzToMidi(f0Min)),
-+      f0MaxNote: f0MaxNote || midiToNoteName(hzToMidi(f0Max)),
-+      comfortNote,
-+      key,
-+      duration,
-+    };
-+  }, [results]);
-+
-+  if (!profile) return null;
-+
-+  const { voiceType, context, rangeSpan, stability, f0MinNote, f0MaxNote, comfortNote, key } = profile;
-+
-+  return (
-+    <div className="vocal-profile-card" style={{ "--profile-accent": context.color }}>
-+      <div className="vocal-profile-card__header">
-+        <span className="vocal-profile-card__icon">{context.icon}</span>
-+        <div>
-+          <h3 className="vocal-profile-card__voice-type">{voiceType.label}</h3>
-+          <p className="vocal-profile-card__confidence">{voiceType.confidence}</p>
-+        </div>
-+      </div>
-+
-+      {context.examples && (
-+        <p className="vocal-profile-card__context">
-+          Same voice type as {context.examples}
-+        </p>
-+      )}
-+
-+      <div className="vocal-profile-card__stats">
-+        <div className="vocal-profile-card__stat">
-+          <span className="vocal-profile-card__stat-value">{f0MinNote} – {f0MaxNote}</span>
-+          <span className="vocal-profile-card__stat-label">Your range</span>
-+        </div>
-+        {rangeSpan && (
-+          <div className="vocal-profile-card__stat">
-+            <span className="vocal-profile-card__stat-value">{rangeSpan}</span>
-+            <span className="vocal-profile-card__stat-label">Span</span>
-+          </div>
-+        )}
-+        {comfortNote && (
-+          <div className="vocal-profile-card__stat">
-+            <span className="vocal-profile-card__stat-value">{comfortNote}</span>
-+            <span className="vocal-profile-card__stat-label">Sweet spot</span>
-+          </div>
-+        )}
-+        {key && (
-+          <div className="vocal-profile-card__stat">
-+            <span className="vocal-profile-card__stat-value">{key}</span>
-+            <span className="vocal-profile-card__stat-label">Detected key</span>
-+          </div>
-+        )}
-+      </div>
-+
-+      {stability && (
-+        <div className="vocal-profile-card__stability">
-+          <span>{stability.emoji}</span>
-+          <div>
-+            <strong>{stability.label}</strong>
-+            <p>{stability.detail}</p>
-+          </div>
-+        </div>
-+      )}
-+    </div>
-+  );
-+}
-+
-+export default VocalProfileCard;
-diff --git a/frontend/src/components/WarmUpRoutine.jsx b/frontend/src/components/WarmUpRoutine.jsx
-new file mode 100644
-index 0000000..f29e8b4
---- /dev/null
-+++ b/frontend/src/components/WarmUpRoutine.jsx
-@@ -0,0 +1,135 @@
-+/**
-+ * WarmUpRoutine — Personalized warm-up generator.
-+ *
-+ * Takes the singer's detected range and comfort zone and generates
-+ * a short, actionable warm-up routine they can do before their next
-+ * practice session. Beginners don't know how to warm up — this tells
-+ * them exactly what to do.
-+ */
-+
-+import { useMemo } from "react";
-+import { hzToMidi } from "./VoiceTypeClassifier";
-+
-+const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-+
-+function midiToNote(midi) {
-+  if (!Number.isFinite(midi)) return "—";
-+  const rounded = Math.round(midi);
-+  const pc = ((rounded % 12) + 12) % 12;
-+  const octave = Math.floor(rounded / 12) - 1;
-+  return `${NOTE_NAMES[pc]}${octave}`;
-+}
-+
-+function generateSteps(comfortCenter, midiMin, midiMax, rangeSpan) {
-+  const steps = [];
-+  const centerNote = midiToNote(comfortCenter);
-+  const lowNote = midiToNote(midiMin);
-+  const highNote = midiToNote(midiMax);
-+  const halfStepBelow = midiToNote(comfortCenter - 3);
-+  const halfStepAbove = midiToNote(comfortCenter + 3);
-+  const gentleLow = midiToNote(Math.max(midiMin + 2, comfortCenter - 7));
-+  const gentleHigh = midiToNote(Math.min(midiMax - 2, comfortCenter + 7));
-+
-+  // Step 1: Breathing (always)
-+  steps.push({
-+    title: "Breathing reset",
-+    duration: "1 minute",
-+    instruction: "Breathe in for 4 counts, hold for 4, breathe out for 8. Repeat 4 times. Keep your shoulders relaxed and let your belly expand.",
-+    why: "Activates your diaphragm and calms your nervous system before singing.",
-+  });
-+
-+  // Step 2: Humming at comfort center
-+  steps.push({
-+    title: "Gentle humming",
-+    duration: "1 minute",
-+    instruction: `Hum on a comfortable note around ${centerNote}. Feel the vibration in your lips and nose. Slide gently up to ${halfStepAbove} and back down to ${halfStepBelow}. Keep it easy.`,
-+    why: "Warms your vocal cords without strain. The vibration loosens tension.",
-+  });
-+
-+  // Step 3: Lip trills / slides
-+  steps.push({
-+    title: "Lip trills",
-+    duration: "1 minute",
-+    instruction: `Do lip trills (motor-boat lips) starting at ${centerNote}, sliding up to ${gentleHigh} and back down to ${gentleLow}. If lip trills are hard, use "brrr" or "vvv" instead.`,
-+    why: "Lip trills balance airflow and vocal cord tension — the single best warm-up exercise.",
-+  });
-+
-+  // Step 4: Range-dependent step
-+  if (rangeSpan >= 12) {
-+    // Wide range: work the extremes gently
-+    steps.push({
-+      title: "Gentle range exploration",
-+      duration: "1 minute",
-+      instruction: `Sing a slow 5-note scale (do-re-mi-fa-sol) starting at ${gentleLow}, then move it up by one step each time until you reach ${gentleHigh}. Stay relaxed — stop before anything feels tight.`,
-+      why: "You have a wide range. This step activates your full voice without pushing the edges.",
-+    });
-+  } else {
-+    // Narrow range: focus on centering
-+    steps.push({
-+      title: "Centering exercise",
-+      duration: "1 minute",
-+      instruction: `Sing the vowel "ah" on ${centerNote} and hold it for 5 seconds. Then try ${halfStepAbove} and ${halfStepBelow}. Focus on keeping the sound steady and even.`,
-+      why: "Building stability in your comfort zone is more valuable than pushing range right now.",
-+    });
-+  }
-+
-+  // Step 5: Closing phrase
-+  steps.push({
-+    title: "Phrase practice",
-+    duration: "1 minute",
-+    instruction: `Sing "ma-me-mi-mo-mu" on a single comfortable note (${centerNote}), then repeat it sliding up 2 notes and back. Finish by humming quietly for 10 seconds.`,
-+    why: "Connects your warm-up to actual singing. The vowel changes exercise your mouth and tongue.",
-+  });
-+
-+  return steps;
-+}
-+
-+function WarmUpRoutine({ results }) {
-+  const routine = useMemo(() => {
-+    const f0Min = results?.pitch?.f0_min ?? results?.summary?.f0_min;
-+    const f0Max = results?.pitch?.f0_max ?? results?.summary?.f0_max;
-+    const comfortCenter = results?.tessitura?.metrics?.comfort_center;
-+
-+    if (!Number.isFinite(f0Min) || !Number.isFinite(f0Max)) return null;
-+
-+    const midiMin = hzToMidi(f0Min);
-+    const midiMax = hzToMidi(f0Max);
-+    if (midiMin === null || midiMax === null) return null;
-+
-+    const center = Number.isFinite(comfortCenter) ? comfortCenter : (midiMin + midiMax) / 2;
-+    const rangeSpan = midiMax - midiMin;
-+
-+    return {
-+      steps: generateSteps(center, midiMin, midiMax, rangeSpan),
-+      totalMinutes: 5,
-+    };
-+  }, [results]);
-+
-+  if (!routine) return null;
-+
-+  return (
-+    <section className="warmup-routine" aria-label="Personalized warm-up routine">
-+      <h3 className="warmup-routine__title">Your 5-minute warm-up</h3>
-+      <p className="warmup-routine__subtitle">
-+        Do this before your next practice session. Each step builds on the last.
-+      </p>
-+      <ol className="warmup-routine__steps">
-+        {routine.steps.map((step, idx) => (
-+          <li key={idx} className="warmup-routine__step">
-+            <div className="warmup-routine__step-header">
-+              <span className="warmup-routine__step-number">{idx + 1}</span>
-+              <div>
-+                <strong className="warmup-routine__step-title">{step.title}</strong>
-+                <span className="warmup-routine__step-duration">{step.duration}</span>
-+              </div>
-+            </div>
-+            <p className="warmup-routine__step-instruction">{step.instruction}</p>
-+            <p className="warmup-routine__step-why"><em>Why:</em> {step.why}</p>
-+          </li>
-+        ))}
-+      </ol>
-+    </section>
-+  );
-+}
-+
-+export default WarmUpRoutine;
-diff --git a/frontend/src/hooks/useAppState.js b/frontend/src/hooks/useAppState.js
-new file mode 100644
-index 0000000..53b5203
---- /dev/null
-+++ b/frontend/src/hooks/useAppState.js
-@@ -0,0 +1,201 @@
-+/**
-+ * useAppState — Centralized state machine for the Tessiture app.
-+ *
-+ * Replaces 18+ individual useState calls in App.jsx with a single
-+ * useReducer whose dispatch actions make state transitions explicit
-+ * and prevent impossible states (e.g. audioSource=null + analysisMode='compare').
-+ *
-+ * Usage:
-+ *   const [state, dispatch] = useAppState();
-+ *   dispatch({ type: "SELECT_SOURCE", source: "upload" });
-+ */
-+
-+import { useReducer } from "react";
-+
-+// ── Initial state ────────────────────────────────────────────────────────────
-+
-+export const initialState = {
-+  // Navigation axes
-+  audioSource: null,    // 'upload' | 'example' | 'live' | null
-+  analysisMode: null,   // 'analyze' | 'compare' | null
-+
-+  // Job lifecycle
-+  jobId: null,
-+  status: null,         // normalized job status object
-+  results: null,
-+  error: null,
-+  isSubmitting: false,
-+  isPolling: false,
-+  isFetchingResults: false,
-+
-+  // Source-specific transient state
-+  acceptedFile: null,
-+  selectedExampleId: null,
-+  audioType: "isolated",
-+  forceVocalSeparation: false,
-+
-+  // Comparison state
-+  referenceId: null,
-+  referenceInfo: null,
-+  sessionReport: null,
-+
-+  // Example gallery
-+  exampleTracks: [],
-+  isLoadingExamples: false,
-+  exampleError: null,
-+};
-+
-+// ── Reducer ──────────────────────────────────────────────────────────────────
-+
-+function appReducer(state, action) {
-+  switch (action.type) {
-+    // ── Navigation ─────────────────────────────────────────────
-+
-+    case "SELECT_SOURCE": {
-+      if (action.source === state.audioSource) return state;
-+      return {
-+        ...initialState,
-+        audioSource: action.source,
-+        analysisMode: action.source === "live" ? "compare" : null,
-+        // Preserve gallery data across source changes
-+        exampleTracks: state.exampleTracks,
-+        isLoadingExamples: state.isLoadingExamples,
-+        exampleError: state.exampleError,
-+      };
-+    }
-+
-+    case "SET_ANALYSIS_MODE":
-+      return { ...state, analysisMode: action.mode };
-+
-+    case "RESET_ALL":
-+      return {
-+        ...initialState,
-+        exampleTracks: state.exampleTracks,
-+        isLoadingExamples: state.isLoadingExamples,
-+        exampleError: state.exampleError,
-+      };
-+
-+    // ── Source-specific ────────────────────────────────────────
-+
-+    case "FILE_ACCEPTED":
-+      return {
-+        ...state,
-+        acceptedFile: action.file,
-+        analysisMode: null,
-+        jobId: null,
-+        status: null,
-+        results: null,
-+        error: null,
-+      };
-+
-+    case "EXAMPLE_SELECTED":
-+      return {
-+        ...state,
-+        selectedExampleId: action.exampleId,
-+        analysisMode: null,
-+        jobId: null,
-+        status: null,
-+        results: null,
-+        error: null,
-+      };
-+
-+    case "SET_AUDIO_TYPE":
-+      return { ...state, audioType: action.audioType };
-+
-+    case "SET_FORCE_VOCAL_SEPARATION":
-+      return { ...state, forceVocalSeparation: action.value };
-+
-+    // ── Job lifecycle ─────────────────────────────────────────
-+
-+    case "JOB_SUBMITTING":
-+      return {
-+        ...state,
-+        isSubmitting: true,
-+        error: null,
-+        results: null,
-+        status: null,
-+      };
-+
-+    case "JOB_SUBMITTED":
-+      return {
-+        ...state,
-+        isSubmitting: false,
-+        jobId: action.jobId,
-+        status: action.status ?? null,
-+      };
-+
-+    case "JOB_SUBMIT_FAILED":
-+      return {
-+        ...state,
-+        isSubmitting: false,
-+        error: action.error,
-+      };
-+
-+    case "JOB_STATUS_UPDATE":
-+      return { ...state, status: action.status };
-+
-+    case "POLLING_STARTED":
-+      return { ...state, isPolling: true };
-+
-+    case "POLLING_STOPPED":
-+      return { ...state, isPolling: false };
-+
-+    case "FETCHING_RESULTS":
-+      return { ...state, isFetchingResults: true, error: null };
-+
-+    case "RESULTS_RECEIVED":
-+      return { ...state, isFetchingResults: false, results: action.results };
-+
-+    case "RESULTS_FETCH_FAILED":
-+      return { ...state, isFetchingResults: false, error: action.error };
-+
-+    case "SET_ERROR":
-+      return { ...state, error: action.error, isPolling: false };
-+
-+    // ── Comparison ────────────────────────────────────────────
-+
-+    case "REFERENCE_READY":
-+      return {
-+        ...state,
-+        referenceId: action.referenceId,
-+        referenceInfo: action.referenceInfo,
-+      };
-+
-+    case "SESSION_REPORT_RECEIVED":
-+      return { ...state, sessionReport: action.report };
-+
-+    case "CLEAR_COMPARISON":
-+      return {
-+        ...state,
-+        referenceId: null,
-+        referenceInfo: null,
-+        sessionReport: null,
-+      };
-+
-+    // ── Example gallery ───────────────────────────────────────
-+
-+    case "EXAMPLES_LOADING":
-+      return { ...state, isLoadingExamples: true, exampleError: null };
-+
-+    case "EXAMPLES_LOADED":
-+      return { ...state, isLoadingExamples: false, exampleTracks: action.tracks };
-+
-+    case "EXAMPLES_LOAD_FAILED":
-+      return { ...state, isLoadingExamples: false, exampleError: action.error };
-+
-+    default:
-+      if (process.env.NODE_ENV !== "production") {
-+        console.warn(`[useAppState] Unknown action type: ${action.type}`);
-+      }
-+      return state;
-+  }
-+}
-+
-+// ── Hook ─────────────────────────────────────────────────────────────────────
-+
-+export default function useAppState() {
-+  return useReducer(appReducer, initialState);
-+}
-+
-+// Export the reducer for testing
-+export { appReducer };
-diff --git a/frontend/src/styles-additions.css b/frontend/src/styles-additions.css
-index e769685..e3d55c2 100644
---- a/frontend/src/styles-additions.css
-+++ b/frontend/src/styles-additions.css
-@@ -382,3 +382,499 @@
- .note-display__status {
-   font-size: 0.75rem;
- }
-+
-+/* ============================================================================
-+   PITCH TIMELINE
-+   ============================================================================ */
-+
-+.results__section--pitch-timeline {
-+  margin-top: var(--space-md);
-+}
-+
-+.pitch-timeline__tooltip {
-+  background: var(--surface-2);
-+  border: 1px solid var(--border-subtle);
-+  border-radius: 6px;
-+  padding: 6px 10px;
-+  font-size: 0.8rem;
-+  line-height: 1.4;
-+  color: var(--text-primary);
-+  box-shadow: var(--shadow);
-+  white-space: nowrap;
-+  z-index: 10;
-+}
-+
-+/* ============================================================================
-+   PROGRESSIVE DISCLOSURE — Expandable sections
-+   ============================================================================ */
-+
-+.results__disclosure {
-+  border: 1px solid var(--border-subtle);
-+  border-radius: 8px;
-+  margin-top: var(--space-md);
-+  overflow: hidden;
-+}
-+
-+.results__disclosure summary {
-+  cursor: pointer;
-+  padding: var(--space-sm) var(--space-md);
-+  font-weight: 600;
-+  color: var(--text-primary);
-+  background: var(--surface-2);
-+  user-select: none;
-+  list-style: none;
-+  display: flex;
-+  align-items: center;
-+  gap: var(--space-sm);
-+  min-height: var(--touch-min);
-+}
-+
-+.results__disclosure summary::before {
-+  content: "▸";
-+  font-size: 0.85rem;
-+  transition: transform var(--transition-ui);
-+}
-+
-+.results__disclosure[open] summary::before {
-+  transform: rotate(90deg);
-+}
-+
-+.results__disclosure summary::-webkit-details-marker {
-+  display: none;
-+}
-+
-+.results__disclosure__body {
-+  padding: var(--space-md);
-+}
-+
-+/* ============================================================================
-+   CONFIDENCE BADGE
-+   ============================================================================ */
-+
-+.confidence-badge {
-+  display: inline-flex;
-+  align-items: center;
-+  gap: 6px;
-+  padding: 4px 12px;
-+  border-radius: 99px;
-+  font-size: 0.85rem;
-+  font-weight: 600;
-+}
-+
-+.confidence-badge--high {
-+  background: rgba(74, 222, 128, 0.12);
-+  color: var(--success);
-+}
-+
-+.confidence-badge--medium {
-+  background: rgba(251, 191, 36, 0.12);
-+  color: #fbbf24;
-+}
-+
-+.confidence-badge--low {
-+  background: rgba(251, 113, 133, 0.12);
-+  color: var(--danger);
-+}
-+
-+/* ============================================================================
-+   PITCH METER — Live comparison real-time feedback
-+   ============================================================================ */
-+
-+.pitch-meter {
-+  padding: var(--space-md);
-+  background: var(--surface-1);
-+  border: 1px solid var(--border-subtle);
-+  border-radius: 12px;
-+  text-align: center;
-+}
-+
-+.pitch-meter__notes {
-+  display: flex;
-+  justify-content: center;
-+  gap: var(--space-xl);
-+  margin-bottom: var(--space-md);
-+}
-+
-+.pitch-meter__note-col {
-+  display: flex;
-+  flex-direction: column;
-+  align-items: center;
-+  gap: 2px;
-+}
-+
-+.pitch-meter__note-label {
-+  font-size: 0.75rem;
-+  text-transform: uppercase;
-+  letter-spacing: 0.05em;
-+  color: var(--text-soft);
-+}
-+
-+.pitch-meter__note-value {
-+  color: var(--text-primary);
-+}
-+
-+.pitch-meter__bar-container {
-+  max-width: 400px;
-+  margin: 0 auto var(--space-sm);
-+}
-+
-+.pitch-meter__bar-track {
-+  position: relative;
-+  height: 24px;
-+  background: var(--surface-3);
-+  border-radius: 12px;
-+  overflow: hidden;
-+}
-+
-+.pitch-meter__bar-center {
-+  position: absolute;
-+  left: 50%;
-+  top: 2px;
-+  bottom: 2px;
-+  width: 2px;
-+  background: var(--text-soft);
-+  opacity: 0.4;
-+  transform: translateX(-50%);
-+}
-+
-+.pitch-meter__bar-indicator {
-+  position: absolute;
-+  top: 3px;
-+  bottom: 3px;
-+  width: 18px;
-+  border-radius: 9px;
-+  transform: translateX(-50%);
-+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.2);
-+}
-+
-+.pitch-meter__bar-labels {
-+  display: flex;
-+  justify-content: space-between;
-+  font-size: 0.7rem;
-+  color: var(--text-soft);
-+  margin-top: 4px;
-+  padding: 0 4px;
-+}
-+
-+.pitch-meter__accuracy {
-+  display: flex;
-+  align-items: center;
-+  justify-content: center;
-+  gap: var(--space-sm);
-+  margin-top: var(--space-sm);
-+}
-+
-+.pitch-meter__accuracy-label {
-+  font-size: 0.8rem;
-+  color: var(--text-muted);
-+}
-+
-+/* ============================================================================
-+   VOCAL PROFILE CARD
-+   ============================================================================ */
-+
-+.vocal-profile-card {
-+  background: linear-gradient(135deg, var(--surface-1) 0%, var(--surface-2) 100%);
-+  border: 1px solid var(--border-subtle);
-+  border-left: 4px solid var(--profile-accent, var(--brand));
-+  border-radius: 12px;
-+  padding: var(--space-lg);
-+  margin: var(--space-md) 0;
-+}
-+
-+.vocal-profile-card__header {
-+  display: flex;
-+  align-items: center;
-+  gap: var(--space-md);
-+  margin-bottom: var(--space-md);
-+}
-+
-+.vocal-profile-card__icon {
-+  font-size: 2.2rem;
-+}
-+
-+.vocal-profile-card__voice-type {
-+  font-size: 1.5rem;
-+  font-weight: 700;
-+  color: var(--text-primary);
-+  margin: 0;
-+  line-height: 1.2;
-+}
-+
-+.vocal-profile-card__confidence {
-+  font-size: 0.85rem;
-+  color: var(--text-muted);
-+  text-transform: capitalize;
-+}
-+
-+.vocal-profile-card__context {
-+  font-size: 0.9rem;
-+  color: var(--text-muted);
-+  margin-bottom: var(--space-md);
-+  font-style: italic;
-+}
-+
-+.vocal-profile-card__stats {
-+  display: flex;
-+  flex-wrap: wrap;
-+  gap: var(--space-md);
-+  margin-bottom: var(--space-md);
-+}
-+
-+.vocal-profile-card__stat {
-+  display: flex;
-+  flex-direction: column;
-+  min-width: 80px;
-+}
-+
-+.vocal-profile-card__stat-value {
-+  font-size: 1.1rem;
-+  font-weight: 700;
-+  color: var(--text-primary);
-+}
-+
-+.vocal-profile-card__stat-label {
-+  font-size: 0.72rem;
-+  color: var(--text-soft);
-+  text-transform: uppercase;
-+  letter-spacing: 0.04em;
-+}
-+
-+.vocal-profile-card__stability {
-+  display: flex;
-+  align-items: flex-start;
-+  gap: var(--space-sm);
-+  padding: var(--space-sm) var(--space-md);
-+  background: var(--surface-3);
-+  border-radius: 8px;
-+  font-size: 0.85rem;
-+}
-+
-+.vocal-profile-card__stability p {
-+  margin: 2px 0 0;
-+  color: var(--text-muted);
-+  font-size: 0.8rem;
-+}
-+
-+/* ============================================================================
-+   SONG SUGGESTIONS
-+   ============================================================================ */
-+
-+.song-suggestions {
-+  margin-top: var(--space-md);
-+}
-+
-+.song-suggestions__title {
-+  font-size: 1.1rem;
-+  font-weight: 700;
-+  margin-bottom: 4px;
-+}
-+
-+.song-suggestions__subtitle {
-+  font-size: 0.85rem;
-+  color: var(--text-muted);
-+  margin-bottom: var(--space-md);
-+}
-+
-+.song-suggestions__list {
-+  list-style: none;
-+  padding: 0;
-+  margin: 0;
-+  display: flex;
-+  flex-direction: column;
-+  gap: var(--space-xs);
-+}
-+
-+.song-suggestions__item {
-+  display: flex;
-+  justify-content: space-between;
-+  align-items: center;
-+  padding: var(--space-sm) var(--space-md);
-+  background: var(--surface-2);
-+  border-radius: 8px;
-+  border: 1px solid var(--border-subtle);
-+}
-+
-+.song-suggestions__info {
-+  display: flex;
-+  flex-direction: column;
-+}
-+
-+.song-suggestions__song-title {
-+  font-weight: 600;
-+  color: var(--text-primary);
-+}
-+
-+.song-suggestions__artist {
-+  font-size: 0.8rem;
-+  color: var(--text-muted);
-+}
-+
-+.song-suggestions__meta {
-+  display: flex;
-+  flex-direction: column;
-+  align-items: flex-end;
-+  gap: 2px;
-+}
-+
-+.song-suggestions__genre {
-+  font-size: 0.7rem;
-+  color: var(--text-soft);
-+  text-transform: uppercase;
-+  letter-spacing: 0.03em;
-+}
-+
-+.song-suggestions__fit {
-+  font-size: 0.8rem;
-+  font-weight: 600;
-+}
-+
-+/* ============================================================================
-+   WARM-UP ROUTINE
-+   ============================================================================ */
-+
-+.warmup-routine {
-+  margin-top: var(--space-md);
-+}
-+
-+.warmup-routine__title {
-+  font-size: 1.1rem;
-+  font-weight: 700;
-+  margin-bottom: 4px;
-+}
-+
-+.warmup-routine__subtitle {
-+  font-size: 0.85rem;
-+  color: var(--text-muted);
-+  margin-bottom: var(--space-md);
-+}
-+
-+.warmup-routine__steps {
-+  list-style: none;
-+  padding: 0;
-+  margin: 0;
-+  display: flex;
-+  flex-direction: column;
-+  gap: var(--space-md);
-+}
-+
-+.warmup-routine__step {
-+  padding: var(--space-md);
-+  background: var(--surface-2);
-+  border-radius: 8px;
-+  border: 1px solid var(--border-subtle);
-+}
-+
-+.warmup-routine__step-header {
-+  display: flex;
-+  align-items: center;
-+  gap: var(--space-sm);
-+  margin-bottom: var(--space-sm);
-+}
-+
-+.warmup-routine__step-number {
-+  display: flex;
-+  align-items: center;
-+  justify-content: center;
-+  width: 28px;
-+  height: 28px;
-+  border-radius: 50%;
-+  background: var(--brand);
-+  color: var(--brand-contrast);
-+  font-weight: 700;
-+  font-size: 0.85rem;
-+  flex-shrink: 0;
-+}
-+
-+.warmup-routine__step-title {
-+  display: block;
-+  font-size: 0.95rem;
-+}
-+
-+.warmup-routine__step-duration {
-+  font-size: 0.75rem;
-+  color: var(--text-soft);
-+}
-+
-+.warmup-routine__step-instruction {
-+  font-size: 0.9rem;
-+  line-height: 1.5;
-+  margin: 0 0 var(--space-xs);
-+}
-+
-+.warmup-routine__step-why {
-+  font-size: 0.8rem;
-+  color: var(--text-soft);
-+  margin: 0;
-+}
-+
-+/* ============================================================================
-+   SESSION HISTORY
-+   ============================================================================ */
-+
-+.session-history {
-+  margin-top: var(--space-md);
-+}
-+
-+.session-history__title {
-+  font-size: 1.1rem;
-+  font-weight: 700;
-+  margin-bottom: var(--space-sm);
-+}
-+
-+.session-history__first {
-+  font-size: 0.9rem;
-+  color: var(--text-muted);
-+  padding: var(--space-sm) var(--space-md);
-+  background: var(--surface-2);
-+  border-radius: 8px;
-+}
-+
-+.session-history__insights {
-+  list-style: none;
-+  padding: 0;
-+  margin: 0;
-+  display: flex;
-+  flex-direction: column;
-+  gap: var(--space-xs);
-+}
-+
-+.session-history__insight {
-+  display: flex;
-+  align-items: center;
-+  gap: var(--space-sm);
-+  padding: var(--space-sm) var(--space-md);
-+  border-radius: 8px;
-+  font-size: 0.9rem;
-+}
-+
-+.session-history__insight--positive {
-+  background: rgba(74, 222, 128, 0.08);
-+  color: var(--success);
-+}
-+
-+.session-history__insight--neutral {
-+  background: var(--surface-2);
-+  color: var(--text-muted);
-+}
-+
-+.session-history__table {
-+  width: 100%;
-+  border-collapse: collapse;
-+  font-size: 0.85rem;
-+}
-+
-+.session-history__table th,
-+.session-history__table td {
-+  padding: var(--space-xs) var(--space-sm);
-+  text-align: left;
-+  border-bottom: 1px solid var(--border-subtle);
-+}
-+
-+.session-history__table th {
-+  color: var(--text-soft);
-+  font-weight: 600;
-+  font-size: 0.75rem;
-+  text-transform: uppercase;
-+  letter-spacing: 0.03em;
-+}
-diff --git a/reporting/_helpers.py b/reporting/_helpers.py
-new file mode 100644
-index 0000000..2905c58
---- /dev/null
-+++ b/reporting/_helpers.py
-@@ -0,0 +1,104 @@
-+"""Shared helper functions for the reporting package.
-+
-+This module is the single canonical location for utility functions used
-+by pdf_composer.py, visualization.py, csv_generator.py, and json_generator.py.
-+Importing from here eliminates the duplication that previously existed
-+across multiple reporting modules.
-+"""
-+
-+from __future__ import annotations
-+
-+import math
-+from typing import Any, Mapping, MutableMapping, Optional, Sequence
-+
-+
-+NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
-+
-+
-+def _safe_float(value: Any) -> Optional[float]:
-+    """Convert a value to a finite float, or return None."""
-+    if value is None:
-+        return None
-+    try:
-+        num = float(value)
-+    except (TypeError, ValueError):
-+        return None
-+    if not math.isfinite(num):
-+        return None
-+    return num
-+
-+
-+def _ensure_mapping(value: Any) -> MutableMapping[str, Any]:
-+    """Ensure a value is a mutable mapping, converting if necessary."""
-+    if isinstance(value, MutableMapping):
-+        return value
-+    if isinstance(value, Mapping):
-+        return dict(value)
-+    return {}
-+
-+
-+def _coerce_sequence(value: Any) -> list[Any]:
-+    """Coerce a value to a list, returning empty list for non-sequences."""
-+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-+        return list(value)
-+    return []
-+
-+
-+def _first_float(mapping: Mapping[str, Any], keys: Sequence[str]) -> Optional[float]:
-+    """Return the first finite float found under any of the given keys."""
-+    for key in keys:
-+        if key not in mapping:
-+            continue
-+        value = _safe_float(mapping.get(key))
-+        if value is not None:
-+            return value
-+    return None
-+
-+
-+def _format_number(value: Any, *, decimals: int = 2) -> str:
-+    """Format a number for display, returning 'N/A' for None/non-finite."""
-+    number = _safe_float(value)
-+    if number is None:
-+        return "N/A"
-+    if number.is_integer():
-+        return str(int(number))
-+    return f"{number:.{decimals}f}"
-+
-+
-+def _format_band(value: Any) -> str:
-+    """Format a two-element range/band for display."""
-+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)) and len(value) >= 2:
-+        return f"{_format_number(value[0])} to {_format_number(value[1])}"
-+    return "N/A"
-+
-+
-+def _extract_frames(result: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-+    """Extract pitch frames from a result dict, searching multiple paths."""
-+    for path in (
-+        ("frames",),
-+        ("pitch", "frames"),
-+        ("pitch_frames",),
-+        ("pitch", "pitch_frames"),
-+        ("analysis", "frames"),
-+    ):
-+        current: Any = result
-+        for key in path:
-+            if not isinstance(current, Mapping) or key not in current:
-+                current = None
-+                break
-+            current = current[key]
-+        if isinstance(current, Sequence) and not isinstance(current, (str, bytes)):
-+            return [item for item in current if isinstance(item, Mapping)]
-+    return []
-+
-+
-+def _extract_events(result: Mapping[str, Any], *path: str) -> list[Mapping[str, Any]]:
-+    """Extract event list from a nested path in the result dict."""
-+    current: Any = result
-+    for key in path:
-+        if not isinstance(current, Mapping) or key not in current:
-+            return []
-+        current = current[key]
-+    if isinstance(current, Sequence) and not isinstance(current, (str, bytes)):
-+        return [item for item in current if isinstance(item, Mapping)]
-+    return []
-diff --git a/reporting/pdf_composer.py b/reporting/pdf_composer.py
-index 273ffc5..f7d97ed 100644
---- a/reporting/pdf_composer.py
-+++ b/reporting/pdf_composer.py
-@@ -18,75 +18,15 @@ else:
-     _REPORTLAB_AVAILABLE = True
-     _REPORTLAB_IMPORT_ERROR = None
+   const handleMouseLeave = useCallback(() => setTooltip(null), []);
++  const handleTouchEnd = useCallback(() => setTooltip(null), []);
  
--
--def _safe_float(value: Any) -> Optional[float]:
--    if value is None:
--        return None
--    try:
--        num = float(value)
--    except (TypeError, ValueError):
--        return None
--    if not math.isfinite(num):
--        return None
--    return num
--
--
--def _ensure_mapping(value: Any) -> MutableMapping[str, Any]:
--    if isinstance(value, MutableMapping):
--        return value
--    if isinstance(value, Mapping):
--        return dict(value)
--    return {}
--
--
--def _coerce_sequence(value: Any) -> list[Any]:
--    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
--        return list(value)
--    return []
--
--
--def _first_float(mapping: Mapping[str, Any], keys: Sequence[str]) -> Optional[float]:
--    for key in keys:
--        if key not in mapping:
--            continue
--        value = _safe_float(mapping.get(key))
--        if value is not None:
--            return value
--    return None
--
--
--def _format_number(value: Any, *, decimals: int = 2) -> str:
--    number = _safe_float(value)
--    if number is None:
--        return "N/A"
--    if number.is_integer():
--        return str(int(number))
--    return f"{number:.{decimals}f}"
--
--
--def _format_band(value: Any) -> str:
--    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)) and len(value) >= 2:
--        return f"{_format_number(value[0])} to {_format_number(value[1])}"
--    return "N/A"
--
--
--def _extract_frames(result: Mapping[str, Any]) -> list[Mapping[str, Any]]:
--    for path in (
--        ("frames",),
--        ("pitch", "frames"),
--        ("pitch_frames",),
--        ("pitch", "pitch_frames"),
--        ("analysis", "frames"),
--    ):
--        current: Any = result
--        for key in path:
--            if not isinstance(current, Mapping) or key not in current:
--                current = None
--                break
--            current = current[key]
--        if isinstance(current, Sequence) and not isinstance(current, (str, bytes)):
--            return [item for item in current if isinstance(item, Mapping)]
--    return []
-+from reporting._helpers import (
-+    _safe_float,
-+    _ensure_mapping,
-+    _coerce_sequence,
-+    _first_float,
-+    _format_number,
-+    _format_band,
-+    _extract_frames,
-+)
+   if (voicedFrames.length === 0) {
+     return null;
+@@ -236,14 +251,17 @@ function PitchTimeline({ pitchFrames = [], durationSeconds = 0, tessituraLow, te
+       <p className="results__section-copy">
+         Your detected pitch over time. Brighter colors mean higher confidence.
+         {Number.isFinite(tessituraLow) && " The shaded band shows your comfortable singing range (tessitura)."}
+-        {" "}Hover for details.
++        {" "}Hover or tap for details.
+       </p>
+       <div ref={containerRef} style={{ position: "relative", width: "100%" }}>
+         <canvas
+           ref={canvasRef}
+-          style={{ display: "block", width: "100%", cursor: "crosshair" }}
++          style={{ display: "block", width: "100%", cursor: "crosshair", touchAction: "none" }}
+           onMouseMove={handleMouseMove}
+           onMouseLeave={handleMouseLeave}
++          onTouchStart={handleTouchMove}
++          onTouchMove={handleTouchMove}
++          onTouchEnd={handleTouchEnd}
+           role="img"
+           aria-label="Pitch trajectory chart showing detected pitch over time"
+         />
+diff --git a/requirements.txt b/requirements.txt
+index 8786010..8469788 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -1,4 +1,5 @@
+ # Tessiture runtime dependencies (pinned)
++# Dev dependencies (pytest, httpx) are in pyproject.toml [project.optional-dependencies.dev]
+ numpy==1.26.4
+ scipy==1.12.0
+ librosa==0.10.2.post1
+@@ -9,10 +10,4 @@ python-multipart==0.0.20
+ matplotlib==3.8.4
+ plotly==5.24.1
+ reportlab==4.2.5
+-mutagen==1.47.0
+-torch==2.2.2
+-torchaudio==2.2.2
+-demucs==4.0.1
+-pytest
+-pytest-asyncio==0.25.3
+-httpx==0.28.1
+\ No newline at end of file
++mutagen==1.47.0
+\ No newline at end of file
+diff --git a/tests/test_analysis/test_pitch_phase2.py b/tests/test_analysis/test_pitch_phase2.py
+index 02d8c7a..a81223b 100644
+--- a/tests/test_analysis/test_pitch_phase2.py
++++ b/tests/test_analysis/test_pitch_phase2.py
+@@ -37,16 +37,16 @@ def test_estimate_pitch_frames_outputs_f0_and_components() -> None:
+     assert "analysis_diagnostics" in first.components, "Expected diagnostics payload in components."
+     diagnostics = first.components["analysis_diagnostics"]
+     assert diagnostics["primary_method_used"] in {
++        "pyin",
+         "harmonic_candidates",
+         "hps_fallback",
+         "autocorrelation_fallback",
+         "no_pitch_detected",
+     }
+-    assert diagnostics["attempted_methods"] == [
+-        "harmonic_candidates",
+-        "hps_peak_ratio_gate",
+-        "autocorrelation",
+-    ]
++    # When PYIN is available, it is prepended to the attempted methods list.
++    legacy_methods = ["harmonic_candidates", "hps_peak_ratio_gate", "autocorrelation"]
++    assert diagnostics["attempted_methods"] == legacy_methods or \
++           diagnostics["attempted_methods"] == ["pyin"] + legacy_methods
+     assert "strategy_path" in diagnostics
+     assert "fallback_reason" in diagnostics
  
+diff --git a/tests/test_api/test_routes.py b/tests/test_api/test_routes.py
+index e710435..3ab840d 100644
+--- a/tests/test_api/test_routes.py
++++ b/tests/test_api/test_routes.py
+@@ -534,9 +534,9 @@ def test_build_evidence_payload_links_low_high_notes_and_guidance_refs() -> None
  
- def _frame_time(frame: Mapping[str, Any], index: int, metadata: Mapping[str, Any]) -> float:
-diff --git a/reporting/visualization.py b/reporting/visualization.py
-index 60ef30b..e45b5d3 100644
---- a/reporting/visualization.py
-+++ b/reporting/visualization.py
-@@ -14,74 +14,15 @@ import matplotlib.pyplot as plt
- from matplotlib.figure import Figure
- from matplotlib.patches import Rectangle
+     pitch_frames = [
+         {"time": 0.10, "f0_hz": 220.0, "midi": 57.0, "confidence": 0.95},
+-        {"time": 0.40, "f0_hz": 246.94, "midi": 59.0, "confidence": 0.95},
+-        {"time": 1.20, "f0_hz": 329.63, "midi": 64.0, "confidence": 0.95},
+-        {"time": 2.60, "f0_hz": 440.0, "midi": 69.0, "confidence": 0.95},
++        {"time": 0.20, "f0_hz": 246.94, "midi": 59.0, "confidence": 0.95},
++        {"time": 0.30, "f0_hz": 329.63, "midi": 64.0, "confidence": 0.95},
++        {"time": 0.40, "f0_hz": 440.0, "midi": 69.0, "confidence": 0.95},
+     ]
  
--
--NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
--
--
--def _safe_float(value: Any) -> Optional[float]:
--    if value is None:
--        return None
--    try:
--        num = float(value)
--    except (TypeError, ValueError):
--        return None
--    if not math.isfinite(num):
--        return None
--    return num
--
--
--def _ensure_mapping(value: Any) -> MutableMapping[str, Any]:
--    if isinstance(value, MutableMapping):
--        return value
--    if isinstance(value, Mapping):
--        return dict(value)
--    return {}
--
--
--def _coerce_sequence(value: Any) -> list[Any]:
--    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
--        return list(value)
--    return []
--
--
--def _first_float(mapping: Mapping[str, Any], keys: Sequence[str]) -> Optional[float]:
--    for key in keys:
--        if key not in mapping:
--            continue
--        value = _safe_float(mapping.get(key))
--        if value is not None:
--            return value
--    return None
--
--
--def _extract_frames(result: Mapping[str, Any]) -> list[Mapping[str, Any]]:
--    for path in (
--        ("frames",),
--        ("pitch", "frames"),
--        ("pitch_frames",),
--        ("pitch", "pitch_frames"),
--        ("analysis", "frames"),
--    ):
--        current: Any = result
--        for key in path:
--            if not isinstance(current, Mapping) or key not in current:
--                current = None
--                break
--            current = current[key]
--        if isinstance(current, Sequence) and not isinstance(current, (str, bytes)):
--            return [item for item in current if isinstance(item, Mapping)]
--    return []
--
--
--def _extract_events(result: Mapping[str, Any], *path: str) -> list[Mapping[str, Any]]:
--    current: Any = result
--    for key in path:
--        if not isinstance(current, Mapping) or key not in current:
--            return []
--        current = current[key]
--    if not isinstance(current, Sequence) or isinstance(current, (str, bytes)):
--        return []
--    return [item for item in current if isinstance(item, Mapping)]
-+from reporting._helpers import (
-+    NOTE_NAMES,
-+    _safe_float,
-+    _ensure_mapping,
-+    _coerce_sequence,
-+    _first_float,
-+    _extract_frames,
-+    _extract_events,
-+)
- 
- 
- def _frame_time(frame: Mapping[str, Any], index: int, metadata: Mapping[str, Any]) -> float:
+     evidence = _build_evidence_payload(

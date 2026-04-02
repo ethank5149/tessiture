@@ -231,8 +231,8 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
         stft_result.spectrum,
         stft_result.frequencies,
         n_harmonics=4,
-        freq_tolerance=8.0,
-        min_db=-60.0,
+        freq_tolerance=50.0,
+        min_db=-40.0,
         max_candidates=6,
     )
     pitch_candidates = estimate_pitch_frames(

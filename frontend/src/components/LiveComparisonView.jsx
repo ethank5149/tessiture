@@ -2,26 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import useComparisonWebSocket from "../hooks/useComparisonWebSocket";
 import useMicrophoneCapture from "../hooks/useMicrophoneCapture";
 import ComparisonMetricsPanel from "./ComparisonMetricsPanel";
+import PitchMeter from "./PitchMeter";
 
-const DEVIATION_RANGE = 100; // cents, full scale
-
-/**
- * Compute the CSS left % for the deviation needle (0–100).
- * 0 cents → 50%, -100 → 0%, +100 → 100%.
- */
-const deviationToPercent = (cents) => {
-  if (cents === null || cents === undefined) return 50;
-  const clamped = Math.max(-DEVIATION_RANGE, Math.min(DEVIATION_RANGE, cents));
-  return 50 + (clamped / DEVIATION_RANGE) * 50;
-};
-
-const deviationColorClass = (cents) => {
-  if (cents === null || cents === undefined) return "";
-  const abs = Math.abs(cents);
-  if (abs <= 25) return "note-in-tune";
-  if (abs <= 50) return "note-warning";
-  return "note-off-pitch";
-};
 
 /**
  * Main live comparison session view.
@@ -93,7 +75,6 @@ const LiveComparisonView = ({ referenceId, referenceInfo, onSessionComplete, onC
 
   const deviation = ws.latestFeedback?.pitch_deviation_cents ?? null;
   const userNote = ws.latestFeedback?.user_note_name ?? null;
-  const needlePercent = deviationToPercent(deviation);
 
   // Reference audio: only available for example tracks (served at /examples/{filename})
   // Uploaded references do not have a direct audio playback URL yet.
@@ -146,40 +127,14 @@ const LiveComparisonView = ({ referenceId, referenceInfo, onSessionComplete, onC
         </p>
       )}
 
-      {/* Live pitch display */}
-      <div className="live-pitch-display" aria-live="polite" aria-atomic="true">
-        <div
-          className={`live-pitch-display__note ${deviationColorClass(deviation)}`}
-          aria-label={userNote ? `Singing: ${userNote}` : "No pitch detected"}
-        >
-          {userNote ?? "—"}
-        </div>
-
-        {/* Deviation meter */}
-        <div
-          className="pitch-deviation-meter"
-          role="meter"
-          aria-label={`Pitch deviation: ${deviation !== null ? `${Math.round(deviation)} cents` : "unknown"}`}
-          aria-valuenow={deviation ?? 0}
-          aria-valuemin={-DEVIATION_RANGE}
-          aria-valuemax={DEVIATION_RANGE}
-        >
-          <span className="pitch-deviation-meter__label pitch-deviation-meter__label--left">
-            −{DEVIATION_RANGE}¢
-          </span>
-          <div className="pitch-deviation-meter__track">
-            <div
-              className={`pitch-deviation-needle ${deviationColorClass(deviation)}`}
-              style={{ left: `${needlePercent}%` }}
-              aria-hidden="true"
-            />
-            <div className="pitch-deviation-meter__center-mark" aria-hidden="true" />
-          </div>
-          <span className="pitch-deviation-meter__label pitch-deviation-meter__label--right">
-            +{DEVIATION_RANGE}¢
-          </span>
-        </div>
-      </div>
+      {/* Live pitch display — uses PitchMeter component */}
+      <PitchMeter
+        currentDeviation={deviation}
+        userNote={userNote}
+        referenceNote={ws.latestFeedback?.reference_note_name ?? null}
+        accuracyRatio={ws.runningSummary?.pitch_accuracy_ratio ?? null}
+        isVoiced={deviation !== null && userNote !== null}
+      />
 
       {/* Metrics panel */}
       <ComparisonMetricsPanel

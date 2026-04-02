@@ -184,21 +184,20 @@ function PitchTimeline({ pitchFrames = [], durationSeconds = 0, tessituraLow, te
     }
   }, [voicedFrames, canvasSize, durationSeconds, midiMin, midiMax, tessituraLow, tessituraHigh]);
 
-  // Hover tooltip
-  const handleMouseMove = useCallback(
-    (e) => {
+  // Shared tooltip hit-test logic for both mouse and touch
+  const updateTooltipAtPosition = useCallback(
+    (clientX, clientY) => {
       const canvas = canvasRef.current;
       if (!canvas || voicedFrames.length === 0) return;
       const rect = canvas.getBoundingClientRect();
-      const mx = e.clientX - rect.left;
-      const my = e.clientY - rect.top;
-      const { width, height } = canvasSize;
+      const mx = clientX - rect.left;
+      const my = clientY - rect.top;
+      const { width } = canvasSize;
       const pad = { top: 10, right: 16, bottom: 28, left: 48 };
       const plotW = width - pad.left - pad.right;
       const maxTime = durationSeconds > 0 ? durationSeconds : Math.max(...voicedFrames.map((f) => f.time), 1);
       const hoverTime = ((mx - pad.left) / plotW) * maxTime;
 
-      // Find nearest frame within ±0.1s
       let nearest = null;
       let nearestDist = Infinity;
       for (const f of voicedFrames) {
@@ -224,7 +223,23 @@ function PitchTimeline({ pitchFrames = [], durationSeconds = 0, tessituraLow, te
     [voicedFrames, canvasSize, durationSeconds]
   );
 
+  const handleMouseMove = useCallback(
+    (e) => updateTooltipAtPosition(e.clientX, e.clientY),
+    [updateTooltipAtPosition]
+  );
+
+  const handleTouchMove = useCallback(
+    (e) => {
+      if (e.touches.length > 0) {
+        e.preventDefault();
+        updateTooltipAtPosition(e.touches[0].clientX, e.touches[0].clientY);
+      }
+    },
+    [updateTooltipAtPosition]
+  );
+
   const handleMouseLeave = useCallback(() => setTooltip(null), []);
+  const handleTouchEnd = useCallback(() => setTooltip(null), []);
 
   if (voicedFrames.length === 0) {
     return null;
@@ -236,14 +251,17 @@ function PitchTimeline({ pitchFrames = [], durationSeconds = 0, tessituraLow, te
       <p className="results__section-copy">
         Your detected pitch over time. Brighter colors mean higher confidence.
         {Number.isFinite(tessituraLow) && " The shaded band shows your comfortable singing range (tessitura)."}
-        {" "}Hover for details.
+        {" "}Hover or tap for details.
       </p>
       <div ref={containerRef} style={{ position: "relative", width: "100%" }}>
         <canvas
           ref={canvasRef}
-          style={{ display: "block", width: "100%", cursor: "crosshair" }}
+          style={{ display: "block", width: "100%", cursor: "crosshair", touchAction: "none" }}
           onMouseMove={handleMouseMove}
           onMouseLeave={handleMouseLeave}
+          onTouchStart={handleTouchMove}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
           role="img"
           aria-label="Pitch trajectory chart showing detected pitch over time"
         />

@@ -30,7 +30,7 @@ def get_status(job_id: str) -> Dict[str, Any]:
 @router.get("/results/{job_id}")
 def get_results(
     job_id: str,
-    format: str = Query("json", regex="^(json|json_report|csv|pdf)$"),
+    format: str = Query("json", pattern="^(json|json_report|csv|pdf)$"),
 ) -> Any:
     """Get the results of a completed analysis job.
 

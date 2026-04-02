@@ -300,6 +300,7 @@ class ComparisonSession:
         extractor: Per-session ``StreamingPitchExtractor`` instance.
         current_position_s: Current playback position as reported by client.
         start_time: Monotonic timestamp of session creation.
+        last_activity: Monotonic timestamp of last received message.
         chunk_results: List of per-chunk feedback dicts (voiced only).
         chunk_count: Total binary frames received (voiced + unvoiced).
     """
@@ -310,8 +311,30 @@ class ComparisonSession:
     extractor: StreamingPitchExtractor
     current_position_s: float = 0.0
     start_time: float = field(default_factory=time.monotonic)
+    last_activity: float = field(default_factory=time.monotonic)
     chunk_results: List[Dict[str, Any]] = field(default_factory=list)
     chunk_count: int = 0
+
+
+# Maximum session inactivity before eviction (seconds).
+_SESSION_TIMEOUT_S: float = 600.0  # 10 minutes
+
+
+def _evict_stale_sessions() -> int:
+    """Remove sessions that have been inactive longer than _SESSION_TIMEOUT_S.
+
+    Returns the number of evicted sessions.
+    """
+    now = time.monotonic()
+    stale_ids = [
+        sid for sid, session in _SESSIONS.items()
+        if (now - session.last_activity) > _SESSION_TIMEOUT_S
+    ]
+    for sid in stale_ids:
+        logger.info("session_evicted session_id=%s idle_s=%.0f", sid,
+                     now - _SESSIONS[sid].last_activity)
+        _SESSIONS.pop(sid, None)
+    return len(stale_ids)
 
 
 # ---------------------------------------------------------------------------
@@ -515,6 +538,10 @@ async def live_comparison(websocket: WebSocket, reference_id: str = Query(...)) 
             hop_length=_STREAMING_HOP,
         ),
     )
+    # Evict any stale sessions before adding a new one.
+    evicted = _evict_stale_sessions()
+    if evicted:
+        logger.info("ws.stale_sessions_evicted count=%d", evicted)
     _SESSIONS[session_id] = session
 
     logger.info("ws.live_comparison.start session=%s reference=%s", session_id, reference_id)
@@ -552,6 +579,7 @@ async def live_comparison(websocket: WebSocket, reference_id: str = Query(...)) 
 
                 audio_chunk = np.frombuffer(raw_bytes, dtype=np.float32)
                 session.chunk_count += 1
+                session.last_activity = time.monotonic()
 
                 pitch_estimate = session.extractor.push(audio_chunk)
 
