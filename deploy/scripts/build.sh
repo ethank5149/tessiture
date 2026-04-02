@@ -40,8 +40,8 @@ Examples:
 EOF
 }
 
-log()     { printf '[build] %s\n' "$*"; }
-die()     { printf '[build] ERROR: %s\n' "$*" >&2; exit 1; }
+log()         { printf '[build] %s\n' "$*"; }
+die()         { printf '[build] ERROR: %s\n' "$*" >&2; exit 1; }
 require_cmd() { command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"; }
 
 is_container_runtime() {
@@ -57,7 +57,7 @@ docker_preflight() {
   command -v docker >/dev/null 2>&1 || die "Docker CLI is missing."
 
   if [[ "${runtime_context}" = "container" && ! -S "/var/run/docker.sock" && -z "${DOCKER_HOST:-}" ]]; then
-    die "Docker socket unavailable and DOCKER_HOST unset. Mount the socket or set DOCKER_HOST."
+    die "Docker socket unavailable and DOCKER_HOST unset."
   fi
 
   if ! docker info >/dev/null 2>&1; then
@@ -77,20 +77,35 @@ docker_preflight() {
 
 setup_buildx() {
   if ! docker buildx version >/dev/null 2>&1; then
-    log "WARNING: docker buildx not available; falling back to docker build (no registry cache)"
+    log "WARNING: docker buildx not available; falling back to docker build"
     return 1
   fi
 
-  # Recreate the builder with host networking every time.
-  # --driver-opt network=host makes the buildkit container share DinD's network
-  # namespace, inheriting its DNS configuration (including --dns=100.100.100.100
-  # set on the DinD container for Tailscale MagicDNS resolution).
+  # Always recreate the builder so driver options are applied fresh.
   docker buildx rm tessiture-builder 2>/dev/null || true
-  docker buildx create \
-    --name tessiture-builder \
-    --driver docker-container \
-    --driver-opt network=host \
+
+  local -a create_args=(
+    --name tessiture-builder
+    --driver docker-container
+    --driver-opt network=host
     --use
+  )
+
+  # With TCP-based DinD, the buildkit container runs inside DinD and has no
+  # filesystem access to the job container's ~/.docker/config.json.
+  # BuildKit natively supports DOCKER_AUTH_CONFIG as an env var for registry
+  # auth, so we read the local config and inject it into the buildkit container.
+  local docker_config_file="${DOCKER_CONFIG:-${HOME}/.docker}/config.json"
+  if [[ -f "${docker_config_file}" ]]; then
+    local auth_config
+    auth_config="$(cat "${docker_config_file}")"
+    create_args+=(--driver-opt "env.DOCKER_AUTH_CONFIG=${auth_config}")
+    log "Injecting registry credentials into buildkit container"
+  else
+    log "WARNING: No docker config found at ${docker_config_file}; registry push may fail"
+  fi
+
+  docker buildx create "${create_args[@]}"
   docker buildx inspect --bootstrap >/dev/null 2>&1 || true
   return 0
 }
@@ -150,7 +165,6 @@ detect_auto_bump() {
      ! git -C "${REPO_ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     printf 'patch\n'; return
   fi
-
   local last_semver_tag range subjects
   last_semver_tag="$(git -C "${REPO_ROOT}" tag --list 'v[0-9]*.[0-9]*.[0-9]*' \
     --sort=-version:refname | head -n1 || true)"
@@ -192,7 +206,7 @@ clear_release_version_file() {
 }
 
 git_tag_release() {
-  local version="$1" tag="v${1}"
+  local tag="v${1}"
   [[ "${NO_GIT_TAG}" -eq 1 ]] && { log "Skipping git tag (--no-git-tag)"; return; }
   command -v git >/dev/null 2>&1 || { log "WARNING: git not available; skipping tag"; return; }
   git -C "${REPO_ROOT}" rev-parse --git-dir >/dev/null 2>&1 || { log "WARNING: not a git repo; skipping tag"; return; }
@@ -205,12 +219,12 @@ git_tag_release() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --image)        [[ $# -ge 2 ]] || die "Missing value for --image";        IMAGE="$2";                   IMAGE_SET=1; shift 2 ;;
+    --image)        [[ $# -ge 2 ]] || die "Missing value for --image";        IMAGE="$2";                    IMAGE_SET=1; shift 2 ;;
     --push)         PUSH=1; shift ;;
-    --version-bump) [[ $# -ge 2 ]] || die "Missing value for --version-bump"; VERSION_BUMP="$2";             shift 2 ;;
-    --base-version) [[ $# -ge 2 ]] || die "Missing value for --base-version"; BASE_VERSION="$2";             shift 2 ;;
+    --version-bump) [[ $# -ge 2 ]] || die "Missing value for --version-bump"; VERSION_BUMP="$2";              shift 2 ;;
+    --base-version) [[ $# -ge 2 ]] || die "Missing value for --base-version"; BASE_VERSION="$2";              shift 2 ;;
     --env-file)     [[ $# -ge 2 ]] || die "Missing value for --env-file";     ENV_FILE="$(resolve_path "$2")"; shift 2 ;;
-    --cache-ref)    [[ $# -ge 2 ]] || die "Missing value for --cache-ref";    CACHE_REF="$2";               shift 2 ;;
+    --cache-ref)    [[ $# -ge 2 ]] || die "Missing value for --cache-ref";    CACHE_REF="$2";                shift 2 ;;
     --no-git-tag)   NO_GIT_TAG=1; shift ;;
     -h|--help)      usage; exit 0 ;;
     *)              die "Unknown argument: $1" ;;
@@ -267,9 +281,9 @@ if [[ "${VERSION_BUMP}" != "none" ]]; then
 else
   if parse_semver "${IMAGE_TAG}"; then
     RELEASE_VERSION="${SEMVER_MAJOR}.${SEMVER_MINOR}.${SEMVER_PATCH}"
-    log "Version bump: none; using tag for release metadata: ${RELEASE_VERSION}"
+    log "Version bump: none; using tag: ${RELEASE_VERSION}"
   else
-    log "Version bump: none; tag '${IMAGE_TAG}' is not semantic — release version file will not be written"
+    log "Version bump: none; tag '${IMAGE_TAG}' not semantic — release version file will not be written"
   fi
 fi
 
