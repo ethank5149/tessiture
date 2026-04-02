@@ -87,7 +87,6 @@ jobs:
       - name: Connect to Docker daemon
         shell: bash
         run: |
-          # DinD exposes :2375 (non-TLS). Ensure we're connected.
           unset DOCKER_TLS_VERIFY DOCKER_CERT_PATH
           if ! docker info >/dev/null 2>&1; then
             export DOCKER_HOST="tcp://172.40.0.2:2375"
@@ -96,11 +95,6 @@ jobs:
           fi
           echo "DOCKER_TLS_VERIFY=" >> "${GITHUB_ENV}"
           echo "DOCKER_CERT_PATH=" >> "${GITHUB_ENV}"
-
-      - name: Add Forgejo registry hostname
-        shell: bash
-        run: |
-          echo "100.95.62.8 forgejo.dojo-diminished.ts.net" >> /etc/hosts
 
       - name: Log in to Forgejo registry
         shell: bash
@@ -116,7 +110,6 @@ jobs:
         run: |
           unset DOCKER_TLS_VERIFY DOCKER_CERT_PATH
           mkdir -p examples/tracks
-
           deploy/scripts/build.sh \
             --version-bump "${{ inputs.version_bump || 'auto' }}" \
             --env-file deploy/.env.ci \
@@ -147,6 +140,7 @@ jobs:
         shell: bash
         run: |
           unset DOCKER_TLS_VERIFY DOCKER_CERT_PATH
+          docker buildx rm tessiture-builder 2>/dev/null || true
           docker logout forgejo.dojo-diminished.ts.net 2>/dev/null || true
 
   deploy:
@@ -161,12 +155,6 @@ jobs:
           command -v bash >/dev/null 2>&1 || apk add --no-cache bash || apt-get install -y bash
           command -v ssh >/dev/null 2>&1 || apk add --no-cache openssh-client || apt-get install -y openssh-client
 
-      - name: Checkout
-        shell: bash
-        run: |
-          AUTH_URL=$(echo "${{ github.server_url }}" | sed "s|://|://oauth2:${{ github.token }}@|")
-          git clone "${AUTH_URL}/${{ github.repository }}.git" .
-
       - name: Configure SSH key
         shell: bash
         run: |
@@ -179,7 +167,6 @@ jobs:
       - name: Write .env to SkyNet
         shell: bash
         run: |
-          # Push the env file to the deploy location on SkyNet
           echo "${{ secrets.TESSITURE_ENV }}" | \
             ssh -i ~/.ssh/id_ed25519 root@100.95.62.8 \
             "cat > /mnt/user/public/tessiture/deploy/.env"
@@ -192,16 +179,11 @@ jobs:
 
           ssh -i ~/.ssh/id_ed25519 root@100.95.62.8 bash <<EOF
             set -euo pipefail
-
-            # Pull latest image from Forgejo registry
             echo "${{ github.token }}" | docker login ${REGISTRY} \
               --username "${{ github.repository_owner }}" \
               --password-stdin
-
             docker pull ${IMAGE}
             docker logout ${REGISTRY}
-
-            # Redeploy via compose
             cd /mnt/user/public/tessiture
             TESSITURE_IMAGE=${IMAGE} deploy/scripts/deploy.sh \
               --env-file deploy/.env \

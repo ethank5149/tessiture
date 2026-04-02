@@ -28,7 +28,7 @@ Options:
   --version-bump <kind>    Version strategy: auto|patch|minor|major|none (default: auto)
   --base-version <x.y.z>   Base version when current image tag is not semantic (default: 0.0.0)
   --env-file <path>        Optional env file to read/update TESSITURE_IMAGE
-  --cache-ref <tag>       Registry reference for BuildKit cache (e.g., registry/repo:buildcache)
+  --cache-ref <tag>        Registry reference for BuildKit cache (e.g., registry/repo:buildcache)
   --no-git-tag             Skip creating a git tag after successful build
   -h, --help               Show this help message
 
@@ -73,18 +73,11 @@ docker_preflight() {
     die "Docker CLI is missing on host. Install Docker Engine/CLI and retry."
   fi
 
-  # Allow TCP-based Docker connections (e.g. DinD via DOCKER_HOST) in addition to socket
   if [[ "${runtime_context}" = "container" && ! -S "/var/run/docker.sock" && -z "${DOCKER_HOST:-}" ]]; then
     die "Docker socket /var/run/docker.sock is not available in this container. Run on host, mount the Docker socket, or set DOCKER_HOST to a TCP endpoint."
   fi
 
   if ! docker info >/dev/null 2>&1; then
-    # --- DinD TLS fallback ---------------------------------------------------
-    # DinD runners set DOCKER_HOST=tcp://...:2376 (TLS) and expect certs at
-    # /certs/client/.  If the cert volume isn't mounted into job containers,
-    # docker info fails.  Try switching to the non-TLS port (2375) which DinD
-    # also exposes when DOCKER_TLS_CERTDIR is empty, or which some runners
-    # expose alongside the TLS port.
     if [[ "${DOCKER_HOST:-}" == *":2376"* ]]; then
       local alt_host="${DOCKER_HOST//:2376/:2375}"
       log "TLS connection failed (certs likely missing); trying non-TLS fallback: ${alt_host}"
@@ -97,7 +90,6 @@ docker_preflight() {
       fi
       log "Non-TLS fallback also failed"
     fi
-    # --- End DinD TLS fallback -----------------------------------------------
 
     if [[ "${runtime_context}" = "container" ]]; then
       die "Docker daemon is unreachable from this container. Ensure /var/run/docker.sock is mounted with correct permissions, or set DOCKER_TLS_CERTDIR='' on the DinD sidecar to enable non-TLS connections on port 2375."
@@ -111,9 +103,16 @@ setup_buildx() {
     log "WARNING: docker buildx not available; falling back to docker build (no registry cache)"
     return 1
   fi
-  docker buildx create --name tessiture-builder --driver docker-container --use 2>/dev/null \
-    || docker buildx use tessiture-builder 2>/dev/null \
-    || true
+
+  # Use host networking so the buildkit container inherits DinD's /etc/hosts
+  # (including any --add-host entries, e.g. private registry hostnames).
+  # Re-create the builder each time to ensure driver options are applied.
+  docker buildx rm tessiture-builder 2>/dev/null || true
+  docker buildx create \
+    --name tessiture-builder \
+    --driver docker-container \
+    --driver-opt network=host \
+    --use
   docker buildx inspect --bootstrap >/dev/null 2>&1 || true
   return 0
 }
@@ -214,10 +213,8 @@ detect_auto_bump() {
 
   subjects="$(git -C "${REPO_ROOT}" log --pretty=%s ${range} 2>/dev/null || true)"
 
-  # Check for breaking changes first (highest priority → major bump)
   if [[ -n "${subjects}" ]] && grep -qiE '(BREAKING CHANGE)|(^[a-z]+(\([^)]+\))?!:)' <<<"${subjects}"; then
     printf 'major\n'
-  # Check for feature commits → minor bump
   elif [[ -n "${subjects}" ]] && grep -qiE '(^feat(\(.+\))?:)|(^feature(\(.+\))?:)' <<<"${subjects}"; then
     printf 'minor\n'
   else
@@ -429,7 +426,6 @@ if [[ "${USE_BUILDX}" -eq 1 ]]; then
   log "Building with docker buildx (registry cache enabled)"
   "${BUILD_CMD[@]}"
 else
-  # Fallback: plain docker build (no registry cache)
   BUILD_CMD=(docker build -t "${IMAGE}")
   if [[ -n "${RELEASE_VERSION}" ]]; then
     BUILD_CMD+=(--build-arg "VITE_APP_VERSION=${RELEASE_VERSION}")
@@ -453,7 +449,6 @@ else
   clear_release_version_file
 fi
 
-# Tag the release in git after successful build and version file write
 if [[ "${VERSION_BUMP}" != "none" && -n "${RELEASE_VERSION}" ]]; then
   git_tag_release "${RELEASE_VERSION}"
 fi
