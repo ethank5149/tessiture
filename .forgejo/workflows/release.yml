@@ -149,72 +149,57 @@ jobs:
     needs: build-and-push
 
     steps:
-      - name: Install bash + openssh
-        shell: sh
-        run: |
-          command -v bash >/dev/null 2>&1 || apk add --no-cache bash || apt-get install -y bash
-          command -v ssh >/dev/null 2>&1 || apk add --no-cache openssh-client || apt-get install -y openssh-client
-
-      - name: Configure SSH key
+      - name: Checkout
         shell: bash
         run: |
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          echo "${{ secrets.SKYNET_SSH_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          # Resolve the Docker host gateway — this is SkyNet as seen from inside the runner container
-          SKYNET_HOST=$(ip route | awk '/default/ { print $3; exit }')
-          echo "SKYNET_HOST=${SKYNET_HOST}" >> "${GITHUB_ENV}"
-          ssh-keyscan -H "${SKYNET_HOST}" >> ~/.ssh/known_hosts
+          AUTH_URL=$(echo "${{ github.server_url }}" | sed "s|://|://oauth2:${{ github.token }}@|")
+          git clone "${AUTH_URL}/${{ github.repository }}.git" .
 
-      - name: Write .env to SkyNet
+      - name: Connect to Docker daemon
         shell: bash
         run: |
-          echo "${{ secrets.TESSITURE_ENV }}" | \
-            ssh -i ~/.ssh/id_ed25519 root@"${SKYNET_HOST}" \
-            "cat > /mnt/user/public/tessiture/deploy/.env"
+          unset DOCKER_TLS_VERIFY DOCKER_CERT_PATH
+          if ! docker info >/dev/null 2>&1; then
+            export DOCKER_HOST="tcp://172.40.0.2:2375"
+            docker info >/dev/null 2>&1 || { echo "::error::Cannot reach Docker daemon"; exit 1; }
+            echo "DOCKER_HOST=tcp://172.40.0.2:2375" >> "${GITHUB_ENV}"
+          fi
+          echo "DOCKER_TLS_VERIFY=" >> "${GITHUB_ENV}"
+          echo "DOCKER_CERT_PATH=" >> "${GITHUB_ENV}"
 
-      - name: Deploy on SkyNet
+      - name: Write .env to host
+        shell: bash
+        run: |
+          echo "${{ secrets.TESSITURE_ENV }}" | docker run --rm -i \
+            -v /mnt/user/public/tessiture/deploy:/deploy \
+            alpine sh -c "cat > /deploy/.env"
+
+      - name: Pull and deploy
         shell: bash
         run: |
           REGISTRY="forgejo.dojo-diminished.ts.net"
           IMAGE="${REGISTRY}/${{ github.repository }}:latest"
-
-          ssh -i ~/.ssh/id_ed25519 root@"${SKYNET_HOST}" bash <<EOF
-            set -euo pipefail
-            echo "${{ github.token }}" | docker login ${REGISTRY} \
-              --username "${{ github.repository_owner }}" \
-              --password-stdin
-            docker pull ${IMAGE}
-            docker logout ${REGISTRY}
-            cd /mnt/user/public/tessiture
-            TESSITURE_IMAGE=${IMAGE} deploy/scripts/deploy.sh \
-              --env-file deploy/.env \
-              --compose-file deploy/docker-compose.yml
-          EOF
+          echo "${{ github.token }}" | docker login "${REGISTRY}" \
+            --username "${{ github.repository_owner }}" \
+            --password-stdin
+          docker pull "${IMAGE}"
+          docker logout "${REGISTRY}"
+          TESSITURE_IMAGE="${IMAGE}" deploy/scripts/deploy.sh \
+            --env-file /mnt/user/public/tessiture/deploy/.env \
+            --compose-file deploy/docker-compose.yml
 
       - name: Verify deployment
         shell: bash
         run: |
-          ssh -i ~/.ssh/id_ed25519 root@"${SKYNET_HOST}" bash <<'EOF'
-            TIMEOUT=120
-            ELAPSED=0
-            while true; do
-              STATUS=$(docker inspect --format '{{.State.Health.Status}}' tessiture 2>/dev/null || echo "missing")
-              if [[ "${STATUS}" == "healthy" ]]; then
-                echo "tessiture is healthy"
-                break
-              fi
-              if (( ELAPSED >= TIMEOUT )); then
-                echo "ERROR: health check timed out (last status: ${STATUS})" >&2
-                docker logs tessiture --tail 50
-                exit 1
-              fi
-              echo "Waiting... (${ELAPSED}s, status: ${STATUS})"
-              sleep 10
-              ELAPSED=$(( ELAPSED + 10 ))
-            done
-          EOF
+          TIMEOUT=120
+          ELAPSED=0
+          while true; do
+            STATUS=$(docker inspect --format '{{.State.Health.Status}}' tessiture 2>/dev/null || echo "missing")
+            [[ "${STATUS}" == "healthy" ]] && { echo "tessiture is healthy"; break; }
+            (( ELAPSED >= TIMEOUT )) && { echo "ERROR: timed out (status: ${STATUS})" >&2; docker logs tessiture --tail 50; exit 1; }
+            echo "Waiting... (${ELAPSED}s, status: ${STATUS})"
+            sleep 10; ELAPSED=$(( ELAPSED + 10 ))
+          done
 
       - name: Deployment summary
         shell: bash
