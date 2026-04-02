@@ -34,7 +34,6 @@ services:
       - "127.0.0.1:${TESSITURE_LAN_BIND_PORT}:${TESSITURE_PORT}"
     networks:
       - tessiture_internal
-      - caddy_proxy
 
 networks:
   tessiture_internal:
