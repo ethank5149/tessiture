@@ -219,6 +219,41 @@ jobs:
         shell: bash
         run: chmod +x deploy/scripts/build.sh deploy/scripts/deploy.sh
 
+      - name: Detect Docker connectivity (DinD TLS fallback)
+        shell: bash
+        run: |
+          # DinD runners set DOCKER_HOST=tcp://...:2376 (TLS) and expect certs
+          # at /certs/client/.  If the cert volume isn't mounted into job
+          # containers, docker commands fail.  Detect this and switch to the
+          # non-TLS port (2375) for the rest of the job.
+          echo "DOCKER_HOST=${DOCKER_HOST:-<unset>}"
+          echo "DOCKER_TLS_VERIFY=${DOCKER_TLS_VERIFY:-<unset>}"
+          echo "DOCKER_CERT_PATH=${DOCKER_CERT_PATH:-<unset>}"
+
+          if docker info >/dev/null 2>&1; then
+            echo "Docker daemon reachable with current settings"
+          elif [[ "${DOCKER_HOST:-}" == *":2376"* ]]; then
+            ALT_HOST="${DOCKER_HOST//:2376/:2375}"
+            echo "TLS connection failed — trying non-TLS fallback: ${ALT_HOST}"
+            export DOCKER_HOST="${ALT_HOST}"
+            unset DOCKER_TLS_VERIFY
+            unset DOCKER_CERT_PATH
+            if docker info >/dev/null 2>&1; then
+              echo "Connected via non-TLS port 2375"
+              # Persist for all subsequent steps
+              echo "DOCKER_HOST=${ALT_HOST}" >> "${GITHUB_ENV}"
+              echo "DOCKER_TLS_VERIFY=" >> "${GITHUB_ENV}"
+              echo "DOCKER_CERT_PATH=" >> "${GITHUB_ENV}"
+            else
+              echo "::error::Docker daemon unreachable on both :2376 (TLS) and :2375 (non-TLS)"
+              exit 1
+            fi
+          else
+            echo "::error::Docker daemon unreachable and DOCKER_HOST is not a DinD TCP endpoint"
+            docker info 2>&1 || true
+            exit 1
+          fi
+
       - name: Log in to Forgejo container registry
         env:
           GIT_TOKEN: ${{ github.token }}

@@ -79,8 +79,28 @@ docker_preflight() {
   fi
 
   if ! docker info >/dev/null 2>&1; then
+    # --- DinD TLS fallback ---------------------------------------------------
+    # DinD runners set DOCKER_HOST=tcp://...:2376 (TLS) and expect certs at
+    # /certs/client/.  If the cert volume isn't mounted into job containers,
+    # docker info fails.  Try switching to the non-TLS port (2375) which DinD
+    # also exposes when DOCKER_TLS_CERTDIR is empty, or which some runners
+    # expose alongside the TLS port.
+    if [[ "${DOCKER_HOST:-}" == *":2376"* ]]; then
+      local alt_host="${DOCKER_HOST//:2376/:2375}"
+      log "TLS connection failed (certs likely missing); trying non-TLS fallback: ${alt_host}"
+      unset DOCKER_TLS_VERIFY 2>/dev/null || true
+      unset DOCKER_CERT_PATH 2>/dev/null || true
+      export DOCKER_HOST="${alt_host}"
+      if docker info >/dev/null 2>&1; then
+        log "Connected to Docker daemon via non-TLS fallback (${alt_host})"
+        return 0
+      fi
+      log "Non-TLS fallback also failed"
+    fi
+    # --- End DinD TLS fallback -----------------------------------------------
+
     if [[ "${runtime_context}" = "container" ]]; then
-      die "Docker daemon is unreachable from this container. Ensure /var/run/docker.sock is mounted with correct permissions, or run on host."
+      die "Docker daemon is unreachable from this container. Ensure /var/run/docker.sock is mounted with correct permissions, or set DOCKER_TLS_CERTDIR='' on the DinD sidecar to enable non-TLS connections on port 2375."
     fi
     die "Docker daemon is not reachable. Start Docker and retry."
   fi
