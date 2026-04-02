@@ -84,7 +84,7 @@ jobs:
 
       - name: Install Python dependencies
         shell: bash
-        run: pip install -r requirements.txt -e ".[dev]"
+        run: pip install -r requirements.txt
 
       - name: Save pip cache (for future runs)
         if: always()
