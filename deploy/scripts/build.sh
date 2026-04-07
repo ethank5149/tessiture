@@ -15,6 +15,7 @@ RELEASE_VERSION_FILE="${REPO_ROOT}/.release-version"
 RELEASE_VERSION=""
 NO_GIT_TAG=0
 CACHE_REF=""
+NO_CACHE=0
 
 usage() {
   cat <<'EOF'
@@ -84,12 +85,21 @@ setup_buildx() {
   # Always recreate the builder so driver options are applied fresh.
   docker buildx rm tessiture-builder 2>/dev/null || true
 
-  local -a create_args=(
-    --name tessiture-builder
-    --driver docker-container
-    --driver-opt network=host
-    --use
-  )
+  # Use docker driver (not docker-container) when we want to load the image locally.
+  # docker-container driver requires --push and doesn't support --load well.
+  # Only use docker-container when pushing to a registry.
+  if [[ "${PUSH}" -eq 1 ]]; then
+    local -a create_args=(
+      --name tessiture-builder
+      --driver docker-container
+      --driver-opt network=host
+      --use
+    )
+  else
+    # Use docker driver for local builds (supports --load)
+    docker buildx create --name tessiture-builder --driver docker --use
+    return 0
+  fi
 
   # With TCP-based DinD, the buildkit container runs inside DinD and has no
   # filesystem access to the job container's ~/.docker/config.json.
@@ -226,6 +236,7 @@ while [[ $# -gt 0 ]]; do
     --env-file)     [[ $# -ge 2 ]] || die "Missing value for --env-file";     ENV_FILE="$(resolve_path "$2")"; shift 2 ;;
     --cache-ref)    [[ $# -ge 2 ]] || die "Missing value for --cache-ref";    CACHE_REF="$2";                shift 2 ;;
     --no-git-tag)   NO_GIT_TAG=1; shift ;;
+    --no-cache)     NO_CACHE=1; shift ;;
     -h|--help)      usage; exit 0 ;;
     *)              die "Unknown argument: $1" ;;
   esac
@@ -299,7 +310,8 @@ USE_BUILDX=0
 setup_buildx && USE_BUILDX=1
 
 if [[ "${USE_BUILDX}" -eq 1 ]]; then
-  BUILD_CMD=(docker buildx build --provenance=false -t "${IMAGE}")
+  BUILD_CMD=(docker buildx build --provenance=false -t "${IMAGE}" --load)
+  [[ "${NO_CACHE}" -eq 1 ]] && BUILD_CMD+=(--no-cache)
   [[ -n "${LATEST_IMAGE}" && "${LATEST_IMAGE}" != "${IMAGE}" ]] && BUILD_CMD+=(-t "${LATEST_IMAGE}")
   if [[ -n "${CACHE_REF}" ]]; then
     BUILD_CMD+=(--cache-from "type=registry,ref=${CACHE_REF}")
@@ -313,6 +325,7 @@ if [[ "${USE_BUILDX}" -eq 1 ]]; then
   "${BUILD_CMD[@]}"
 else
   BUILD_CMD=(docker build -t "${IMAGE}")
+  [[ "${NO_CACHE}" -eq 1 ]] && BUILD_CMD+=(--no-cache)
   [[ -n "${RELEASE_VERSION}" ]] && BUILD_CMD+=(--build-arg "VITE_APP_VERSION=${RELEASE_VERSION}")
   [[ -n "${LATEST_IMAGE}" && "${LATEST_IMAGE}" != "${IMAGE}" ]] && BUILD_CMD+=(-t "${LATEST_IMAGE}")
   BUILD_CMD+=("${REPO_ROOT}")

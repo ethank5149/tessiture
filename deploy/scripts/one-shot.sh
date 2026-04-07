@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 DEFAULT_ENV_FILE="${REPO_ROOT}/deploy/.env"
 DEFAULT_COMPOSE_FILE="${REPO_ROOT}/deploy/docker-compose.yml"
 RELEASE_VERSION_FILE="${REPO_ROOT}/.release-version"
@@ -16,13 +16,15 @@ DETACH=1
 VERIFY_TIMEOUT=120
 VERSION_BUMP="auto"
 BASE_VERSION="0.0.0"
+NO_CACHE=0
+CLEAN=0
 
 usage() {
   cat <<'EOF'
 Usage: deploy/scripts/one-shot.sh [OPTIONS]
 
 Run one-shot maintenance:
-  1) Build image
+  1) Build image (full rebuild of frontend + backend)
   2) Deploy compose stack
   3) Verify container health
 
@@ -30,17 +32,20 @@ Options:
   --image <tag>            Build this image tag/repo seed (defaults to TESSITURE_IMAGE from env)
   --push                   Push image after build (requires registry-qualified tag)
   --version-bump <kind>    Version strategy: auto|patch|minor|major|none (default: auto)
-  --base-version <x.y.z>   Base version if current tag is non-semantic (default: 0.0.0)
+  --base-version <x.y.z>  Base version if current tag is non-semantic (default: 0.0.0)
   --env-file <path>        Env file used by build/deploy (default: deploy/.env)
   --compose-file <path>    Compose file used by deploy (default: deploy/docker-compose.yml)
   --no-detach              Run deploy in attached mode
   --verify-timeout <s>     Seconds to wait for healthy status (default: 120)
+  --no-cache               Force full rebuild with --no-cache (skip BuildKit cache)
+  --clean                  Remove old containers/images before deploy
   -h, --help               Show this help message
 
 Examples:
   deploy/scripts/one-shot.sh
   deploy/scripts/one-shot.sh --version-bump auto
   deploy/scripts/one-shot.sh --image ghcr.io/acme/tessiture:1.4.2 --version-bump major --push
+  deploy/scripts/one-shot.sh --clean --no-cache
 EOF
 }
 
@@ -221,6 +226,14 @@ while [[ $# -gt 0 ]]; do
       VERIFY_TIMEOUT="$2"
       shift 2
       ;;
+    --no-cache)
+      NO_CACHE=1
+      shift
+      ;;
+    --clean)
+      CLEAN=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -258,6 +271,14 @@ fi
 
 docker_preflight
 
+# ── Optional cleanup ─────────────────────────────────────────────────────────
+if [[ "${CLEAN}" -eq 1 ]]; then
+  log "Cleaning up old containers and images..."
+  COMPOSE_CMD=(docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}")
+  "${COMPOSE_CMD[@]}" down --remove-orphans 2>/dev/null || true
+  log "Removed old containers"
+fi
+
 BUILD_ARGS=(
   --image "${IMAGE}"
   --env-file "${ENV_FILE}"
@@ -266,6 +287,9 @@ BUILD_ARGS=(
 )
 if [[ "${PUSH}" -eq 1 ]]; then
   BUILD_ARGS+=(--push)
+fi
+if [[ "${NO_CACHE}" -eq 1 ]]; then
+  BUILD_ARGS+=(--no-cache)
 fi
 
 DEPLOY_ARGS=(--env-file "${ENV_FILE}" --compose-file "${COMPOSE_FILE}")

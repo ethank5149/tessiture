@@ -139,11 +139,8 @@ log "Deploying image: ${TESSITURE_IMAGE}"
 
 COMPOSE_CMD=(docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}")
 
-if [[ "${DETACH}" -eq 1 ]]; then
-  "${COMPOSE_CMD[@]}" up -d
-else
-  "${COMPOSE_CMD[@]}" up
-fi
+# Always recreate to ensure new image is deployed
+"${COMPOSE_CMD[@]}" up -d --force-recreate
 
 log "Current service status:"
 "${COMPOSE_CMD[@]}" ps
