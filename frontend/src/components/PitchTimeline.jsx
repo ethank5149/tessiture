@@ -5,8 +5,9 @@
  * guide lines at note boundaries and hover tooltips showing note name,
  * frequency, and confidence at the cursor position.
  *
- * This replaces the "text-only" analysis for the most important visual:
- * seeing your pitch over time.
+ * Supports click-to-seek: pass an `audioRef` pointing to an <audio> element
+ * and clicking the timeline will seek playback to that time position.
+ * An animated playhead tracks `audioRef.current.currentTime`.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -36,11 +37,16 @@ function confidenceColor(confidence, alpha = 1.0) {
   return `rgba(${r},${g},${b},${alpha})`;
 }
 
-function PitchTimeline({ pitchFrames = [], durationSeconds = 0, tessituraLow, tessituraHigh }) {
+const PAD = { top: 10, right: 16, bottom: 28, left: 48 };
+
+function PitchTimeline({ pitchFrames = [], durationSeconds = 0, tessituraLow, tessituraHigh, audioRef = null }) {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
   const [tooltip, setTooltip] = useState(null);
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 280 });
+  // Playhead position (0–1 normalized, updated by rAF when audio is playing)
+  const playheadPositionRef = useRef(null);
+  const rafRef = useRef(null);
 
   // Extract voiced frames with valid data
   const voicedFrames = useMemo(() => {
@@ -67,6 +73,21 @@ function PitchTimeline({ pitchFrames = [], durationSeconds = 0, tessituraLow, te
     return { midiMin: lo, midiMax: Math.max(hi, lo + 6) };
   }, [voicedFrames]);
 
+  const maxTime = useMemo(
+    () => (durationSeconds > 0 ? durationSeconds : Math.max(...voicedFrames.map((f) => f.time), 1)),
+    [durationSeconds, voicedFrames]
+  );
+
+  // Coordinate helpers (depend on canvasSize + data range)
+  const timeToX = useCallback(
+    (t) => PAD.left + (t / maxTime) * (canvasSize.width - PAD.left - PAD.right),
+    [maxTime, canvasSize.width]
+  );
+  const midiToY = useCallback(
+    (m) => PAD.top + (canvasSize.height - PAD.top - PAD.bottom) - ((m - midiMin) / (midiMax - midiMin)) * (canvasSize.height - PAD.top - PAD.bottom),
+    [midiMin, midiMax, canvasSize.height]
+  );
+
   // Responsive resize
   useEffect(() => {
     const container = containerRef.current;
@@ -81,12 +102,12 @@ function PitchTimeline({ pitchFrames = [], durationSeconds = 0, tessituraLow, te
     return () => observer.disconnect();
   }, []);
 
-  // Draw
+  // Draw pitch data  
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
-    if (!ctx) return; // jsdom or unsupported browser — skip drawing
+    if (!ctx) return;
     const { width, height } = canvasSize;
     const dpr = window.devicePixelRatio || 1;
     canvas.width = width * dpr;
@@ -95,13 +116,11 @@ function PitchTimeline({ pitchFrames = [], durationSeconds = 0, tessituraLow, te
     canvas.style.height = `${height}px`;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    const pad = { top: 10, right: 16, bottom: 28, left: 48 };
-    const plotW = width - pad.left - pad.right;
-    const plotH = height - pad.top - pad.bottom;
+    const plotW = width - PAD.left - PAD.right;
+    const plotH = height - PAD.top - PAD.bottom;
 
-    const maxTime = durationSeconds > 0 ? durationSeconds : Math.max(...voicedFrames.map((f) => f.time), 1);
-    const timeToX = (t) => pad.left + (t / maxTime) * plotW;
-    const midiToY = (m) => pad.top + plotH - ((m - midiMin) / (midiMax - midiMin)) * plotH;
+    const localTimeToX = (t) => PAD.left + (t / maxTime) * plotW;
+    const localMidiToY = (m) => PAD.top + plotH - ((m - midiMin) / (midiMax - midiMin)) * plotH;
 
     // Clear
     ctx.clearRect(0, 0, width, height);
@@ -109,32 +128,31 @@ function PitchTimeline({ pitchFrames = [], durationSeconds = 0, tessituraLow, te
     // Tessitura band background
     if (Number.isFinite(tessituraLow) && Number.isFinite(tessituraHigh)) {
       ctx.fillStyle = "rgba(96, 165, 250, 0.08)";
-      const y1 = midiToY(tessituraHigh);
-      const y2 = midiToY(tessituraLow);
-      ctx.fillRect(pad.left, y1, plotW, y2 - y1);
+      const y1 = localMidiToY(tessituraHigh);
+      const y2 = localMidiToY(tessituraLow);
+      ctx.fillRect(PAD.left, y1, plotW, y2 - y1);
     }
 
-    // Note guide lines (one per semitone for natural notes, dashed for others)
+    // Note guide lines (one per semitone)
     ctx.textAlign = "right";
     ctx.textBaseline = "middle";
     ctx.font = "10px system-ui, sans-serif";
     for (let midi = Math.ceil(midiMin); midi <= Math.floor(midiMax); midi++) {
       const pc = ((midi % 12) + 12) % 12;
       const isNatural = [0, 2, 4, 5, 7, 9, 11].includes(pc);
-      if (!isNatural && (midiMax - midiMin) > 18) continue; // skip accidentals for wide ranges
-      const y = midiToY(midi);
+      if (!isNatural && (midiMax - midiMin) > 18) continue;
+      const y = localMidiToY(midi);
       ctx.strokeStyle = isNatural ? "rgba(167, 179, 209, 0.18)" : "rgba(167, 179, 209, 0.07)";
       ctx.lineWidth = isNatural ? 0.8 : 0.4;
       ctx.setLineDash(isNatural ? [] : [3, 4]);
       ctx.beginPath();
-      ctx.moveTo(pad.left, y);
-      ctx.lineTo(pad.left + plotW, y);
+      ctx.moveTo(PAD.left, y);
+      ctx.lineTo(PAD.left + plotW, y);
       ctx.stroke();
       ctx.setLineDash([]);
-      // Label
       if (isNatural || (midiMax - midiMin) <= 12) {
         ctx.fillStyle = "rgba(167, 179, 209, 0.55)";
-        ctx.fillText(midiToNoteName(midi), pad.left - 5, y);
+        ctx.fillText(midiToNoteName(midi), PAD.left - 5, y);
       }
     }
 
@@ -146,30 +164,29 @@ function PitchTimeline({ pitchFrames = [], durationSeconds = 0, tessituraLow, te
     const tickStep = maxTime / nTicks;
     for (let i = 0; i <= nTicks; i++) {
       const t = i * tickStep;
-      const x = timeToX(t);
-      ctx.fillText(`${t.toFixed(1)}s`, x, pad.top + plotH + 6);
+      const x = localTimeToX(t);
+      ctx.fillText(`${t.toFixed(1)}s`, x, PAD.top + plotH + 6);
       ctx.strokeStyle = "rgba(167, 179, 209, 0.08)";
       ctx.lineWidth = 0.5;
       ctx.beginPath();
-      ctx.moveTo(x, pad.top);
-      ctx.lineTo(x, pad.top + plotH);
+      ctx.moveTo(x, PAD.top);
+      ctx.lineTo(x, PAD.top + plotH);
       ctx.stroke();
     }
 
-    // Plot pitch points (draw as connected line segments colored by confidence)
+    // Plot pitch points
     if (voicedFrames.length > 1) {
       const sorted = [...voicedFrames].sort((a, b) => a.time - b.time);
       for (let i = 1; i < sorted.length; i++) {
         const prev = sorted[i - 1];
         const curr = sorted[i];
-        // Skip gaps > 0.3s (phrase breaks)
-        if (curr.time - prev.time > 0.3) continue;
+        if (curr.time - prev.time > 0.3) continue; // phrase break
         const avgConf = (prev.confidence + curr.confidence) / 2;
         ctx.strokeStyle = confidenceColor(avgConf, 0.85);
         ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.moveTo(timeToX(prev.time), midiToY(prev.midi));
-        ctx.lineTo(timeToX(curr.time), midiToY(curr.midi));
+        ctx.moveTo(localTimeToX(prev.time), localMidiToY(prev.midi));
+        ctx.lineTo(localTimeToX(curr.time), localMidiToY(curr.midi));
         ctx.stroke();
       }
     }
@@ -179,25 +196,113 @@ function PitchTimeline({ pitchFrames = [], durationSeconds = 0, tessituraLow, te
       for (const f of voicedFrames) {
         ctx.fillStyle = confidenceColor(f.confidence, 0.9);
         ctx.beginPath();
-        ctx.arc(timeToX(f.time), midiToY(f.midi), 2.5, 0, Math.PI * 2);
+        ctx.arc(localTimeToX(f.time), localMidiToY(f.midi), 2.5, 0, Math.PI * 2);
         ctx.fill();
       }
     }
-  }, [voicedFrames, canvasSize, durationSeconds, midiMin, midiMax, tessituraLow, tessituraHigh]);
 
-  // Shared tooltip hit-test logic for both mouse and touch
-  const updateTooltipAtPosition = useCallback(
-    (clientX, clientY) => {
+    // Playhead (drawn on top; will be overdrawn by the rAF loop)
+    const pos = playheadPositionRef.current;
+    if (pos !== null && Number.isFinite(pos)) {
+      const px = localTimeToX(pos * maxTime);
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.75)";
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(px, PAD.top);
+      ctx.lineTo(px, PAD.top + plotH);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }, [voicedFrames, canvasSize, maxTime, midiMin, midiMax, tessituraLow, tessituraHigh]);
+
+  // Playhead animation loop — runs continuously while audio element exists
+  useEffect(() => {
+    if (!audioRef) return;
+
+    const drawPlayhead = () => {
+      const audio = audioRef.current;
+      const canvas = canvasRef.current;
+      if (!audio || !canvas) {
+        rafRef.current = requestAnimationFrame(drawPlayhead);
+        return;
+      }
+
+      const { width, height } = canvasSize;
+      const plotW = width - PAD.left - PAD.right;
+      const plotH = height - PAD.top - PAD.bottom;
+      const dpr = window.devicePixelRatio || 1;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        rafRef.current = requestAnimationFrame(drawPlayhead);
+        return;
+      }
+
+      // Only draw playhead overlay — don't clear the whole canvas
+      // We track the previous playhead X and clear just that stripe
+      const t = audio.currentTime ?? 0;
+      playheadPositionRef.current = maxTime > 0 ? t / maxTime : 0;
+      const px = PAD.left + (t / maxTime) * plotW;
+
+      // Clear previous playhead stripe (±3px wide)
+      ctx.save();
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      // To avoid full redraw on every frame, we simply draw the line
+      // (this is fine for a thin 1.5px line over a static frame)
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.75)";
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(px, PAD.top);
+      ctx.lineTo(px, PAD.top + plotH);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+
+      rafRef.current = requestAnimationFrame(drawPlayhead);
+    };
+
+    rafRef.current = requestAnimationFrame(drawPlayhead);
+    return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    };
+  }, [audioRef, canvasSize, maxTime]);
+
+  // Click-to-seek
+  const handleCanvasClick = useCallback(
+    (clientX) => {
+      if (!audioRef?.current) return;
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const mx = clientX - rect.left;
+      const plotW = canvasSize.width - PAD.left - PAD.right;
+      const t = ((mx - PAD.left) / plotW) * maxTime;
+      if (t >= 0 && t <= maxTime) {
+        audioRef.current.currentTime = t;
+        if (audioRef.current.paused) {
+          audioRef.current.play().catch(() => {});
+        }
+      }
+    },
+    [audioRef, canvasSize.width, maxTime]
+  );
+
+  // Shared tooltip + click logic
+  const handlePointerEvent = useCallback(
+    (clientX, clientY, isClick = false) => {
+      if (isClick) {
+        handleCanvasClick(clientX);
+        return;
+      }
       const canvas = canvasRef.current;
       if (!canvas || voicedFrames.length === 0) return;
       const rect = canvas.getBoundingClientRect();
       const mx = clientX - rect.left;
       const my = clientY - rect.top;
-      const { width } = canvasSize;
-      const pad = { top: 10, right: 16, bottom: 28, left: 48 };
-      const plotW = width - pad.left - pad.right;
-      const maxTime = durationSeconds > 0 ? durationSeconds : Math.max(...voicedFrames.map((f) => f.time), 1);
-      const hoverTime = ((mx - pad.left) / plotW) * maxTime;
+      const plotW = canvasSize.width - PAD.left - PAD.right;
+      const hoverTime = ((mx - PAD.left) / plotW) * maxTime;
 
       let nearest = null;
       let nearestDist = Infinity;
@@ -221,22 +326,27 @@ function PitchTimeline({ pitchFrames = [], durationSeconds = 0, tessituraLow, te
         setTooltip(null);
       }
     },
-    [voicedFrames, canvasSize, durationSeconds]
+    [voicedFrames, canvasSize.width, maxTime, handleCanvasClick]
   );
 
   const handleMouseMove = useCallback(
-    (e) => updateTooltipAtPosition(e.clientX, e.clientY),
-    [updateTooltipAtPosition]
+    (e) => handlePointerEvent(e.clientX, e.clientY),
+    [handlePointerEvent]
+  );
+
+  const handleClick = useCallback(
+    (e) => handlePointerEvent(e.clientX, e.clientY, true),
+    [handlePointerEvent]
   );
 
   const handleTouchMove = useCallback(
     (e) => {
       if (e.touches.length > 0) {
         e.preventDefault();
-        updateTooltipAtPosition(e.touches[0].clientX, e.touches[0].clientY);
+        handlePointerEvent(e.touches[0].clientX, e.touches[0].clientY);
       }
     },
-    [updateTooltipAtPosition]
+    [handlePointerEvent]
   );
 
   const handleMouseLeave = useCallback(() => setTooltip(null), []);
@@ -246,20 +356,29 @@ function PitchTimeline({ pitchFrames = [], durationSeconds = 0, tessituraLow, te
     return null;
   }
 
+  const hasAudio = Boolean(audioRef);
+
   return (
     <section className="results__section results__section--pitch-timeline" aria-label="Pitch timeline">
       <h3 className="results__section-title">Pitch timeline</h3>
       <p className="results__section-copy">
         Your detected pitch over time. Brighter colors mean higher confidence.
         {Number.isFinite(tessituraLow) && " The shaded band shows your comfortable singing range (tessitura)."}
+        {hasAudio ? " Click to seek playback." : ""}
         {" "}Hover or tap for details.
       </p>
       <div ref={containerRef} style={{ position: "relative", width: "100%" }}>
         <canvas
           ref={canvasRef}
-          style={{ display: "block", width: "100%", cursor: "crosshair", touchAction: "none" }}
+          style={{
+            display: "block",
+            width: "100%",
+            cursor: hasAudio ? "pointer" : "crosshair",
+            touchAction: "none",
+          }}
           onMouseMove={handleMouseMove}
           onMouseLeave={handleMouseLeave}
+          onClick={handleClick}
           onTouchStart={handleTouchMove}
           onTouchMove={handleTouchMove}
           onTouchEnd={handleTouchEnd}
@@ -279,6 +398,7 @@ function PitchTimeline({ pitchFrames = [], durationSeconds = 0, tessituraLow, te
             <strong>{tooltip.note}</strong> — {tooltip.hz} Hz
             <br />
             Confidence: {tooltip.confidence}% · {tooltip.time}s
+            {hasAudio && <><br /><span style={{ opacity: 0.7, fontSize: "0.75em" }}>click to play from here</span></>}
           </div>
         )}
       </div>

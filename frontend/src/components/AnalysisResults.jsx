@@ -205,23 +205,40 @@ function AnalysisResults({
 
           <SummaryMetrics results={results} />
 
+          {/* Audio player for click-to-seek on the pitch timeline */}
+          {audioSourceUrl && (
+            <div className="results__audio-player">
+              <audio
+                ref={audioRef}
+                src={audioSourceUrl}
+                controls
+                preload="metadata"
+                aria-label={audioSourceLabel ? `Audio: ${audioSourceLabel}` : "Recording audio player"}
+                style={{ width: "100%", accentColor: "var(--brand-strong)" }}
+              />
+            </div>
+          )}
+
           {hasPitchFrames && (
             <PitchTimeline
               pitchFrames={pitchFrames}
               durationSeconds={duration ?? 0}
               tessituraLow={tessituraLow}
               tessituraHigh={tessituraHigh}
+              audioRef={audioSourceUrl ? audioRef : null}
             />
           )}
 
-          {/* ── LAYER 2: Coaching (expandable, open by default) ─────── */}
+          {/* ── LAYER 2: Coaching (always visible) ──────────────────── */}
           {/* Actionable guidance — what to practice, sing, and warm up.  */}
 
-          <details className="results__disclosure" open>
-            <summary>What to do next</summary>
-            <div className="results__disclosure__body">
-              <SongSuggestions results={results} />
+          <SongSuggestions results={results} />
 
+          <WarmUpRoutine results={results} />
+
+          <details className="results__disclosure">
+            <summary>Practice guidance & evidence</summary>
+            <div className="results__disclosure__body">
               <EvidenceReferences
                 results={results}
                 evidence={evidence}
@@ -232,8 +249,6 @@ function AnalysisResults({
                 audioSourceLabel={audioSourceLabel}
               />
               <PracticeGuidance results={results} evidence={evidence} />
-
-              <WarmUpRoutine results={results} />
             </div>
           </details>
 

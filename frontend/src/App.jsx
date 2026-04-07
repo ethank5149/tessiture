@@ -8,6 +8,7 @@ import LiveComparisonView from "./components/LiveComparisonView";
 import ComparisonResults from "./components/ComparisonResults";
 import StepIndicator from "./components/StepIndicator";
 import WelcomePanel from "./components/WelcomePanel";
+import RealtimePitchTuner from "./components/RealtimePitchTuner";
 import {
   downloadJobResults,
   fetchExampleTracks,
@@ -86,9 +87,10 @@ const normalizeReleaseVersion = (value) => {
 
 // Source card definitions
 const SOURCE_CARDS = [
-  { id: "upload",  emoji: "📁", label: "Upload a File",    desc: "Analyze your own recording" },
-  { id: "example", emoji: "🎵", label: "Example Library",  desc: "Pick a demo track — no upload needed, great for first-time users" },
-  { id: "live",    emoji: "🎤", label: "Record Live",       desc: "Mic comparison session" },
+  { id: "tuner",   emoji: "🎹", label: "Pitch Tuner",       desc: "See your note in real time — open this every practice session" },
+  { id: "upload",  emoji: "📁", label: "Upload a File",     desc: "Analyze your own recording" },
+  { id: "example", emoji: "🎵", label: "Example Library",   desc: "Pick a demo track — no upload needed" },
+  { id: "live",    emoji: "🎤", label: "Record Live",        desc: "Mic comparison — sing along to a reference track" },
 ];
 
 function App() {
@@ -469,7 +471,7 @@ function App() {
 
       <WelcomePanel onDismiss={() => {}} />
 
-      <StepIndicator currentStep={audioSource ? (analysisMode ? 3 : 2) : 1} />
+      <StepIndicator currentStep={audioSource && audioSource !== "tuner" ? (analysisMode ? 3 : 2) : 1} />
 
       {/* ── Step 1: Audio Source Selector ──────────────────────────────────── */}
       <section className="source-selector" aria-label="Step 1: Choose audio source">
@@ -492,6 +494,16 @@ function App() {
 
       <div id="main-content" className="app-shell__content" tabIndex={-1}>
         {/* ── Step 2: Context-Sensitive Panel ──────────────────────────────── */}
+
+        {/* Tuner source: standalone real-time pitch monitor, no backend needed */}
+        {audioSource === "tuner" ? (
+          <section
+            className={`step-panel step-panel--visible`}
+            aria-label="Real-time pitch tuner"
+          >
+            <RealtimePitchTuner />
+          </section>
+        ) : null}
 
         {/* Upload source: show uploader; after file accepted show intent panel */}
         {audioSource === "upload" ? (
