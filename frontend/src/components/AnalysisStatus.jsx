@@ -8,6 +8,23 @@ const STATE_MESSAGES = {
 };
 
 const STAGE_MESSAGES = {
+  // Backend stage names (analysis_core.py)
+  starting: "Initializing analysis pipeline…",
+  decoding: "Decoding audio file…",
+  vocal_separation: "Separating vocals from mix…",
+  stft: "Computing spectrogram…",
+  harmonics: "Detecting harmonics…",
+  pitch_extraction: "Extracting pitch data…",
+  pitch_frames: "Estimating pitch frames…",
+  pitch_optimization: "Optimizing pitch path…",
+  note_events: "Building note and chord data…",
+  key_detection: "Detecting musical key…",
+  tessitura: "Analyzing vocal range…",
+  vibrato: "Analyzing vibrato…",
+  formants: "Analyzing formants…",
+  phrases: "Segmenting phrases…",
+  export: "Generating export files…",
+  // Legacy / alias names
   queued: "Waiting for an available slot…",
   preprocessing: "Preparing your audio…",
   pitch_estimation: "Detecting pitch…",

@@ -101,7 +101,9 @@ def _resolve_progress_update(
         "example_id": metadata.get("example_id") if isinstance(metadata, Mapping) else None,
     }
 
-    def _safe_progress_update(progress: int, stage: Optional[str] = None, message: Optional[str] = None) -> None:
+    def _safe_progress_update(
+        progress: int, stage: Optional[str] = None, message: Optional[str] = None
+    ) -> None:
         logger.info(
             "analysis_progress_emit progress=%s stage=%s message=%s context=%s",
             progress,
@@ -117,15 +119,18 @@ def _resolve_progress_update(
     return _safe_progress_update
 
 
-def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+def _run_analysis_pipeline(
+    file_path: str, metadata: Optional[Mapping[str, Any]] = None
+) -> Dict[str, Any]:
     _ensure_output_dir()
     warnings: List[str] = []
     report_progress = _resolve_progress_update(metadata)
-    
+    report_progress(5, "starting", "Initializing analysis pipeline.")
+
     # Get job logger if job_id is in metadata
     job_id = metadata.get("job_id") if metadata else None
     job_logger = logging_config.get_job_logger(job_id) if job_id else None
-    
+
     if job_logger:
         job_logger.info(
             "Analysis pipeline starting: file_path=%s, filename=%s, source=%s",
@@ -133,7 +138,7 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
             metadata.get("filename") if isinstance(metadata, Mapping) else None,
             metadata.get("source") if isinstance(metadata, Mapping) else None,
         )
-    
+
     logger.info(
         "analysis_pipeline_start file_path=%s filename=%s source=%s example_id=%s",
         file_path,
@@ -161,6 +166,7 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
     # Resolve effective audio type
     if _audio_type_requested == "auto" and _vocal_separation_available():
         from analysis.dsp.vocal_separation import detect_audio_type as _detect_audio_type
+
         _detected_audio_type = _detect_audio_type(audio, sample_rate)
     elif _audio_type_requested == "auto":
         _detected_audio_type = "isolated"  # can't detect without library
@@ -185,6 +191,7 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
     if _do_separate:
         try:
             from analysis.dsp.vocal_separation import separate_vocals as _separate_vocals
+
             report_progress(20, "vocal_separation", "Separating vocals.")
             if job_logger:
                 job_logger.debug("Stage: vocal separation")
@@ -202,7 +209,9 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
             separation_info["applied"] = True
             logger.info(
                 "vocal_separation_applied model=%s separation_time_s=%.2f cache_hit=%s",
-                sep_result.model_name, sep_result.separation_time_s, sep_result.cache_hit,
+                sep_result.model_name,
+                sep_result.separation_time_s,
+                sep_result.cache_hit,
             )
         except Exception as exc:
             warnings.append(f"Vocal separation unavailable: {exc}")
@@ -227,6 +236,7 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
         n_fft=STFT_NFFT,
         hop_length=STFT_HOP,
     )
+    report_progress(40, "stft", "Computing spectrogram.")
     harmonic_frames = detect_harmonics(
         stft_result.spectrum,
         stft_result.frequencies,
@@ -235,6 +245,7 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
         min_db=-40.0,
         max_candidates=6,
     )
+    report_progress(46, "harmonics", "Detecting harmonics.")
     pitch_candidates = estimate_pitch_frames(
         stft_result.spectrum,
         stft_result.frequencies,
@@ -243,9 +254,11 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
         sample_rate=sample_rate,
         hop_length=STFT_HOP,
     )
+    report_progress(54, "pitch_frames", "Estimating pitch frames.")
     pitch_frame_diagnostics = _extract_pitch_frame_diagnostics(pitch_candidates)
     pitch_method_diagnostics = _summarize_pitch_method_diagnostics(pitch_frame_diagnostics)
     optimized = optimize_lead_voice(pitch_candidates)
+    report_progress(60, "pitch_optimization", "Optimizing pitch path.")
 
     if optimized.f0_hz.size:
         sigma_f = np.interp(
@@ -262,9 +275,7 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
     pitch_builder_name = "_build_pitch_payload"
     pitch_builder_obj = globals().get(pitch_builder_name)
     available_builders = sorted(
-        name
-        for name, obj in globals().items()
-        if name.startswith("_build_") and callable(obj)
+        name for name, obj in globals().items() if name.startswith("_build_") and callable(obj)
     )
     logger.info(
         "analysis_metric_inference_builder_check present=%s callable=%s builder_count=%s builder_sample=%s",
@@ -284,6 +295,7 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
     )
     note_events = _build_note_events(pitch_frames)
     chord_timeline = _build_chord_timeline(note_events)
+    report_progress(63, "note_events", "Building note and chord data.")
 
     # Spectrogram data is served via the dedicated GET /spectrogram/{job_id} endpoint;
     # the legacy stft_raw is kept as an empty dict for backward compatibility with any
@@ -297,7 +309,9 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
     ]
     voiced_f0 = [float(frame["f0_hz"]) for frame in voiced_pitch_frames]
     pitch_errors = [
-        float(frame["cents"]) for frame in pitch_frames if _safe_float(frame.get("cents")) is not None
+        float(frame["cents"])
+        for frame in pitch_frames
+        if _safe_float(frame.get("cents")) is not None
     ]
     frame_confidences = [
         float(frame["confidence"])
@@ -454,7 +468,7 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
         "hop_length": STFT_HOP,
         "frame_rate": float(sample_rate) / float(max(STFT_HOP, 1)),
         "duration_seconds": duration_seconds,
-        "spectrogram": stft_raw
+        "spectrogram": stft_raw,
     }
     if separation_info:
         metadata_payload["vocal_separation"] = separation_info
@@ -474,7 +488,7 @@ def _run_analysis_pipeline(file_path: str, metadata: Optional[Mapping[str, Any]]
             "f0_min": float(np.min(voiced_f0)) if voiced_f0 else None,
             "f0_max": float(np.max(voiced_f0)) if voiced_f0 else None,
         },
-        "spectrum": stft_raw
+        "spectrum": stft_raw,
     }
     analysis_payload["pitch_frames"] = pitch_frames
     analysis_payload["note_events"] = note_events
@@ -556,25 +570,25 @@ def _build_spectrogram_payload(
     audio_type: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build spectrogram payload with base64-encoded mix and optional vocal stem data.
-   
+
     Args:
         file_path: Path to the audio file
         vocal_cache_key: Optional cache key for vocal-separated stem
         audio_type: Optional audio type hint (isolated/mixed/auto)
-        
+
     Returns:
         Dictionary with mix.frames_b64, n_time, n_freq and vocals.available
     """
     import base64
     from pathlib import Path
-    
+
     # Load audio
     audio, sample_rate = _decode_audio_file(file_path)
-    
+
     # Ensure mono
     if audio.ndim > 1:
         audio = np.mean(audio, axis=0)
-    
+
     # Compute STFT for mix
     stft_result = compute_stft(
         audio,
@@ -582,17 +596,17 @@ def _build_spectrogram_payload(
         n_fft=STFT_NFFT,
         hop_length=STFT_HOP,
     )
-    
+
     # Convert spectrum to dB and clip for visualization
     S_db = 20 * np.log10(np.maximum(stft_result.spectrum, 1e-10))
     S_db_clipped = np.clip(S_db, -80, 0)
-    
+
     # Normalize for uint8 encoding
     S_normalized = ((S_db_clipped + 80) / 80 * 255).astype(np.uint8)
-    
+
     # Encode as base64
-    mix_b64 = base64.b64encode(S_normalized.tobytes()).decode('ascii')   
-    
+    mix_b64 = base64.b64encode(S_normalized.tobytes()).decode("ascii")
+
     payload = {
         "audio_type": audio_type,
         "mix": {
@@ -607,13 +621,14 @@ def _build_spectrogram_payload(
         },
         "vocals": {
             "available": False,
-        }
+        },
     }
-    
+
     # Try to load cached vocal stem if available
     if vocal_cache_key and _vocal_separation_available() and _STEM_CACHE_DIR:
         try:
             from analysis.dsp.vocal_separation import load_cached_vocals
+
             cached = load_cached_vocals(vocal_cache_key, _STEM_CACHE_DIR)
             if cached is not None:
                 vocals_audio, vocals_sr = cached
@@ -628,7 +643,7 @@ def _build_spectrogram_payload(
                 S_v_db = 20 * np.log10(np.maximum(vocals_stft.spectrum, 1e-10))
                 S_v_db_clipped = np.clip(S_v_db, -80, 0)
                 S_v_normalized = ((S_v_db_clipped + 80) / 80 * 255).astype(np.uint8)
-                vocals_b64 = base64.b64encode(S_v_normalized.tobytes()).decode('ascii')
+                vocals_b64 = base64.b64encode(S_v_normalized.tobytes()).decode("ascii")
                 payload["vocals"] = {
                     "available": True,
                     "frames_b64": vocals_b64,
@@ -636,6 +651,8 @@ def _build_spectrogram_payload(
                     "n_freq": int(S_v_normalized.shape[0]),
                 }
         except Exception as exc:
-            logger.debug("spectrogram_vocals_load_failed vocal_cache_key=%s error=%s", vocal_cache_key, exc)
-    
+            logger.debug(
+                "spectrogram_vocals_load_failed vocal_cache_key=%s error=%s", vocal_cache_key, exc
+            )
+
     return payload

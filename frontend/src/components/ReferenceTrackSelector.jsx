@@ -134,6 +134,30 @@ const ReferenceTrackSelector = ({ exampleTracks = [], onReferenceReady, isLoadin
     return resolvedThumbnails[firstTrack?.id]?.url || null;
   };
 
+  const resolveTrackThumbUrl = (track) => {
+    if (!track) return null;
+    const direct = track?.thumbnail || track?.thumbnail_url || track?.artwork_url;
+    if (typeof direct === "string" && direct.trim()) return direct;
+    const trackId = track?.id ?? track?.example_id ?? track?.filename;
+    return resolvedThumbnails[trackId]?.url || null;
+  };
+
+  const renderTrackThumb = (thumbUrl, fallbackLetter) => (
+    <div className="examples__track-thumb examples__track-thumb--sm" aria-hidden="true">
+      {thumbUrl
+        ? <img className="examples__thumb-image" src={thumbUrl} alt="" loading="lazy" />
+        : <span className="examples__thumb-fallback">{fallbackLetter}</span>}
+    </div>
+  );
+
+  const renderGroupThumb = (thumbUrl, fallbackLetter) => (
+    <div className="examples__track-thumb examples__track-thumb--md" aria-hidden="true">
+      {thumbUrl
+        ? <img className="examples__thumb-image" src={thumbUrl} alt="" loading="lazy" />
+        : <span className="examples__thumb-fallback">{fallbackLetter}</span>}
+    </div>
+  );
+
   const renderLibraryPanel = () => {
     if (exampleTracks.length === 0) {
       return <p className="reference-selector__empty">No example tracks available.</p>;
@@ -142,21 +166,28 @@ const ReferenceTrackSelector = ({ exampleTracks = [], onReferenceReady, isLoadin
     if (groups === null) {
       // Flat list fallback
       return (
-        <ul className="reference-selector__track-list" aria-label="Example tracks">
+        <ul className="examples__track-list" aria-label="Example tracks">
           {exampleTracks.map((track) => {
             const trackId = track?.id ?? track?.example_id ?? track?.filename;
             const isSelected = selectedExampleId === trackId;
+            const thumbUrl = resolveTrackThumbUrl(track);
+            const title = getTrackTitle(track);
+            const artist = getTrackArtist(track);
             return (
-              <li key={trackId} className="reference-selector__track-item">
+              <li key={trackId}>
                 <button
                   type="button"
-                  className={`reference-selector__track-btn${isSelected ? " reference-selector__track-btn--selected" : ""}`}
+                  className={`examples__track-row${isSelected ? " examples__track-row--selected" : ""}`}
                   onClick={() => handleExampleSelect({ ...track, id: trackId })}
                   disabled={busy}
                   aria-pressed={isSelected}
                 >
-                  <span className="reference-selector__track-title">{getTrackTitle(track)}</span>
-                  <span className="reference-selector__track-artist">{getTrackArtist(track)}</span>
+                  {renderTrackThumb(thumbUrl, title.charAt(0).toUpperCase())}
+                  <div className="examples__track-info">
+                    <p className="examples__track-title">{title}</p>
+                    <p className="examples__track-artist">{artist}</p>
+                  </div>
+                  {isSelected && <span className="examples__track-check" aria-hidden="true">✓</span>}
                 </button>
               </li>
             );
@@ -165,75 +196,74 @@ const ReferenceTrackSelector = ({ exampleTracks = [], onReferenceReady, isLoadin
       );
     }
 
-    // Grouped layout
+    // Grouped layout — matches ExampleGallery design
     return (
-      <div className="reference-selector__groups">
+      <div className="examples__groups">
         {groups.map((group) => {
           const isOpen = openGroups.has(group.key);
           const firstTrack = group.tracks[0];
           const groupThumbUrl = resolveGroupThumbUrl(firstTrack);
           const fallbackLetter = group.label.charAt(0).toUpperCase();
           const extractedColor = groupColors[group.key];
-          const groupStyle = extractedColor
-            ? { background: `rgba(${extractedColor.r}, ${extractedColor.g}, ${extractedColor.b}, 0.15)` }
+          const accentStyle = extractedColor
+            ? { "--group-accent": `rgba(${extractedColor.r}, ${extractedColor.g}, ${extractedColor.b}, 0.25)` }
             : undefined;
 
           return (
             <div
               key={group.key}
-              className={`reference-selector__group${isOpen ? " reference-selector__group--open" : ""}`}
-              style={groupStyle}
+              className={`examples__group${isOpen ? " examples__group--open" : ""}`}
+              style={accentStyle}
             >
               <button
                 type="button"
-                className={`reference-selector__group-header${!groupThumbUrl ? " reference-selector__group-header--no-thumb" : ""}`}
+                className="examples__group-header"
                 onClick={() => toggleGroup(group.key)}
                 aria-expanded={isOpen}
                 aria-controls={`ref-group-tracks-${group.key}`}
                 disabled={busy}
               >
-                <div className="reference-selector__group-thumb" aria-hidden="true">
-                  {groupThumbUrl ? (
-                    <img className="examples__thumb-image" src={groupThumbUrl} alt="" loading="lazy" />
-                  ) : (
-                    <span className="examples__thumb-fallback">{fallbackLetter}</span>
-                  )}
+                {renderGroupThumb(groupThumbUrl, fallbackLetter)}
+                <div className="examples__group-info">
+                  <span className="examples__group-label">
+                    {group.artist ?? group.label}
+                  </span>
+                  <span className="examples__group-sublabel">
+                    {group.artist ? group.label : null}
+                    {group.artist && group.label ? " · " : ""}
+                    {group.tracks.length} {group.tracks.length === 1 ? "track" : "tracks"}
+                  </span>
                 </div>
-                <div className="reference-selector__group-header-overlay">
-                  <div className="reference-selector__group-info">
-                    <span className="reference-selector__group-label">
-                      {group.artist ?? group.label}
-                    </span>
-                    <span className="reference-selector__group-artist">
-                      {group.artist ? group.label : null}
-                      <span className="reference-selector__group-count">
-                        {group.artist && group.label ? " · " : ""}{group.tracks.length} {group.tracks.length === 1 ? "track" : "tracks"}
-                      </span>
-                    </span>
-                  </div>
-                  <span className="reference-selector__group-chevron" aria-hidden="true">▶</span>
-                </div>
+                <span className="examples__group-chevron" aria-hidden="true" />
               </button>
 
               <ul
                 id={`ref-group-tracks-${group.key}`}
-                className="reference-selector__group-tracks"
+                className="examples__track-list examples__group-tracks"
                 aria-label={`Tracks in ${group.label}`}
                 hidden={!isOpen}
               >
                 {group.tracks.map((track) => {
                   const trackId = track?.id ?? track?.example_id ?? track?.filename;
                   const isSelected = selectedExampleId === trackId;
+                  const thumbUrl = resolveTrackThumbUrl(track);
+                  const title = getTrackTitle(track);
+                  const artist = getTrackArtist(track);
                   return (
-                    <li key={trackId} className="reference-selector__track-item">
+                    <li key={trackId}>
                       <button
                         type="button"
-                        className={`reference-selector__track-btn${isSelected ? " reference-selector__track-btn--selected" : ""}`}
+                        className={`examples__track-row${isSelected ? " examples__track-row--selected" : ""}`}
                         onClick={() => handleExampleSelect({ ...track, id: trackId })}
                         disabled={busy}
                         aria-pressed={isSelected}
                       >
-                        <span className="reference-selector__track-title">{getTrackTitle(track)}</span>
+                        {renderTrackThumb(thumbUrl, title.charAt(0).toUpperCase())}
+                        <div className="examples__track-info">
+                          <p className="examples__track-title">{title}</p>
+                          <p className="examples__track-artist">{artist}</p>
+                        </div>
+                        {isSelected && <span className="examples__track-check" aria-hidden="true">✓</span>}
                       </button>
                     </li>
                   );

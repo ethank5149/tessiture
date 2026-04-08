@@ -39,20 +39,19 @@ function groupExamples(examples) {
   return Array.from(map.values());
 }
 
-function GroupThumbnail({ thumbnailUrl, fallbackLetter }) {
-  const fallback = (
-    <div className="examples__group-header-thumb" aria-hidden="true">
-      <span className="examples__thumb-fallback">{fallbackLetter}</span>
-    </div>
-  );
-  if (thumbnailUrl) {
+function TrackThumb({ url, fallbackLetter, size = "sm" }) {
+  if (url) {
     return (
-      <div className="examples__group-header-thumb" aria-hidden="true">
-        <img className="examples__thumb-image" src={thumbnailUrl} alt="" loading="lazy" />
+      <div className={`examples__track-thumb examples__track-thumb--${size}`} aria-hidden="true">
+        <img className="examples__thumb-image" src={url} alt="" loading="lazy" />
       </div>
     );
   }
-  return fallback;
+  return (
+    <div className={`examples__track-thumb examples__track-thumb--${size}`} aria-hidden="true">
+      <span className="examples__thumb-fallback">{fallbackLetter}</span>
+    </div>
+  );
 }
 
 function ExampleGallery({
@@ -67,11 +66,18 @@ function ExampleGallery({
   const [openGroups, setOpenGroups] = useState(new Set());
   const [groupColors, setGroupColors] = useState({});
   const colorExtractionRef = useRef({});
+  const autoOpenedRef = useRef(false);
 
   const resolvedThumbnails = useExampleThumbnails(examples);
-  const isDebug = import.meta.env.DEV;
 
   const groups = useMemo(() => groupExamples(examples), [examples]);
+
+  // Auto-open the first group when groups first load
+  useEffect(() => {
+    if (autoOpenedRef.current || !groups || groups.length === 0) return;
+    autoOpenedRef.current = true;
+    setOpenGroups(new Set([groups[0].key]));
+  }, [groups]);
 
   const toggleGroup = (key) => {
     setOpenGroups((prev) => {
@@ -103,42 +109,14 @@ function ExampleGallery({
     return direct || resolvedThumbnails[example?.id]?.url || null;
   };
 
-  useEffect(() => {
-    if (!isDebug || groups === null) return;
-
-    const snapshot = groups.slice(0, 4).map((group) => {
-      const listId = `examples-group-tracks-${group.key}`;
-      const listNode = typeof document !== "undefined" ? document.getElementById(listId) : null;
-      const headerNode = listNode?.previousElementSibling;
-      const thumbNode = headerNode?.querySelector?.(".examples__group-header-thumb");
-      const thumbRect = thumbNode?.getBoundingClientRect?.();
-      const listDisplay =
-        listNode && typeof window !== "undefined" ? window.getComputedStyle(listNode).display : null;
-
-      return {
-        key: group.key,
-        isOpenState: openGroups.has(group.key),
-        hiddenAttr: listNode?.hasAttribute("hidden") ?? null,
-        listDisplay,
-        thumbSize: thumbRect
-          ? { width: Math.round(thumbRect.width), height: Math.round(thumbRect.height) }
-          : null,
-      };
-    });
-
-    console.debug("[ExampleGallery] grouped card diagnostics", snapshot);
-  }, [groups, openGroups, isDebug]);
-
-  // Extract dominant colors from group thumbnails when groups or resolved thumbnails change
+  // Extract dominant colors for group headers
   useEffect(() => {
     if (!groups) return;
     for (const group of groups) {
       const firstTrack = group.tracks[0];
       if (!firstTrack) continue;
-      const direct = getThumbnailUrl(firstTrack);
-      const thumbUrl = direct || resolvedThumbnails[firstTrack?.id]?.url || null;
+      const thumbUrl = resolveThumbUrl(firstTrack);
       if (!thumbUrl) continue;
-      // Skip if already extracted for this key+url combo
       const cacheKey = `${group.key}::${thumbUrl}`;
       if (colorExtractionRef.current[cacheKey]) continue;
       colorExtractionRef.current[cacheKey] = true;
@@ -148,13 +126,14 @@ function ExampleGallery({
         }
       });
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groups, resolvedThumbnails]);
 
   return (
     <section className="card examples" aria-labelledby="example-gallery-title">
       <header className="card__header">
         <h2 id="example-gallery-title" className="card__title">Example gallery</h2>
-        <p className="card__meta">Select a demo track to run analysis in the main tab.</p>
+        <p className="card__meta">Select a demo track to run analysis.</p>
       </header>
 
       {isLoading ? (
@@ -162,39 +141,36 @@ function ExampleGallery({
       ) : examples.length === 0 ? (
         <p className="examples__helper">No examples are currently available.</p>
       ) : groups === null ? (
-        // Flat grid fallback when no album/artist metadata exists
-        <ul className="examples__grid" role="list">
+        // Flat list fallback when no album/artist metadata exists
+        <ul className="examples__track-list" role="list">
           {examples.map((example) => {
             const title = getTitle(example);
+            const artist = getArtist(example);
             const isSelected = selectedExampleId === example.id;
             const thumbUrl = resolveThumbUrl(example);
             return (
-              <li key={example.id} className="examples__grid-item">
+              <li key={example.id}>
                 <button
-                  className={`examples__card${isSelected ? " examples__card--selected" : ""}`}
+                  className={`examples__track-row${isSelected ? " examples__track-row--selected" : ""}`}
                   type="button"
                   onClick={() => handleSelect(example)}
                   aria-pressed={isSelected}
                   aria-label={`Select example track: ${title}`}
                   disabled={isSelecting}
                 >
-                  <div className="examples__thumb" aria-hidden="true">
-                    {thumbUrl ? (
-                      <img className="examples__thumb-image" src={thumbUrl} alt="" loading="lazy" />
-                    ) : (
-                      <span className="examples__thumb-fallback">{title.charAt(0).toUpperCase()}</span>
-                    )}
+                  <TrackThumb url={thumbUrl} fallbackLetter={title.charAt(0).toUpperCase()} />
+                  <div className="examples__track-info">
+                    <p className="examples__track-title">{title}</p>
+                    <p className="examples__track-artist">{artist}</p>
                   </div>
-                  <div className="examples__info">
-                    <p className="examples__name">{title}</p>
-                  </div>
+                  {isSelected && <span className="examples__track-check" aria-hidden="true">✓</span>}
                 </button>
               </li>
             );
           })}
         </ul>
       ) : (
-        // Grouped layout
+        // Grouped list layout
         <div className="examples__groups">
           {groups.map((group) => {
             const isOpen = openGroups.has(group.key);
@@ -202,70 +178,66 @@ function ExampleGallery({
             const groupThumbUrl = firstTrack ? resolveThumbUrl(firstTrack) : null;
             const fallbackLetter = group.label.charAt(0).toUpperCase();
             const extractedColor = groupColors[group.key];
-            const groupStyle = extractedColor
-              ? { background: `rgba(${extractedColor.r}, ${extractedColor.g}, ${extractedColor.b}, 0.15)` }
+            const accentStyle = extractedColor
+              ? { "--group-accent": `rgba(${extractedColor.r}, ${extractedColor.g}, ${extractedColor.b}, 0.25)` }
               : undefined;
 
             return (
               <div
                 key={group.key}
                 className={`examples__group${isOpen ? " examples__group--open" : ""}`}
-                style={groupStyle}
+                style={accentStyle}
               >
+                {/* Group header — horizontal compact row */}
                 <button
                   type="button"
-                  className={`examples__group-header${groupThumbUrl ? "" : " examples__group-header--no-thumb"}`}
+                  className="examples__group-header"
                   onClick={() => toggleGroup(group.key)}
                   aria-expanded={isOpen}
                   aria-controls={`examples-group-tracks-${group.key}`}
                 >
-                  <GroupThumbnail thumbnailUrl={groupThumbUrl} fallbackLetter={fallbackLetter} />
-                  <div className="examples__group-header-overlay">
-                    <div className="examples__group-info">
-                      {/* Artist is primary label (bold, primary color) */}
-                      <span className="examples__group-label">
-                        {group.artist ?? group.label}
-                      </span>
-                      {/* Album (or group key when no artist) is secondary label, with track count */}
-                      <span className="examples__group-artist">
-                        {group.artist ? group.label : null}
-                        {group.artist ? (
-                          <span className="examples__group-count">
-                            · {group.tracks.length} {group.tracks.length === 1 ? "track" : "tracks"}
-                          </span>
-                        ) : (
-                          <span className="examples__group-count">
-                            {group.tracks.length} {group.tracks.length === 1 ? "track" : "tracks"}
-                          </span>
-                        )}
-                      </span>
-                    </div>
-                    <span className="examples__group-chevron" aria-hidden="true">▶</span>
+                  <TrackThumb url={groupThumbUrl} fallbackLetter={fallbackLetter} size="md" />
+                  <div className="examples__group-info">
+                    <span className="examples__group-label">
+                      {group.artist ?? group.label}
+                    </span>
+                    <span className="examples__group-sublabel">
+                      {group.artist ? group.label : null}
+                      {group.artist && group.label ? " · " : ""}
+                      {group.tracks.length} {group.tracks.length === 1 ? "track" : "tracks"}
+                    </span>
                   </div>
+                  <span className="examples__group-chevron" aria-hidden="true" />
                 </button>
 
+                {/* Track list */}
                 <ul
                   id={`examples-group-tracks-${group.key}`}
-                  className="examples__group-tracks examples__grid"
+                  className="examples__track-list examples__group-tracks"
                   role="list"
                   hidden={!isOpen}
                 >
                   {group.tracks.map((example) => {
                     const title = getTitle(example);
+                    const artist = getArtist(example);
                     const isSelected = selectedExampleId === example.id;
+                    const thumbUrl = resolveThumbUrl(example);
                     return (
-                      <li key={example.id} className="examples__grid-item">
+                      <li key={example.id}>
                         <button
-                          className={`examples__card examples__card--compact${isSelected ? " examples__card--selected" : ""}`}
+                          className={`examples__track-row${isSelected ? " examples__track-row--selected" : ""}`}
                           type="button"
                           onClick={() => handleSelect(example)}
                           aria-pressed={isSelected}
                           aria-label={`Select example track: ${title}`}
                           disabled={isSelecting}
                         >
-                          <div className="examples__info">
-                            <p className="examples__name">{title}</p>
+                          <TrackThumb url={thumbUrl} fallbackLetter={title.charAt(0).toUpperCase()} />
+                          <div className="examples__track-info">
+                            <p className="examples__track-title">{title}</p>
+                            <p className="examples__track-artist">{artist}</p>
                           </div>
+                          {isSelected && <span className="examples__track-check" aria-hidden="true">✓</span>}
                         </button>
                       </li>
                     );
