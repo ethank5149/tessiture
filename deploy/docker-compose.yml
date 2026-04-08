@@ -3,6 +3,10 @@ services:
     image: ${TESSITURE_IMAGE}
     container_name: tessiture
     restart: unless-stopped
+    networks:
+      - caddy-proxy
+    ports:
+      - "127.0.0.1:${TESSITURE_LAN_BIND_PORT:-8000}:${TESSITURE_PORT:-8000}"
     env_file:
       - ./.env
     volumes:
@@ -28,15 +32,8 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
-    # Publish on host loopback so host-network cloudflared can proxy to Tessiture.
-    # This keeps Tessiture non-public on LAN while still reachable from cloudflared on the host namespace.
-    ports:
-      - "127.0.0.1:${TESSITURE_LAN_BIND_PORT}:${TESSITURE_PORT}"
-    networks:
-      - tessiture_internal
+    # Host network mode for DinD/container environments without Docker-in-Docker port publishing
 
 networks:
-  tessiture_internal:
-    name: tessiture_internal
-    driver: bridge
-    internal: true
+  caddy-proxy:
+    external: true

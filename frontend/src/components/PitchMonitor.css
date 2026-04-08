@@ -1,0 +1,158 @@
+/* ============================================================================
+   PITCH MONITOR — Real-time pitch tuner styles
+   ============================================================================ */
+
+.pitch-monitor {
+  margin-top: var(--space-lg);
+  padding: var(--space-lg);
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+}
+
+.pitch-monitor__header {
+  margin-bottom: var(--space-md);
+}
+
+.pitch-monitor__title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0 0 0.25rem;
+}
+
+.pitch-monitor__subtitle {
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.pitch-monitor__canvas-wrap {
+  position: relative;
+  width: 100%;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-canvas);
+}
+
+.pitch-monitor__canvas {
+  display: block;
+  width: 100%;
+  height: 340px;
+}
+
+.pitch-monitor__controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  margin-top: var(--space-md);
+  flex-wrap: wrap;
+}
+
+.pitch-monitor__start,
+.pitch-monitor__stop {
+  min-width: 160px;
+  min-height: var(--touch-min);
+  font-size: 1rem;
+  font-weight: 600;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: transform var(--transition-ui), box-shadow var(--transition-ui);
+}
+
+.pitch-monitor__start:active,
+.pitch-monitor__stop:active {
+  transform: scale(0.97);
+}
+
+.pitch-monitor__stop {
+  background: var(--surface-3);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+}
+
+.pitch-monitor__stop:hover {
+  background: var(--surface-2);
+}
+
+.pitch-monitor__error {
+  color: var(--danger);
+  font-size: 0.875rem;
+  margin: 0;
+}
+
+/* Session summary after stopping */
+
+.pitch-monitor__session-summary {
+  margin-top: var(--space-lg);
+  padding: var(--space-md);
+  background: var(--surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  animation: pitch-monitor-fade-in 300ms ease;
+}
+
+.pitch-monitor__session-summary h4 {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0 0 var(--space-sm);
+}
+
+.pitch-monitor__session-stats {
+  display: flex;
+  gap: var(--space-lg);
+  flex-wrap: wrap;
+}
+
+.pitch-monitor__stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pitch-monitor__stat-value {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--brand);
+}
+
+.pitch-monitor__stat-label {
+  font-size: 0.75rem;
+  color: var(--text-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+@keyframes pitch-monitor-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Responsive */
+@media (max-width: 480px) {
+  .pitch-monitor {
+    padding: var(--space-md);
+  }
+
+  .pitch-monitor__canvas {
+    height: 280px;
+  }
+
+  .pitch-monitor__session-stats {
+    gap: var(--space-md);
+  }
+
+  .pitch-monitor__start,
+  .pitch-monitor__stop {
+    width: 100%;
+  }
+}

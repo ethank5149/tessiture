@@ -1,0 +1,16 @@
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared-tessiture
+    restart: unless-stopped
+    networks:
+      - caddy-proxy
+    volumes:
+      - /mnt/user/appdata/cloudflared:/etc/cloudflared:ro
+    command: tunnel --config /etc/cloudflared/config.yml run
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+networks:
+  caddy-proxy:
+    external: true
