@@ -275,7 +275,7 @@ docker_preflight
 if [[ "${CLEAN}" -eq 1 ]]; then
   log "Cleaning up old containers and images..."
   COMPOSE_CMD=(docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}")
-  "${COMPOSE_CMD[@]}" down --remove-orphans 2>/dev/null || true
+  "${COMPOSE_CMD[@]}" down --volumes --remove-orphans 2>/dev/null || true
   log "Removed old containers"
 fi
 

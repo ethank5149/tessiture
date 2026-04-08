@@ -144,6 +144,10 @@ fi
 
 COMPOSE_CMD=(docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}")
 
+# Ensure clean state so changes in env/compose file reflect properly
+# Docker Compose can sometimes cache project environment states or volumes
+"${COMPOSE_CMD[@]}" down --remove-orphans
+
 # Always recreate to ensure new image is deployed
 "${COMPOSE_CMD[@]}" up -d --pull never --force-recreate
 
