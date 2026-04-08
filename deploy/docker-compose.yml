@@ -15,7 +15,7 @@ services:
       - ${TESSITURE_STEM_CACHE_HOST_PATH:-/mnt/user/appdata/tessiture/stem_cache}:/data/stem_cache
       - ${TESSITURE_JOBS_HOST_PATH}:${TESSITURE_JOBS_DIR}
       - ${TESSITURE_LOG_HOST_PATH}:${TESSITURE_LOG_DIR}
-      - ${TESSITURE_EXAMPLES_HOST_PATH:-./../examples/tracks}:${TESSITURE_EXAMPLES_DIR}
+      - ${TESSITURE_EXAMPLES_HOST_PATH:-/mnt/user/public/tessiture/examples/tracks}:${TESSITURE_EXAMPLES_DIR}
     deploy:
       resources:
         reservations:
