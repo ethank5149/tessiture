@@ -173,14 +173,12 @@ describe("ExampleGallery", () => {
       />
     );
 
-    // Group header should show album name and artist
+    // Group header should show album name and artist (artist appears in both group label and track row)
     expect(screen.getByText(RegExp(demoExample.album, "i"))).toBeInTheDocument();
-    expect(screen.getByText(RegExp(demoExample.artist, "i"))).toBeInTheDocument();
+    expect(screen.getAllByText(RegExp(demoExample.artist, "i")).length).toBeGreaterThan(0);
 
-    // Expand the group by clicking the header
-    await user.click(screen.getByRole("button", { name: /Demo Album/i }));
-
-    // Track card should now be visible; aria-label no longer includes artist
+    // The first group is auto-opened on mount — track card is already visible
+    // Track card should be visible; aria-label no longer includes artist
     await user.click(screen.getByRole("button", { name: `Select example track: ${demoExample.display_name}` }));
 
     expect(onSelectExample).toHaveBeenCalledTimes(1);
@@ -205,8 +203,8 @@ describe("ExampleGallery", () => {
       />
     );
 
-    // Expand the group (grouped by artist when no album)
-    await user.click(screen.getByRole("button", { name: /Demo Artist/i }));
+    // The first group is auto-opened on mount (grouped by artist when no album)
+    // No click needed to expand — verify the track button is already visible
 
     expect(
       screen.getByRole("button", { name: "Select example track: Demo Example" })
@@ -258,7 +256,7 @@ describe("AnalysisStatus", () => {
     );
 
     expect(screen.getByText("Analyzing your recording…")).toBeInTheDocument();
-    expect(screen.getByText("pitch extraction")).toBeInTheDocument();
+    expect(screen.getByText("Extracting pitch data…")).toBeInTheDocument();
     expect(screen.getByText("Extracting pitch and harmonic tracks.")).toBeInTheDocument();
     expect(screen.getByText("Polling for updates…")).toBeInTheDocument();
     expect(screen.getByLabelText("Progress")).toHaveAttribute("value", "42");
@@ -989,10 +987,7 @@ describe("App example gallery wiring", () => {
     expect(screen.queryByRole("heading", { name: "Analysis status" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Analysis results" })).not.toBeInTheDocument();
 
-    // Expand the "Demo Artist" group first, then click the track
-    const groupHeader = await screen.findByRole("button", { name: /Demo Artist/i });
-    await user.click(groupHeader);
-
+    // The first group is auto-opened on mount — click the track directly
     const selectButton = await screen.findByRole("button", {
       name: "Select example track: Demo Example",
     });
@@ -1068,7 +1063,7 @@ describe("App example gallery wiring", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: /Example Library/i }));
-    await user.click(await screen.findByRole("button", { name: /Demo Artist/i }));
+    // The first group is auto-opened on mount — click the track directly
     await user.click(
       await screen.findByRole("button", {
         name: "Select example track: Demo Example",
