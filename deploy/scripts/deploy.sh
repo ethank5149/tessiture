@@ -137,6 +137,11 @@ log "Compose file: ${COMPOSE_FILE}"
 log "Env file: ${ENV_FILE}"
 log "Deploying image: ${TESSITURE_IMAGE}"
 
+if ! docker network ls | grep -q "caddy-proxy"; then
+  log "Creating missing external network: caddy-proxy"
+  docker network create caddy-proxy || true
+fi
+
 COMPOSE_CMD=(docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}")
 
 # Always recreate to ensure new image is deployed

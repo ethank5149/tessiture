@@ -167,9 +167,9 @@ jobs:
           run: |
             unset DOCKER_TLS_VERIFY DOCKER_CERT_PATH
             if ! docker info >/dev/null 2>&1; then
-              export DOCKER_HOST="tcp://172.40.0.2:2375"
+              export DOCKER_HOST="tcp://172.40.0.6:2375"
               docker info >/dev/null 2>&1 || { echo "::error::Cannot reach Docker daemon"; exit 1; }
-              echo "DOCKER_HOST=tcp://172.40.0.2:2375" >> "${GITHUB_ENV}"
+              echo "DOCKER_HOST=tcp://172.40.0.6:2375" >> "${GITHUB_ENV}"
             fi
             echo "DOCKER_TLS_VERIFY=" >> "${GITHUB_ENV}"
             echo "DOCKER_CERT_PATH=" >> "${GITHUB_ENV}"
