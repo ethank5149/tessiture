@@ -162,10 +162,22 @@ jobs:
           shell: bash
           run: echo "${{ secrets.TESSITURE_ENV }}" > deploy/.env
 
+        - name: Connect to Docker daemon
+          shell: bash
+          run: |
+            unset DOCKER_TLS_VERIFY DOCKER_CERT_PATH
+            if ! docker info >/dev/null 2>&1; then
+              export DOCKER_HOST="tcp://172.40.0.2:2375"
+              docker info >/dev/null 2>&1 || { echo "::error::Cannot reach Docker daemon"; exit 1; }
+              echo "DOCKER_HOST=tcp://172.40.0.2:2375" >> "${GITHUB_ENV}"
+            fi
+            echo "DOCKER_TLS_VERIFY=" >> "${GITHUB_ENV}"
+            echo "DOCKER_CERT_PATH=" >> "${GITHUB_ENV}"
+
         - name: Pull and deploy
           shell: bash
           run: |
-            unset DOCKER_TLS_VERIFY DOCKER_CERT_PATH DOCKER_HOST
+            unset DOCKER_TLS_VERIFY DOCKER_CERT_PATH
             REGISTRY="forgejo.dojo-diminished.ts.net"
             IMAGE="${REGISTRY}/${{ github.repository }}:latest"
             echo "${{ github.token }}" | docker login "${REGISTRY}" \
