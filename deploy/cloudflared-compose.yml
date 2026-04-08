@@ -5,6 +5,7 @@ services:
     restart: unless-stopped
     networks:
       - caddy-proxy
+      - dind-net
     volumes:
       - /mnt/user/appdata/cloudflared:/etc/cloudflared:ro
     command: tunnel --config /etc/cloudflared/config.yml run
@@ -13,4 +14,6 @@ services:
 
 networks:
   caddy-proxy:
+    external: true
+  dind-net:
     external: true
