@@ -1,0 +1,307 @@
+diff --git a/analysis/dsp/vocal_separation.py b/analysis/dsp/vocal_separation.py
+index 3337085..a48c89b 100644
+--- a/analysis/dsp/vocal_separation.py
++++ b/analysis/dsp/vocal_separation.py
+@@ -39,7 +39,7 @@ def is_available() -> bool:
+         return False
+ 
+ 
+-def _load_model(model_name: str = "htdemucs"):
++def _load_model(model_name: str = "htdemucs_ft"):
+     """Lazily load and cache the Demucs model (thread-safe singleton)."""
+     global _model, _model_name
+     with _model_lock:
+@@ -115,7 +115,7 @@ def separate_vocals(
+     audio: np.ndarray,
+     sample_rate: int,
+     *,
+-    model_name: str = "htdemucs",
++    model_name: str = "htdemucs_ft",
+     file_path: Optional[str] = None,
+     cache_dir: Optional[Path] = None,
+ ) -> SeparationResult:
+diff --git a/analysis/pitch/estimator.py b/analysis/pitch/estimator.py
+index a2cdcec..c83996a 100644
+--- a/analysis/pitch/estimator.py
++++ b/analysis/pitch/estimator.py
+@@ -29,6 +29,7 @@ def _pyin_estimate(
+     hop_length: int,
+     fmin: float = _DEFAULT_VOICED_MIN_F0_HZ,
+     fmax: float = _DEFAULT_VOICED_MAX_F0_HZ,
++    frame_length: Optional[int] = None,
+ ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+     """Run librosa PYIN pitch estimation.
+ 
+@@ -36,16 +37,32 @@ def _pyin_estimate(
+     is unavailable.  PYIN provides probabilistic voicing decisions and
+     sub-cent pitch resolution — significantly more accurate than HPS or
+     naive autocorrelation.
++
++    CRITICAL: ``frame_length`` MUST match the STFT ``n_fft`` used by
++    the rest of the pipeline.  When they differ, PYIN and the STFT
++    produce different numbers of frames and every pitch value ends up
++    associated with the wrong time position.
+     """
+     try:
+         import librosa
+     except ImportError:
+         return None
+ 
++    # Default to 2048 only as a safety net — callers should always pass
++    # frame_length explicitly to match their STFT n_fft.
++    if frame_length is None:
++        frame_length = 2048
++        logger.warning(
++            "pyin_estimate called without explicit frame_length; "
++            "defaulting to %d — this may cause frame misalignment with the STFT",
++            frame_length,
++        )
++
+     try:
+         f0, voiced_flag, voiced_probs = librosa.pyin(
+             audio,
+             sr=sample_rate,
++            frame_length=frame_length,
+             hop_length=hop_length,
+             fmin=float(fmin),
+             fmax=float(fmax),
+@@ -150,13 +167,16 @@ def spectral_prominence(
+ def _continuity_score(prev_f0: float, f0: float) -> float:
+     if prev_f0 <= 0.0 or f0 <= 0.0:
+         return 0.0
+-    # Use log2 ratio to measure pitch distance
++    # Pitch distance in octaves (log2 ratio)
+     log2_ratio = abs(np.log2(max(prev_f0, f0) / min(prev_f0, f0)))
+-    # Penalize deviation from nearest octave (octave errors are common in pitch tracking)
+-    nearest_octave = round(log2_ratio)
+-    octave_residual = abs(log2_ratio - nearest_octave)
+-    # Strong penalty for non-octave deviations; light penalty for octave jumps
+-    return float(np.exp(-octave_residual * 4.0))
++    # Penalize ALL pitch jumps proportionally — including octave jumps.
++    # The old code computed distance to the *nearest* octave boundary and
++    # penalized only the residual, which gave exact octave errors (2× or ½×
++    # the true f0) a penalty of zero — identical to perfect continuity.
++    # The path optimizer then freely selected octave-wrong candidates.
++    # Smooth exponential decay: ≈1.0 at unison, ≈0.37 at ±1 semitone,
++    # ≈0.05 at ±1 octave, ≈0.0 beyond.
++    return float(np.exp(-log2_ratio * 3.0))
+ 
+ 
+ def compute_voicing_mask(
+@@ -191,6 +211,37 @@ def compute_voicing_mask(
+     return voiced
+ 
+ 
++def _median_filter_pitch(f0_array: np.ndarray, kernel_size: int = 5) -> np.ndarray:
++    """Apply median filter to pitch track to suppress isolated octave errors.
++
++    Only filters voiced frames (f0 > 0); unvoiced frames stay at 0.
++    Works in log-frequency space so the filter is perceptually uniform.
++
++    An isolated octave error typically appears as a single frame whose f0
++    is exactly 2× or ½× the neighbours.  A 5-wide median in log2 space
++    snaps it back to the local consensus without blurring real portamenti.
++    """
++    out = f0_array.copy()
++    voiced_mask = out > 0.0
++    if np.sum(voiced_mask) < kernel_size:
++        return out
++    log_f0 = np.where(voiced_mask, np.log2(np.maximum(out, 1.0)), 0.0)
++    half = kernel_size // 2
++    for i in range(len(log_f0)):
++        if not voiced_mask[i]:
++            continue
++        lo = max(0, i - half)
++        hi = min(len(log_f0), i + half + 1)
++        neighborhood = log_f0[lo:hi]
++        voiced_neighbors = neighborhood[neighborhood > 0.0]
++        if len(voiced_neighbors) >= 3:
++            med = float(np.median(voiced_neighbors))
++            # Only correct if deviation > ~0.4 octaves (≈ a tritone) — likely an error
++            if abs(log_f0[i] - med) > 0.4:
++                out[i] = float(2.0 ** med)
++    return out
++
++
+ def estimate_pitch_frames(
+     spectrum: np.ndarray,
+     frequencies: np.ndarray,
+@@ -198,6 +249,7 @@ def estimate_pitch_frames(
+     audio: Optional[np.ndarray] = None,
+     sample_rate: int = 44100,
+     hop_length: int = 512,
++    n_fft: int = 4096,
+     weights: Optional[Dict[str, float]] = None,
+ ) -> List[PitchFrame]:
+     """Estimate pitch per frame using PYIN (primary) with HPS/AC fallback.
+@@ -218,6 +270,7 @@ def estimate_pitch_frames(
+         audio: Optional mono audio array for PYIN and autocorrelation.
+         sample_rate: Sampling rate in Hz.
+         hop_length: Hop length in samples for framing.
++        n_fft: FFT size — MUST match the STFT n_fft so PYIN frame counts align.
+         weights: Optional weights for salience terms (keys "H", "C", "S").
+ 
+     Returns:
+@@ -234,7 +287,7 @@ def estimate_pitch_frames(
+     pyin_probs: Optional[np.ndarray] = None
+ 
+     if _USE_PYIN_PRIMARY and audio is not None:
+-        pyin_result = _pyin_estimate(audio, sample_rate, hop_length)
++        pyin_result = _pyin_estimate(audio, sample_rate, hop_length, frame_length=n_fft)
+         if pyin_result is not None:
+             pyin_f0, pyin_voiced, pyin_probs = pyin_result
+             logger.info(
+@@ -353,4 +406,17 @@ def estimate_pitch_frames(
+                                  salience=float(salience), components=components))
+         prev_f0 = float(f0)
+ 
++    # --- Post-processing: median filter to suppress isolated octave errors --
++    if len(frames) >= 5:
++        raw_f0 = np.array([f.f0_hz for f in frames], dtype=np.float32)
++        filtered_f0 = _median_filter_pitch(raw_f0, kernel_size=5)
++        for i, f in enumerate(frames):
++            if abs(filtered_f0[i] - raw_f0[i]) > 1e-3:
++                frames[i] = PitchFrame(
++                    time_index=f.time_index,
++                    f0_hz=float(filtered_f0[i]),
++                    salience=f.salience,
++                    components={**f.components, "_pre_median_f0": float(raw_f0[i])},
++                )
++
+     return frames
+diff --git a/analysis/pitch/midi_converter.py b/analysis/pitch/midi_converter.py
+index 07a4050..d54a70c 100644
+--- a/analysis/pitch/midi_converter.py
++++ b/analysis/pitch/midi_converter.py
+@@ -62,25 +62,33 @@ def convert_f0_to_midi(
+     f0_hz = np.asarray(f0_hz, dtype=np.float32)
+     sigma_f = np.zeros_like(f0_hz) if sigma_f is None else np.asarray(sigma_f, dtype=np.float32)
+ 
+-    corrected = np.zeros_like(f0_hz)
+-    sigma_total = np.zeros_like(f0_hz)
+-
+-    for i, f0 in enumerate(f0_hz):
+-        if f0 <= 0.0:
+-            continue
+-        bias = 0.0
+-        sigma_cal = 0.0
+-        if calibrate is not None:
++    voiced = f0_hz > 0.0
++
++    if calibrate is not None:
++        # Calibration path must iterate (callback is per-frame)
++        corrected = np.zeros_like(f0_hz)
++        sigma_total = np.zeros_like(f0_hz)
++        for i, f0 in enumerate(f0_hz):
++            if f0 <= 0.0:
++                continue
+             bias, sigma_cal = calibrate(float(f0))
+-        corrected[i] = f0 - float(bias)
+-        sigma_total[i] = combine_pitch_uncertainty(sigma_f[i], sigma_cal)
+-
+-    midi = np.array([_frequency_to_midi(f) for f in corrected], dtype=np.float32)
+-    midi_sigma = np.array(
+-        [_frequency_to_midi_uncertainty(f, s) for f, s in zip(corrected, sigma_total)],
+-        dtype=np.float32,
+-    )
+-    return midi, midi_sigma
++            corrected[i] = f0 - float(bias)
++            sigma_total[i] = combine_pitch_uncertainty(sigma_f[i], sigma_cal)
++    else:
++        # Fast vectorized path (no calibration — the common case)
++        corrected = f0_hz.copy()
++        sigma_total = sigma_f.copy()
++
++    # Vectorized MIDI conversion: 69 + 12 * log2(f / 440)
++    midi = np.zeros_like(corrected)
++    safe = corrected > 0.0
++    midi[safe] = 69.0 + 12.0 * np.log2(corrected[safe] / 440.0)
++
++    # Vectorized uncertainty propagation: (12 / ln2) * (σ_f / f)
++    midi_sigma = np.zeros_like(sigma_total)
++    midi_sigma[safe] = (12.0 / np.log(2.0)) * (sigma_total[safe] / corrected[safe])
++
++    return midi.astype(np.float32), midi_sigma.astype(np.float32)
+ 
+ 
+ def build_midi_frames(
+diff --git a/api/analysis_core.py b/api/analysis_core.py
+index ef6470e..6eea2e6 100644
+--- a/api/analysis_core.py
++++ b/api/analysis_core.py
+@@ -223,6 +223,7 @@ def _run_analysis_pipeline(
+         target_sr=TARGET_SAMPLE_RATE,
+         mono=True,
+         normalize=True,
++        pre_emphasis_alpha=0.97,
+     )
+     mono_audio = preprocessed.audio
+     sample_rate = int(preprocessed.sample_rate)
+@@ -253,6 +254,7 @@ def _run_analysis_pipeline(
+         audio=mono_audio,
+         sample_rate=sample_rate,
+         hop_length=STFT_HOP,
++        n_fft=STFT_NFFT,
+     )
+     report_progress(54, "pitch_frames", "Estimating pitch frames.")
+     pitch_frame_diagnostics = _extract_pitch_frame_diagnostics(pitch_candidates)
+diff --git a/api/streaming.py b/api/streaming.py
+index f8afa3f..d742fb7 100644
+--- a/api/streaming.py
++++ b/api/streaming.py
+@@ -137,6 +137,16 @@ class StreamingPitchExtractor:
+         self._buffer: np.ndarray = np.zeros(n_fft * 2, dtype=np.float32)
+         self._write_pos: int = 0  # Next write position in the buffer.
+         self._total_samples: int = 0  # Total samples pushed since creation.
++        # Pre-compute the Hann window once instead of every _extract_pitch call.
++        try:
++            from scipy.signal.windows import hann as _hann
++            self._window: np.ndarray = _hann(n_fft, sym=False).astype(np.float32)
++        except ImportError:
++            self._window = (0.5 - 0.5 * np.cos(
++                2.0 * np.pi * np.arange(n_fft) / n_fft
++            )).astype(np.float32)
++        # Pre-emphasis coefficient (matches main pipeline).
++        self._pre_emphasis_alpha: float = 0.97
+ 
+     # ------------------------------------------------------------------
+     # Public API
+@@ -200,15 +210,24 @@ class StreamingPitchExtractor:
+ 
+     def _extract_pitch(self) -> Optional[Dict[str, Any]]:
+         """Run the pitch pipeline on the current window and return a dict."""
+-        window = self._get_window()
++        audio_frame = self._get_window()
+         time_s = float(self._total_samples) / float(self.sample_rate)
+ 
++        # Apply pre-emphasis to compensate for glottal spectral tilt,
++        # matching the main analysis pipeline's preprocessing.
++        if self._pre_emphasis_alpha > 0.0 and audio_frame.size >= 2:
++            pe = np.empty_like(audio_frame)
++            pe[0] = audio_frame[0]
++            pe[1:] = audio_frame[1:] - self._pre_emphasis_alpha * audio_frame[:-1]
++            audio_frame = pe
++
+         try:
+             stft_result = compute_stft(
+-                window,
++                audio_frame,
+                 self.sample_rate,
+                 n_fft=self.n_fft,
+                 hop_length=self.hop_length,
++                window=self._window,
+             )
+         except Exception:
+             logger.exception("streaming.stft_error")
+@@ -236,9 +255,10 @@ class StreamingPitchExtractor:
+                 spectrum,
+                 frequencies,
+                 harmonic_frames,
+-                window,
++                audio_frame,
+                 self.sample_rate,
+                 self.hop_length,
++                n_fft=self.n_fft,
+             )
+         except Exception:
+             logger.exception("streaming.pitch_frames_error")

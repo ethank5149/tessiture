@@ -46,7 +46,7 @@ Tessiture is a browser-based vocal analysis toolkit for analyzing acoustic recor
 
 ### Prerequisites
 
-- Python 3.12
+- Python 3.11–3.12
 - Node.js 20+
 - `libsndfile`, `ffmpeg` (for audio processing)
 - Docker + Docker Compose v2 (for deployment only)
@@ -453,19 +453,20 @@ frontend/      React + Vite client application
 docs/          Architecture, math, API, and deployment documentation
 tests/         Backend test suites (pytest)
 deploy/        Docker Compose stack, env template, and release scripts
-plans/         Design plans and archived roadmap documents
+plans/         Design plans and archived roadmap documents (deprecated)
+patches/       Applied patches directory
 ```
 
 ---
 
 ## Version Info
 
-Semantic versioning (`MAJOR.MINOR.PATCH`).
+Semantic versioning (`MAJOR.MINOR.PATCH`). The current version is **v0.2.1**.
 
 | Version | Codename | Description |
 |---------|----------|-------------|
-| v0.x | **Ash** | Experimental development releases |
-| v1.x | **Tessa** | First official release line |
+| v0.2.x | **Ash** | Experimental development releases (current) |
+| v1.x | **Tessa** | First official release line (planned) |
 
 ---
 
@@ -477,4 +478,3 @@ Semantic versioning (`MAJOR.MINOR.PATCH`).
 | **[Architecture](docs/ARCHITECTURE.md)** | Technical reference: analysis pipeline, calibration, comparison, frontend, design decisions |
 | **[API Reference](docs/API_REFERENCE.md)** | Endpoints, result JSON schema, configuration variables |
 | **[Mathematical Foundations](docs/MATHEMATICAL_FOUNDATIONS.md)** | Proofs, derivations, uncertainty formulas, and bibliography |
-| **[Agent Rules](AGENTS.md)** | Operational rules for AI/code agents working in this repository |
