@@ -160,7 +160,13 @@ jobs:
 
         - name: Write .env
           shell: bash
-          run: echo "${{ secrets.TESSITURE_ENV }}" > deploy/.env
+          run: |
+            echo "${{ secrets.TESSITURE_ENV }}" > deploy/.env
+            # Ensure LAN bind port is not set to the conflicting port 8000
+            sed -i 's/^TESSITURE_LAN_BIND_PORT=.*/TESSITURE_LAN_BIND_PORT=8100/' deploy/.env
+            if ! grep -q "^TESSITURE_LAN_BIND_PORT=" deploy/.env; then
+              echo "TESSITURE_LAN_BIND_PORT=8100" >> deploy/.env
+            fi
 
         - name: Connect to Docker daemon
           shell: bash
