@@ -186,6 +186,21 @@ const SONG_DATABASE = [
   { title: "Don't Rain on My Parade", artist: "Funny Girl", midiLow: 55, midiHigh: 79, genre: "Musical Theater", difficulty: 3 },
 ];
 
+// ── BUILT-IN EXAMPLES ───────────────────────────────────────────────────
+SONG_DATABASE.push(
+  { title: "Dangerous Woman", artist: "Ariana Grande", midiLow: 55, midiHigh: 79, genre: "Pop", difficulty: 3 },
+  { title: "Colors", artist: "Halsey", midiLow: 53, midiHigh: 74, genre: "Alternative", difficulty: 2 },
+  { title: "Ghost", artist: "Halsey", midiLow: 53, midiHigh: 74, genre: "Alternative", difficulty: 2 },
+  { title: "Hurricane", artist: "Halsey", midiLow: 53, midiHigh: 74, genre: "Alternative", difficulty: 2 },
+  { title: "Trouble", artist: "Halsey", midiLow: 53, midiHigh: 74, genre: "Alternative", difficulty: 2 },
+  { title: "honey", artist: "Halsey", midiLow: 53, midiHigh: 75, genre: "Alternative", difficulty: 2 },
+  { title: "3am", artist: "Halsey", midiLow: 53, midiHigh: 74, genre: "Alternative", difficulty: 2 },
+  { title: "Alanis’ Interlude", artist: "Halsey", midiLow: 53, midiHigh: 74, genre: "Alternative", difficulty: 2 },
+  { title: "Graveyard", artist: "Halsey", midiLow: 53, midiHigh: 74, genre: "Alternative", difficulty: 2 },
+  { title: "Without Me", artist: "Halsey", midiLow: 53, midiHigh: 74, genre: "Pop", difficulty: 2 },
+  { title: "You should be sad", artist: "Halsey", midiLow: 53, midiHigh: 74, genre: "Pop", difficulty: 2 }
+);
+
 export default SONG_DATABASE;
 
 /**
