@@ -6,7 +6,7 @@ services:
     networks:
       - caddy-proxy
     ports:
-      - "127.0.0.1:${TESSITURE_LAN_BIND_PORT:-8000}:${TESSITURE_PORT:-8000}"
+      - "127.0.0.1:${TESSITURE_LAN_BIND_PORT:-8100}:${TESSITURE_PORT:-8000}"
     env_file:
       - ./.env
     volumes:
