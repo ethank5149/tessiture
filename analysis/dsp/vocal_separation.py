@@ -39,7 +39,7 @@ def is_available() -> bool:
         return False
 
 
-def _load_model(model_name: str = "htdemucs"):
+def _load_model(model_name: str = "htdemucs_ft"):
     """Lazily load and cache the Demucs model (thread-safe singleton)."""
     global _model, _model_name
     with _model_lock:
@@ -115,7 +115,7 @@ def separate_vocals(
     audio: np.ndarray,
     sample_rate: int,
     *,
-    model_name: str = "htdemucs",
+    model_name: str = "htdemucs_ft",
     file_path: Optional[str] = None,
     cache_dir: Optional[Path] = None,
 ) -> SeparationResult:

@@ -223,6 +223,7 @@ def _run_analysis_pipeline(
         target_sr=TARGET_SAMPLE_RATE,
         mono=True,
         normalize=True,
+        pre_emphasis_alpha=0.97,
     )
     mono_audio = preprocessed.audio
     sample_rate = int(preprocessed.sample_rate)
@@ -253,6 +254,7 @@ def _run_analysis_pipeline(
         audio=mono_audio,
         sample_rate=sample_rate,
         hop_length=STFT_HOP,
+        n_fft=STFT_NFFT,
     )
     report_progress(54, "pitch_frames", "Estimating pitch frames.")
     pitch_frame_diagnostics = _extract_pitch_frame_diagnostics(pitch_candidates)

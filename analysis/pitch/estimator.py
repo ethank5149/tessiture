@@ -29,6 +29,7 @@ def _pyin_estimate(
     hop_length: int,
     fmin: float = _DEFAULT_VOICED_MIN_F0_HZ,
     fmax: float = _DEFAULT_VOICED_MAX_F0_HZ,
+    frame_length: Optional[int] = None,
 ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
     """Run librosa PYIN pitch estimation.
 
@@ -36,16 +37,32 @@ def _pyin_estimate(
     is unavailable.  PYIN provides probabilistic voicing decisions and
     sub-cent pitch resolution — significantly more accurate than HPS or
     naive autocorrelation.
+
+    CRITICAL: ``frame_length`` MUST match the STFT ``n_fft`` used by
+    the rest of the pipeline.  When they differ, PYIN and the STFT
+    produce different numbers of frames and every pitch value ends up
+    associated with the wrong time position.
     """
     try:
         import librosa
     except ImportError:
         return None
 
+    # Default to 2048 only as a safety net — callers should always pass
+    # frame_length explicitly to match their STFT n_fft.
+    if frame_length is None:
+        frame_length = 2048
+        logger.warning(
+            "pyin_estimate called without explicit frame_length; "
+            "defaulting to %d — this may cause frame misalignment with the STFT",
+            frame_length,
+        )
+
     try:
         f0, voiced_flag, voiced_probs = librosa.pyin(
             audio,
             sr=sample_rate,
+            frame_length=frame_length,
             hop_length=hop_length,
             fmin=float(fmin),
             fmax=float(fmax),
@@ -150,13 +167,14 @@ def spectral_prominence(
 def _continuity_score(prev_f0: float, f0: float) -> float:
     if prev_f0 <= 0.0 or f0 <= 0.0:
         return 0.0
-    # Use log2 ratio to measure pitch distance
+    # Pitch distance in octaves (log2 ratio)
     log2_ratio = abs(np.log2(max(prev_f0, f0) / min(prev_f0, f0)))
-    # Penalize deviation from nearest octave (octave errors are common in pitch tracking)
-    nearest_octave = round(log2_ratio)
-    octave_residual = abs(log2_ratio - nearest_octave)
-    # Strong penalty for non-octave deviations; light penalty for octave jumps
-    return float(np.exp(-octave_residual * 4.0))
+    # Penalize ALL pitch jumps proportionally — including octave jumps.
+    # The old code gave zero penalty for exact octave errors, which let the
+    # path optimizer freely select octave-wrong candidates.
+    # Smooth exponential: score ≈ 1.0 for same pitch, ≈ 0.37 at ±1 semitone,
+    # ≈ 0.05 at ±1 octave, ≈ 0.0 beyond.
+    return float(np.exp(-log2_ratio * 3.0))
 
 
 def compute_voicing_mask(
@@ -191,6 +209,33 @@ def compute_voicing_mask(
     return voiced
 
 
+def _median_filter_pitch(f0_array: np.ndarray, kernel_size: int = 5) -> np.ndarray:
+    """Apply median filter to pitch track to suppress isolated octave errors.
+
+    Only filters voiced frames (f0 > 0); unvoiced frames stay at 0.
+    Works in log-frequency space so that the filter is perceptually uniform.
+    """
+    out = f0_array.copy()
+    voiced_mask = out > 0.0
+    if np.sum(voiced_mask) < kernel_size:
+        return out
+    log_f0 = np.where(voiced_mask, np.log2(np.maximum(out, 1.0)), 0.0)
+    half = kernel_size // 2
+    for i in range(len(log_f0)):
+        if not voiced_mask[i]:
+            continue
+        lo = max(0, i - half)
+        hi = min(len(log_f0), i + half + 1)
+        neighborhood = log_f0[lo:hi]
+        voiced_neighbors = neighborhood[neighborhood > 0.0]
+        if len(voiced_neighbors) >= 3:
+            med = float(np.median(voiced_neighbors))
+            # Only correct if deviation > ~0.4 octaves (≈ a tritone) — likely an error
+            if abs(log_f0[i] - med) > 0.4:
+                out[i] = float(2.0 ** med)
+    return out
+
+
 def estimate_pitch_frames(
     spectrum: np.ndarray,
     frequencies: np.ndarray,
@@ -198,6 +243,7 @@ def estimate_pitch_frames(
     audio: Optional[np.ndarray] = None,
     sample_rate: int = 44100,
     hop_length: int = 512,
+    n_fft: int = 4096,
     weights: Optional[Dict[str, float]] = None,
 ) -> List[PitchFrame]:
     """Estimate pitch per frame using PYIN (primary) with HPS/AC fallback.
@@ -218,6 +264,7 @@ def estimate_pitch_frames(
         audio: Optional mono audio array for PYIN and autocorrelation.
         sample_rate: Sampling rate in Hz.
         hop_length: Hop length in samples for framing.
+        n_fft: FFT size — MUST match the STFT n_fft so PYIN frame counts align.
         weights: Optional weights for salience terms (keys "H", "C", "S").
 
     Returns:
@@ -234,7 +281,7 @@ def estimate_pitch_frames(
     pyin_probs: Optional[np.ndarray] = None
 
     if _USE_PYIN_PRIMARY and audio is not None:
-        pyin_result = _pyin_estimate(audio, sample_rate, hop_length)
+        pyin_result = _pyin_estimate(audio, sample_rate, hop_length, frame_length=n_fft)
         if pyin_result is not None:
             pyin_f0, pyin_voiced, pyin_probs = pyin_result
             logger.info(
@@ -352,5 +399,18 @@ def estimate_pitch_frames(
         frames.append(PitchFrame(time_index=t, f0_hz=float(f0),
                                  salience=float(salience), components=components))
         prev_f0 = float(f0)
+
+    # --- Post-processing: median filter to suppress octave errors -----------
+    if len(frames) >= 5:
+        raw_f0 = np.array([f.f0_hz for f in frames], dtype=np.float32)
+        filtered_f0 = _median_filter_pitch(raw_f0, kernel_size=5)
+        for i, f in enumerate(frames):
+            if abs(filtered_f0[i] - raw_f0[i]) > 1e-3:
+                frames[i] = PitchFrame(
+                    time_index=f.time_index,
+                    f0_hz=float(filtered_f0[i]),
+                    salience=f.salience,
+                    components={**f.components, "_pre_median_f0": float(raw_f0[i])},
+                )
 
     return frames
