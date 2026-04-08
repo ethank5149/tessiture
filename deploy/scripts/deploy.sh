@@ -145,7 +145,7 @@ fi
 COMPOSE_CMD=(docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}")
 
 # Always recreate to ensure new image is deployed
-"${COMPOSE_CMD[@]}" up -d --force-recreate
+"${COMPOSE_CMD[@]}" up -d --pull never --force-recreate
 
 log "Current service status:"
 "${COMPOSE_CMD[@]}" ps
