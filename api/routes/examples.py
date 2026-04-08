@@ -22,8 +22,29 @@ def list_example_tracks() -> Dict[str, Any]:
         Dictionary containing list of example tracks with metadata.
     """
     examples = main_routes._list_available_example_tracks()
-    main_routes.logger.info("example_gallery.endpoint_response available_examples=%d", len(examples))
+    main_routes.logger.info(
+        "example_gallery.endpoint_response available_examples=%d", len(examples)
+    )
     return {"examples": examples}
+
+
+def _resolve_example_file(filename: str):
+    from fastapi import HTTPException
+    from pathlib import Path
+
+    examples_root = main_routes.EXAMPLES_DIR.resolve()
+    if not examples_root.exists():
+        raise HTTPException(status_code=404, detail="Examples directory not found.")
+    if "/" in filename or "\\" in filename or filename.startswith("."):
+        raise HTTPException(status_code=400, detail="Invalid filename.")
+    candidate = (examples_root / filename).resolve()
+    try:
+        candidate.relative_to(examples_root)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid filename.")
+    if not candidate.is_file():
+        raise HTTPException(status_code=404, detail="Example file not found.")
+    return candidate
 
 
 @router.get("/examples/{filename}/thumbnail")
@@ -44,7 +65,7 @@ def serve_example_thumbnail(filename: str) -> Any:
     from mutagen.oggopus import OggOpus
     from mutagen.oggvorbis import OggVorbis
 
-    candidate = main_routes._resolve_example_file(filename)
+    candidate = _resolve_example_file(filename)
     extension = candidate.suffix.lower()
     if extension not in main_routes.ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=404, detail="Example file not found.")
@@ -128,13 +149,18 @@ def serve_example_file(filename: str) -> Any:
     from fastapi import HTTPException
     from fastapi.responses import FileResponse
 
-    candidate = main_routes._resolve_example_file(filename)
+    candidate = _resolve_example_file(filename)
     extension = candidate.suffix.lower()
-    if extension not in main_routes.ALLOWED_EXTENSIONS and extension not in main_routes.EXAMPLE_IMAGE_EXTENSIONS:
+    if (
+        extension not in main_routes.ALLOWED_EXTENSIONS
+        and extension not in main_routes.EXAMPLE_IMAGE_EXTENSIONS
+    ):
         raise HTTPException(status_code=404, detail="Example file not found.")
 
     content_type = main_routes.mimetypes.guess_type(str(candidate))[0] or "application/octet-stream"
-    main_routes.logger.info("example_gallery.serve_example filename=%s mime=%s", filename, content_type)
+    main_routes.logger.info(
+        "example_gallery.serve_example filename=%s mime=%s", filename, content_type
+    )
     return FileResponse(
         str(candidate),
         media_type=content_type,
